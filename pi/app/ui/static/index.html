@@ -11,6 +11,12 @@
 </head>
 <body>
   <div id="app">
+    <!-- Auth banner (shown when no token set) -->
+    <div id="auth-banner" class="hidden">
+      <input type="password" id="auth-token-input" placeholder="Enter auth token">
+      <button id="auth-save-btn" class="action-btn">Save</button>
+    </div>
+
     <!-- Status bar -->
     <header id="status-bar">
       <div class="status-left">
@@ -19,7 +25,8 @@
       </div>
       <h1>Pillar</h1>
       <div class="status-right">
-        <button id="blackout-btn" class="icon-btn" title="Blackout">⬛</button>
+        <button id="blackout-on-btn" class="icon-btn" title="Blackout ON">B</button>
+        <button id="blackout-off-btn" class="icon-btn" title="Blackout OFF">R</button>
       </div>
     </header>
 
@@ -29,6 +36,13 @@
         <label>Brightness</label>
         <input type="range" id="brightness-slider" min="0" max="100" value="80">
         <span id="brightness-value">80%</span>
+      </div>
+      <div class="brightness-auto">
+        <label>
+          <input type="checkbox" id="brightness-auto-toggle"> Auto (sunrise/sunset)
+        </label>
+        <span id="brightness-phase" class="phase-badge"></span>
+        <span id="brightness-effective"></span>
       </div>
     </section>
 
@@ -53,9 +67,7 @@
         <div id="scene-info">
           <p>Scene: <strong id="current-scene-name">--</strong></p>
         </div>
-        <div id="preset-grid" class="button-grid">
-          <!-- Populated dynamically -->
-        </div>
+        <div id="preset-grid" class="button-grid"></div>
       </section>
 
       <!-- EFFECTS -->
@@ -64,9 +76,6 @@
         <div id="effect-list" class="button-grid"></div>
         <h2>Audio-Reactive</h2>
         <div id="audio-effect-list" class="button-grid"></div>
-        <div id="effect-params">
-          <!-- Dynamic params UI -->
-        </div>
       </section>
 
       <!-- MEDIA -->
@@ -78,9 +87,7 @@
             <progress id="upload-bar" max="100" value="0"></progress>
           </div>
         </div>
-        <div id="media-library" class="button-grid">
-          <!-- Populated dynamically -->
-        </div>
+        <div id="media-library" class="button-grid"></div>
       </section>
 
       <!-- AUDIO -->
@@ -113,7 +120,7 @@
         <h2>Wiring Tests</h2>
         <div class="button-grid">
           <button class="test-btn" data-test="diag_strip_identify">Strip Identify</button>
-          <button class="test-btn" data-test="diag_sweep">Bottom→Top Sweep</button>
+          <button class="test-btn" data-test="diag_sweep">Bottom-Top Sweep</button>
           <button class="test-btn" data-test="diag_serpentine">Serpentine Chase</button>
           <button class="test-btn" data-test="diag_seam">Seam Test</button>
           <button class="test-btn" data-test="diag_channel_identify">Channel Identify</button>
@@ -144,6 +151,11 @@
             <p>Transport: <span id="sys-transport">--</span></p>
             <p>Firmware: <span id="sys-firmware">--</span></p>
             <p>Frames Sent: <span id="sys-frames">--</span></p>
+          </div>
+          <div class="control-group">
+            <label>Auth Token</label>
+            <input type="password" id="system-token-input" placeholder="Enter token">
+            <button id="system-token-save" class="action-btn secondary">Update Token</button>
           </div>
           <div class="system-actions">
             <button id="restart-app-btn" class="action-btn secondary">Restart App</button>
