@@ -1,5 +1,5 @@
 """
-Binary protocol definitions for Pi ↔ Teensy communication.
+Binary protocol definitions for Pi <-> Teensy communication.
 
 Packet format:
   magic (4B) | version (1B) | type (1B) | flags (2B) | frame_id (4B) |
@@ -12,7 +12,7 @@ Packets are COBS-encoded with 0x00 as delimiter.
 import struct
 import zlib
 from enum import IntEnum
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Optional
 
 
@@ -20,6 +20,12 @@ MAGIC = b'PILL'
 PROTOCOL_VERSION = 1
 HEADER_SIZE = 24  # magic(4) + ver(1) + type(1) + flags(2) + frame_id(4) + ts(8) + payload_len(4)
 CRC_SIZE = 4
+
+# Canonical payload sizes
+STATS_PAYLOAD_SIZE = 28  # 7 x uint32_t
+STATS_STRUCT_FMT = '<IIIIIII'
+CAPS_PAYLOAD_SIZE = 56
+HELLO_PAYLOAD_SIZE = 48
 
 
 class PacketType(IntEnum):
@@ -138,7 +144,6 @@ def cobs_encode(data: bytes) -> bytes:
   output = bytearray()
   idx = 0
   while idx <= len(data):
-    # Find next zero byte or end
     block_start = idx
     while idx < len(data) and data[idx] != 0 and (idx - block_start) < 254:
       idx += 1
@@ -165,14 +170,13 @@ def cobs_decode(data: bytes) -> Optional[bytes]:
     while idx < len(data):
       code = data[idx]
       if code == 0:
-        return None  # unexpected zero
+        return None
       idx += 1
       for _ in range(code - 1):
         if idx >= len(data):
           return None
         output.append(data[idx])
         idx += 1
-      # Add implicit zero between blocks (not after the last block)
       if code < 255 and idx < len(data):
         output.append(0)
     return bytes(output)
@@ -186,21 +190,23 @@ def frame_packet(data: bytes) -> bytes:
 
 
 def build_hello_payload(app_name: str = "pillar-pi", app_version: str = "1.0.0") -> bytes:
-  """Build HELLO packet payload."""
   name_bytes = app_name.encode('utf-8')[:32].ljust(32, b'\x00')
   ver_bytes = app_version.encode('utf-8')[:16].ljust(16, b'\x00')
   return name_bytes + ver_bytes
 
 
 def build_frame_payload(channels: int, leds_per_channel: int, pixel_data: bytes) -> bytes:
-  """Build FRAME packet payload with channel metadata."""
   meta = struct.pack('<BH', channels, leds_per_channel)
   return meta + pixel_data
 
 
+def build_blackout_payload(enabled: bool) -> bytes:
+  """Build explicit blackout payload: 0x01=on, 0x00=off."""
+  return struct.pack('<B', 0x01 if enabled else 0x00)
+
+
 def parse_caps_payload(payload: bytes) -> Optional[dict]:
-  """Parse CAPS response from Teensy."""
-  if len(payload) < 56:
+  if len(payload) < CAPS_PAYLOAD_SIZE:
     return None
   fw_ver = payload[:16].rstrip(b'\x00').decode('utf-8', errors='replace')
   proto_ver = payload[16]
@@ -213,4 +219,20 @@ def parse_caps_payload(payload: bytes) -> Optional[dict]:
     'outputs': outputs,
     'leds_per_strip': leds_per_strip,
     'color_order': color_order,
+  }
+
+
+def parse_stats_payload(payload: bytes) -> Optional[dict]:
+  """Parse STATS payload from Teensy. Exactly 28 bytes (7 x uint32)."""
+  if len(payload) < STATS_PAYLOAD_SIZE:
+    return None
+  values = struct.unpack(STATS_STRUCT_FMT, payload[:STATS_PAYLOAD_SIZE])
+  return {
+    'uptime_ms': values[0],
+    'frames_received': values[1],
+    'frames_applied': values[2],
+    'bad_crc': values[3],
+    'bad_frame': values[4],
+    'dropped_pending': values[5],
+    'output_fps': values[6],
   }
