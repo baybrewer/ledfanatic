@@ -143,3 +143,49 @@ class TestCapsPayload:
 
   def test_too_short_rejected(self):
     assert parse_caps_payload(b'\x00' * 10) is None
+
+
+class TestBlackoutPayload:
+  def test_blackout_on(self):
+    payload = build_blackout_payload(True)
+    assert payload == b'\x01'
+
+  def test_blackout_off(self):
+    payload = build_blackout_payload(False)
+    assert payload == b'\x00'
+
+  def test_blackout_packet_round_trip(self):
+    pkt = build_packet(PacketType.BLACKOUT, build_blackout_payload(True))
+    result = verify_packet(pkt)
+    assert result is not None
+    header, payload = result
+    assert header.packet_type == PacketType.BLACKOUT
+    assert payload == b'\x01'
+
+
+class TestStatsPayload:
+  def test_parse_valid_28_bytes(self):
+    values = (100000, 5000, 4990, 2, 1, 8, 60)
+    payload = struct.pack(STATS_STRUCT_FMT, *values)
+    assert len(payload) == STATS_PAYLOAD_SIZE
+
+    result = parse_stats_payload(payload)
+    assert result is not None
+    assert result['uptime_ms'] == 100000
+    assert result['frames_received'] == 5000
+    assert result['frames_applied'] == 4990
+    assert result['bad_crc'] == 2
+    assert result['bad_frame'] == 1
+    assert result['dropped_pending'] == 8
+    assert result['output_fps'] == 60
+
+  def test_parse_too_short(self):
+    assert parse_stats_payload(b'\x00' * 20) is None
+
+  def test_parse_extra_bytes_ok(self):
+    """Extra bytes beyond 28 are ignored (forward compatibility)."""
+    values = (1, 2, 3, 4, 5, 6, 7)
+    payload = struct.pack(STATS_STRUCT_FMT, *values) + b'\xff' * 10
+    result = parse_stats_payload(payload)
+    assert result is not None
+    assert result['uptime_ms'] == 1
