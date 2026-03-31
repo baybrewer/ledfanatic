@@ -216,7 +216,11 @@ class MediaManager:
     with open(cache_path / "metadata.json", 'w') as f:
       json.dump(meta, f)
 
-    item = MediaItem(**meta)
+    item = MediaItem(
+      item_id=meta['id'], name=meta['name'], media_type=meta['type'],
+      frame_count=meta['frame_count'], fps=meta['fps'],
+      width=meta['width'], height=meta['height'],
+    )
     self.items[item_id] = item
     logger.info(f"Imported video: {name} ({frame_idx} frames @ {target_fps:.1f} FPS) -> {item_id}")
     return item
