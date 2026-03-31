@@ -1,0 +1,34 @@
+# Hardware configuration for the LED pillar
+# This is the single source of truth for physical layout
+
+pillar:
+  strips: 10
+  leds_per_strip: 172
+  total_leds: 1720
+
+  # Electrical pairing: pairs of adjacent strips wired in serpentine
+  channels:
+    count: 5
+    leds_per_channel: 344
+    pairs:
+      - channel: 0
+        strips: [0, 1]
+      - channel: 1
+        strips: [2, 3]
+      - channel: 2
+        strips: [4, 5]
+      - channel: 3
+        strips: [6, 7]
+      - channel: 4
+        strips: [8, 9]
+
+  # Serpentine wiring: even strips go bottom→top, odd strips go top→bottom
+  wiring:
+    even_strip_direction: "bottom_to_top"
+    odd_strip_direction: "top_to_bottom"
+    seam_position: [9, 0]  # wrap boundary between S9 and S0
+
+  color_order: "GRB"
+
+  # OctoWS2811 pin assignments (Teensy 4.1 defaults)
+  octo_pins: [2, 14, 7, 8, 6, 20, 21, 5]
