@@ -165,7 +165,13 @@ void handlePacket(const uint8_t* data, size_t len) {
       break;
 
     case PKT_BLACKOUT:
-      blackout = !blackout;
+      // Explicit blackout: payload byte 0x01=on, 0x00=off
+      // Empty payload treated as on for backward safety
+      if (header.payload_len >= 1) {
+        blackout = (payload[0] != 0);
+      } else {
+        blackout = true;
+      }
       activeTestPattern = -1;
       break;
 
