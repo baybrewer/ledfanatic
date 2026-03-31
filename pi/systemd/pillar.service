@@ -7,16 +7,17 @@ Wants=network-online.target
 Type=simple
 User=pillar
 Group=pillar
-WorkingDirectory=/opt/pillar/app
-ExecStart=/opt/pillar/venv/bin/python -m app.main
+ExecStart=/opt/pillar/venv/bin/pillar
 Restart=always
 RestartSec=3
+StartLimitBurst=5
+StartLimitIntervalSec=60
 StandardOutput=journal
 StandardError=journal
 Environment=PYTHONUNBUFFERED=1
 
-# Allow access to USB serial devices
-SupplementaryGroups=dialout
+# Allow access to USB serial devices and audio
+SupplementaryGroups=dialout audio
 
 # Resource limits
 LimitNOFILE=4096
