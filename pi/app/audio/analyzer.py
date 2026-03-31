@@ -2,10 +2,9 @@
 Audio analysis worker.
 
 Runs FFT, beat detection, and band-level extraction on a background thread.
-Updates shared RenderState with modulation values.
+Updates RenderState via thread-safe snapshot dict.
 """
 
-import asyncio
 import logging
 import threading
 import time
@@ -19,19 +18,24 @@ SAMPLE_RATE = 44100
 CHUNK_SIZE = 1024
 FFT_SIZE = 2048
 
-# Band boundaries in Hz
 BASS_RANGE = (20, 250)
 MID_RANGE = (250, 4000)
 HIGH_RANGE = (4000, 16000)
 
 
 class AudioAnalyzer:
-  def __init__(self, state, device_index: Optional[int] = None):
-    self.state = state
+  def __init__(self, render_state, device_index: Optional[int] = None):
+    self._render_state = render_state
     self.device_index = device_index
     self._running = False
     self._thread: Optional[threading.Thread] = None
-    self._stream = None
+
+    # Thread-safe snapshot
+    self._lock = threading.Lock()
+    self._snapshot: dict = {
+      'level': 0.0, 'bass': 0.0, 'mid': 0.0, 'high': 0.0,
+      'beat': False, 'bpm': 0.0,
+    }
 
     # Internal smoothed values
     self._level_smooth = 0.0
@@ -49,7 +53,6 @@ class AudioAnalyzer:
     self.gain = 1.0
 
   def start(self):
-    """Start audio capture and analysis in background thread."""
     if self._running:
       return
 
@@ -66,7 +69,6 @@ class AudioAnalyzer:
     logger.info("Audio analyzer stopped")
 
   def _run(self):
-    """Main audio capture loop (runs in thread)."""
     try:
       import sounddevice as sd
     except ImportError:
@@ -90,7 +92,6 @@ class AudioAnalyzer:
       self._running = False
 
   def _audio_callback(self, indata, frames, time_info, status):
-    """Called by sounddevice for each audio chunk."""
     if status:
       logger.debug(f"Audio status: {status}")
 
@@ -99,7 +100,6 @@ class AudioAnalyzer:
     # RMS level
     rms = float(np.sqrt(np.mean(audio ** 2))) * self.sensitivity
     self._level_smooth = self._level_smooth * self._smoothing + rms * (1 - self._smoothing)
-    self.state.audio_level = min(1.0, self._level_smooth)
 
     # FFT
     if len(audio) >= FFT_SIZE:
@@ -112,7 +112,6 @@ class AudioAnalyzer:
     spectrum = np.abs(np.fft.rfft(windowed))
     freqs = np.fft.rfftfreq(FFT_SIZE, 1.0 / SAMPLE_RATE)
 
-    # Band levels
     bass = self._band_energy(spectrum, freqs, *BASS_RANGE)
     mid = self._band_energy(spectrum, freqs, *MID_RANGE)
     high = self._band_energy(spectrum, freqs, *HIGH_RANGE)
@@ -121,38 +120,46 @@ class AudioAnalyzer:
     self._mid_smooth = self._mid_smooth * self._smoothing + mid * (1 - self._smoothing)
     self._high_smooth = self._high_smooth * self._smoothing + high * (1 - self._smoothing)
 
-    self.state.audio_bass = min(1.0, self._bass_smooth * self.sensitivity)
-    self.state.audio_mid = min(1.0, self._mid_smooth * self.sensitivity)
-    self.state.audio_high = min(1.0, self._high_smooth * self.sensitivity)
-
-    # Beat detection (simple energy threshold)
-    energy = float(np.sum(spectrum[:len(spectrum)//4]))  # low-frequency energy
+    # Beat detection
+    energy = float(np.sum(spectrum[:len(spectrum) // 4]))
     self._energy_history.append(energy)
-    if len(self._energy_history) > 43:  # ~1 second at 44100/1024
+    if len(self._energy_history) > 43:
       self._energy_history.pop(0)
 
+    beat = False
     if self._beat_cooldown > 0:
       self._beat_cooldown -= 1
-      self.state.audio_beat = False
     elif len(self._energy_history) > 10:
       avg_energy = np.mean(self._energy_history)
       if energy > avg_energy * 1.5:
-        self.state.audio_beat = True
-        self._beat_cooldown = 8  # minimum gap between beats
-      else:
-        self.state.audio_beat = False
+        beat = True
+        self._beat_cooldown = 8
+
+    # Build snapshot under lock and push to render state
+    snapshot = {
+      'level': min(1.0, self._level_smooth),
+      'bass': min(1.0, self._bass_smooth * self.sensitivity),
+      'mid': min(1.0, self._mid_smooth * self.sensitivity),
+      'high': min(1.0, self._high_smooth * self.sensitivity),
+      'beat': beat,
+      'bpm': 0.0,
+    }
+
+    with self._lock:
+      self._snapshot = snapshot
+
+    # Push to render state (dict assignment is atomic in CPython)
+    self._render_state.update_audio(snapshot)
 
   def _band_energy(self, spectrum: np.ndarray, freqs: np.ndarray,
                    low_hz: float, high_hz: float) -> float:
-    """Extract energy in a frequency band."""
     mask = (freqs >= low_hz) & (freqs <= high_hz)
     if not np.any(mask):
       return 0.0
     band = spectrum[mask]
-    return float(np.sqrt(np.mean(band ** 2))) * 0.01  # normalize
+    return float(np.sqrt(np.mean(band ** 2))) * 0.01
 
   def list_devices(self) -> list[dict]:
-    """List available audio input devices."""
     try:
       import sounddevice as sd
       devices = sd.query_devices()
@@ -170,7 +177,6 @@ class AudioAnalyzer:
       return []
 
   def set_device(self, device_index: Optional[int]):
-    """Switch audio device (requires restart)."""
     was_running = self._running
     if was_running:
       self.stop()
