@@ -9,7 +9,6 @@ import asyncio
 import logging
 import time
 import struct
-from pathlib import Path
 from typing import Optional
 
 import serial
@@ -17,14 +16,15 @@ import serial.tools.list_ports
 
 from ..models.protocol import (
   PacketType, build_packet, verify_packet, frame_packet,
-  build_hello_payload, build_frame_payload, parse_caps_payload,
+  build_hello_payload, build_frame_payload, build_blackout_payload,
+  parse_caps_payload, parse_stats_payload,
   cobs_encode, cobs_decode, PROTOCOL_VERSION,
 )
 
 logger = logging.getLogger(__name__)
 
 TEENSY_VID = 0x16C0
-TEENSY_PID = 0x0483  # Teensy USB Serial
+TEENSY_PID = 0x0483
 
 
 class TeensyTransport:
@@ -44,17 +44,14 @@ class TeensyTransport:
     self.reconnect_count = 0
 
   def find_teensy_port(self) -> Optional[str]:
-    """Find the Teensy USB serial port."""
     for port in serial.tools.list_ports.comports():
       if port.vid == TEENSY_VID and port.pid == TEENSY_PID:
         return port.device
-      # Also check for common Teensy identifiers
       if port.manufacturer and 'teensy' in port.manufacturer.lower():
         return port.device
     return None
 
   async def connect(self) -> bool:
-    """Attempt to connect to Teensy."""
     port = self.find_teensy_port()
     if not port:
       logger.debug("Teensy not found")
@@ -63,7 +60,7 @@ class TeensyTransport:
     try:
       self.serial = serial.Serial(
         port,
-        baudrate=115200,  # Ignored by Teensy USB, but required by pyserial
+        baudrate=115200,
         timeout=0.1,
         write_timeout=1.0,
       )
@@ -71,7 +68,6 @@ class TeensyTransport:
       self._rx_buffer.clear()
       logger.info(f"Connected to Teensy on {port}")
 
-      # Perform handshake
       success = await self._handshake()
       if not success:
         logger.warning("Handshake failed")
@@ -85,7 +81,6 @@ class TeensyTransport:
       return False
 
   def disconnect(self):
-    """Close serial connection."""
     if self.serial and self.serial.is_open:
       try:
         self.serial.close()
@@ -96,7 +91,6 @@ class TeensyTransport:
     self.caps = None
 
   async def _handshake(self) -> bool:
-    """Send HELLO and wait for CAPS response."""
     hello_payload = build_hello_payload("pillar-pi", "1.0.0")
     packet = build_packet(PacketType.HELLO, hello_payload)
     framed = frame_packet(packet)
@@ -108,7 +102,6 @@ class TeensyTransport:
       logger.error(f"Failed to send HELLO: {e}")
       return False
 
-    # Wait for CAPS response
     start = time.monotonic()
     while time.monotonic() - start < self.handshake_timeout:
       result = self._read_packet()
@@ -124,7 +117,6 @@ class TeensyTransport:
     return False
 
   def _read_packet(self) -> Optional[tuple]:
-    """Read and decode one packet from serial buffer."""
     if not self.serial or not self.serial.is_open:
       return None
 
@@ -135,7 +127,6 @@ class TeensyTransport:
     except (serial.SerialException, OSError):
       return None
 
-    # Look for 0x00 delimiter
     while b'\x00' in self._rx_buffer:
       idx = self._rx_buffer.index(b'\x00')
       if idx == 0:
@@ -157,7 +148,6 @@ class TeensyTransport:
 
   async def send_frame(self, channel_data: bytes, channels: int = 5,
                        leds_per_channel: int = 344) -> bool:
-    """Send a frame to the Teensy."""
     if not self.connected or not self.serial:
       return False
 
@@ -184,7 +174,6 @@ class TeensyTransport:
       return False
 
   async def send_command(self, packet_type: int, payload: bytes = b'') -> bool:
-    """Send a command packet."""
     if not self.connected or not self.serial:
       return False
 
@@ -199,11 +188,14 @@ class TeensyTransport:
       self.connected = False
       return False
 
-  async def send_blackout(self) -> bool:
-    return await self.send_command(PacketType.BLACKOUT)
+  async def send_blackout(self, enabled: bool) -> bool:
+    """Send explicit blackout command: True=on, False=off."""
+    return await self.send_command(
+      PacketType.BLACKOUT,
+      build_blackout_payload(enabled),
+    )
 
   async def send_brightness(self, brightness: float) -> bool:
-    """Send brightness value (0.0 - 1.0)."""
     val = max(0, min(255, int(brightness * 255)))
     return await self.send_command(PacketType.BRIGHTNESS, struct.pack('<B', val))
 
@@ -211,7 +203,6 @@ class TeensyTransport:
     return await self.send_command(PacketType.TEST_PATTERN, struct.pack('<B', pattern_id))
 
   async def request_stats(self) -> Optional[dict]:
-    """Request and read stats from Teensy."""
     if not await self.send_command(PacketType.PING):
       return None
 
@@ -221,41 +212,27 @@ class TeensyTransport:
       if result:
         header, payload = result
         if header.packet_type == PacketType.STATS:
-          return self._parse_stats(payload)
+          parsed = parse_stats_payload(payload)
+          if parsed:
+            return parsed
+          return {'error': 'malformed_stats', 'payload_len': len(payload)}
         if header.packet_type == PacketType.PONG:
           return {'pong': True}
       await asyncio.sleep(0.005)
     return None
 
-  def _parse_stats(self, payload: bytes) -> dict:
-    """Parse stats payload from Teensy."""
-    if len(payload) < 32:
-      return {'raw': payload.hex()}
-    try:
-      uptime_ms, frames_rx, frames_applied, bad_crc, bad_frame, dropped, fps = struct.unpack(
-        '<IIIIIII', payload[:28]
-      )
-      return {
-        'uptime_ms': uptime_ms,
-        'frames_received': frames_rx,
-        'frames_applied': frames_applied,
-        'bad_crc': bad_crc,
-        'bad_frame': bad_frame,
-        'dropped': dropped,
-        'output_fps': fps,
-      }
-    except struct.error:
-      return {'raw': payload.hex()}
-
   async def reconnect_loop(self):
     """Background task: keep trying to connect."""
     while True:
-      if not self.connected:
-        success = await self.connect()
-        if success:
-          self.reconnect_count += 1
-          logger.info(f"Reconnected (attempt #{self.reconnect_count})")
-      await asyncio.sleep(self.reconnect_interval)
+      try:
+        if not self.connected:
+          success = await self.connect()
+          if success:
+            self.reconnect_count += 1
+            logger.info(f"Reconnected (attempt #{self.reconnect_count})")
+        await asyncio.sleep(self.reconnect_interval)
+      except asyncio.CancelledError:
+        break
 
   def get_status(self) -> dict:
     return {
