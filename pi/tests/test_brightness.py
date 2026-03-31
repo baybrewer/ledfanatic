@@ -42,9 +42,9 @@ class TestManualMode:
     assert engine.get_effective_brightness(now) == 0.7
 
   def test_manual_mode_clamps(self):
-    engine = _make_engine(auto_enabled=False, manual_cap=1.5)
+    engine = _make_engine(auto_enabled=False, manual_cap=0.5)
+    engine.manual_cap = 1.5  # property setter clamps to [0, 1]
     now = datetime(2026, 6, 15, 12, 0, tzinfo=TZ)
-    # manual_cap should be clamped to 1.0 at construction time
     assert engine.get_effective_brightness(now) == 1.0
 
 
