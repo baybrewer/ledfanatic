@@ -26,6 +26,7 @@ sudo apt-get install -y \
   libportaudio2 portaudio19-dev \
   avahi-daemon \
   network-manager \
+  rsync \
   git
 
 # Create directory structure
