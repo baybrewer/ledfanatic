@@ -59,9 +59,9 @@ def build_lookup_table() -> np.ndarray:
 
 
 # Precompute channel and index arrays for vectorized mapping
-_channels = np.zeros((10, N), dtype=np.int32)
-_indices = np.zeros((10, N), dtype=np.int32)
-for _x in range(10):
+_channels = np.zeros((STRIPS, N), dtype=np.int32)
+_indices = np.zeros((STRIPS, N), dtype=np.int32)
+for _x in range(STRIPS):
   for _y in range(N):
     _ch, _idx = logical_to_channel(_x, _y)
     _channels[_x, _y] = _ch
