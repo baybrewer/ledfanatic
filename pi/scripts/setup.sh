@@ -35,11 +35,12 @@ sudo chown -R pillar:pillar /opt/pillar
 
 # Copy pi/ source to canonical location
 echo "Copying source to ${SRC_DIR}..."
-rsync -a --delete \
+sudo rsync -a --delete \
   --exclude '__pycache__' \
   --exclude '*.pyc' \
   --exclude '.pytest_cache' \
   --exclude '.DS_Store' \
+  --exclude '.venv' \
   "${PI_DIR}/" "${SRC_DIR}/"
 sudo chown -R pillar:pillar "${SRC_DIR}"
 
