@@ -52,7 +52,6 @@ void handleTestPattern(const uint8_t* payload, size_t len);
 void handleBrightness(const uint8_t* payload, size_t len);
 void sendCaps();
 void sendStats();
-void sendPong();
 void sendPacket(uint8_t type, const uint8_t* payload, size_t len);
 void applyPendingFrame();
 void runTestPattern();
