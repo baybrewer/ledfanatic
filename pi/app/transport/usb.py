@@ -96,8 +96,9 @@ class TeensyTransport:
     framed = frame_packet(packet)
 
     try:
-      self.serial.write(framed)
-      self.serial.flush()
+      async with self._lock:
+        self.serial.write(framed)
+        self.serial.flush()
     except (serial.SerialException, OSError) as e:
       logger.error(f"Failed to send HELLO: {e}")
       return False
