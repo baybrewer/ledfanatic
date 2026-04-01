@@ -191,3 +191,77 @@ class TestStatsPayload:
     result = parse_stats_payload(payload)
     assert result is not None
     assert result['uptime_ms'] == 1
+
+
+# --- COBS golden vectors from the COBS specification ---
+GOLDEN_VECTORS = [
+  # (unencoded, encoded)
+  (b'', b'\x01'),
+  (b'\x00', b'\x01\x01'),
+  (b'\x00\x00', b'\x01\x01\x01'),
+  (b'\x00\x00\x00', b'\x01\x01\x01\x01'),
+  (b'\x11\x22\x00\x33', b'\x03\x11\x22\x02\x33'),
+  (b'\x11\x22\x33\x44', b'\x05\x11\x22\x33\x44'),
+  (b'\x11\x00\x00\x00', b'\x02\x11\x01\x01\x01'),
+  # Packet with flags=0x0000 (real protocol scenario)
+  (b'PILL\x01\x10\x00\x00\x01\x00\x00\x00',
+   None),  # just verify round-trip, don't hardcode encoding
+]
+
+
+class TestCOBSGoldenVectors:
+  @pytest.mark.parametrize("raw,expected_encoded", [v for v in GOLDEN_VECTORS if v[1] is not None])
+  def test_encode_matches_spec(self, raw, expected_encoded):
+    assert cobs_encode(raw) == expected_encoded
+
+  @pytest.mark.parametrize("raw,expected_encoded", [v for v in GOLDEN_VECTORS if v[1] is not None])
+  def test_decode_matches_spec(self, raw, expected_encoded):
+    assert cobs_decode(expected_encoded) == raw
+
+  @pytest.mark.parametrize("raw,_", GOLDEN_VECTORS)
+  def test_round_trip(self, raw, _):
+    encoded = cobs_encode(raw)
+    assert b'\x00' not in encoded
+    decoded = cobs_decode(encoded)
+    assert decoded == raw
+
+  def test_packet_with_zero_flags(self):
+    """Real protocol packet: flags=0x0000 creates consecutive zeros."""
+    # Build a PING packet (has flags=0x0000)
+    pkt = build_packet(PacketType.PING)
+    # Verify it round-trips through COBS
+    framed = frame_packet(pkt)
+    # Remove delimiter
+    encoded = framed[:-1]
+    decoded = cobs_decode(encoded)
+    assert decoded is not None
+    result = verify_packet(decoded)
+    assert result is not None
+    assert result[0].packet_type == PacketType.PING
+
+
+class TestHardwareConstants:
+  def test_python_constants_match_yaml(self):
+    from app.hardware_constants import STRIPS, LEDS_PER_STRIP, CHANNELS, LEDS_PER_CHANNEL
+    assert STRIPS == 10
+    assert LEDS_PER_STRIP == 172
+    assert CHANNELS == 5
+    assert LEDS_PER_CHANNEL == 344
+
+  def test_teensy_constants_match(self):
+    """Verify Teensy config.h values match hardware.yaml."""
+    config_path = Path(__file__).parent.parent.parent / 'teensy' / 'firmware' / 'include' / 'config.h'
+    if not config_path.exists():
+      pytest.skip("Teensy config.h not found")
+    content = config_path.read_text()
+
+    from app.hardware_constants import LEDS_PER_CHANNEL, CHANNELS, LEDS_PER_STRIP
+
+    # Extract values from config.h
+    lps = int(re.search(r'#define\s+LEDS_PER_STRIP\s+(\d+)', content).group(1))
+    active = int(re.search(r'#define\s+ACTIVE_OUTPUTS\s+(\d+)', content).group(1))
+    physical = int(re.search(r'#define\s+LEDS_PER_PHYSICAL\s+(\d+)', content).group(1))
+
+    assert lps == LEDS_PER_CHANNEL, f"config.h LEDS_PER_STRIP={lps} != hardware.yaml LEDS_PER_CHANNEL={LEDS_PER_CHANNEL}"
+    assert active == CHANNELS, f"config.h ACTIVE_OUTPUTS={active} != hardware.yaml CHANNELS={CHANNELS}"
+    assert physical == LEDS_PER_STRIP, f"config.h LEDS_PER_PHYSICAL={physical} != hardware.yaml LEDS_PER_STRIP={LEDS_PER_STRIP}"
