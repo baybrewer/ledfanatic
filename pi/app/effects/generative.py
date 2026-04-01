@@ -101,11 +101,7 @@ class Plasma(Effect):
     v = (v1 + v2 + v3 + v4) / 4.0  # -1 to 1
     hue = (v + 1.0) / 2.0  # 0 to 1
 
-    for x in range(self.width):
-      for y in range(self.height):
-        r, g, b = hsv_to_rgb(hue[x, y] % 1.0, 0.9, 1.0)
-        frame[x, y] = (r, g, b)
-    return frame
+    return _hsv_array_to_rgb(hue, 0.9, 1.0)
 
 
 class Twinkle(Effect):
