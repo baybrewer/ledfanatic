@@ -206,6 +206,12 @@ GOLDEN_VECTORS = [
   # Packet with flags=0x0000 (real protocol scenario)
   (b'PILL\x01\x10\x00\x00\x01\x00\x00\x00',
    None),  # just verify round-trip, don't hardcode encoding
+  # Long non-zero runs (COBS 0xFF continuation blocks)
+  (b'\xFF' * 254, None),  # exactly 254 — single 0xFF block
+  (b'\xFF' * 255, None),  # 255 — needs 0xFF + 0x02 blocks
+  (b'\xFF' * 300, None),  # 300 — needs 0xFF + continuation
+  (b'\xFF' * 508, None),  # 2 x 254 — two 0xFF blocks
+  (b'\xFF' * 1000, None), # stress test
 ]
 
 
