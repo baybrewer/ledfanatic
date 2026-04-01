@@ -21,13 +21,12 @@ class StateManager:
   def __init__(self, config_dir: Path):
     self.config_dir = config_dir
     self.state_file = self.config_dir / "state.json"
+    # Only structural defaults here. Display values (brightness_manual_cap,
+    # target_fps, gamma) are intentionally omitted so config file values
+    # aren't overridden by hardcoded defaults on first load.
     self._state: dict = {
-      'current_scene': 'rainbow_rotate',
+      'current_scene': None,
       'current_params': {},
-      'brightness_manual_cap': 0.8,
-      'brightness_auto_enabled': False,
-      'target_fps': 60,
-      'gamma': 2.2,
       'blackout': False,
       'scenes': {},
       'playlists': {},
