@@ -47,7 +47,7 @@ sudo chown -R pillar:pillar "${SRC_DIR}"
 # Create virtual environment and install from canonical source
 sudo -u pillar python3 -m venv /opt/pillar/venv
 sudo -u pillar /opt/pillar/venv/bin/pip install --upgrade pip
-sudo -u pillar /opt/pillar/venv/bin/pip install -e "${SRC_DIR}[audio]"
+sudo -u pillar /opt/pillar/venv/bin/pip install -e "${SRC_DIR}[audio,video]"
 
 # Copy example config if no real config exists
 if [ ! -f /opt/pillar/config/system.yaml ]; then
