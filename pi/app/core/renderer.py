@@ -39,6 +39,7 @@ class RenderState:
     self.frames_sent: int = 0
     self.frames_dropped: int = 0
     self.last_frame_time_ms: float = 0.0
+    self.render_cost_ms: float = 0.0
 
   def update_audio(self, snapshot: dict):
     """Receive thread-safe audio snapshot."""
