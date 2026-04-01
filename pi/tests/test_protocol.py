@@ -1,7 +1,9 @@
 """Tests for the binary protocol."""
 
+import re
 import struct
 import zlib
+from pathlib import Path
 import pytest
 from app.models.protocol import (
   build_packet, verify_packet, PacketType,
