@@ -185,20 +185,18 @@ class NoiseWash(Effect):
     elapsed = self.elapsed(t)
     speed = self.params.get('speed', 0.5)
     scale = self.params.get('scale', 3.0)
-    frame = np.zeros((self.width, self.height, 3), dtype=np.uint8)
 
-    for x in range(self.width):
-      for y in range(self.height):
-        nx = x / self.width * scale
-        ny = y / self.height * scale
-        # Simple sine-based noise approximation
-        v = (math.sin(nx * 2.1 + elapsed * speed) +
-             math.sin(ny * 1.7 + elapsed * speed * 0.8) +
-             math.sin((nx + ny) * 1.3 + elapsed * speed * 0.6)) / 3.0
-        hue = (v + 1.0) / 2.0
-        r, g, b = hsv_to_rgb(hue % 1.0, 0.8, 0.9)
-        frame[x, y] = (r, g, b)
-    return frame
+    nx = np.arange(self.width, dtype=np.float64) / self.width * scale
+    ny = np.arange(self.height, dtype=np.float64) / self.height * scale
+    nxx, nyy = np.meshgrid(nx, ny, indexing='ij')
+
+    # Sine-based noise approximation
+    v = (np.sin(nxx * 2.1 + elapsed * speed) +
+         np.sin(nyy * 1.7 + elapsed * speed * 0.8) +
+         np.sin((nxx + nyy) * 1.3 + elapsed * speed * 0.6)) / 3.0
+    hue = (v + 1.0) / 2.0
+
+    return _hsv_array_to_rgb(hue, 0.8, 0.9)
 
 
 class ColorWipe(Effect):
