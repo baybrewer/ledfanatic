@@ -180,14 +180,16 @@ def cobs_decode(data: bytes) -> Optional[bytes]:
     while idx < len(data):
       code = data[idx]
       if code == 0:
-        return None
+        return None  # unexpected zero in encoded data
       idx += 1
       for _ in range(code - 1):
         if idx >= len(data):
           return None
         output.append(data[idx])
         idx += 1
-      if code < 255 and idx < len(data):
+      # If code < 0xFF and there are more bytes, insert implicit zero
+      # 0xFF means the block was a 254-byte non-zero run (no trailing zero)
+      if code < 0xFF and idx < len(data):
         output.append(0)
     return bytes(output)
   except (IndexError, ValueError):
