@@ -233,7 +233,11 @@ void handleConfig(const uint8_t* payload, size_t len) {
 
 void handleTestPattern(const uint8_t* payload, size_t len) {
   if (len >= 1) {
-    activeTestPattern = payload[0];
+    if (payload[0] == TEST_PATTERN_NONE) {
+      activeTestPattern = -1;  // clear test mode
+    } else {
+      activeTestPattern = payload[0];
+    }
     pendingFrameReady = false;
   }
 }
