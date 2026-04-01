@@ -120,7 +120,10 @@ def main():
 
   # Startup scene
   startup = state_manager.current_scene or display_conf.get('startup_scene', 'rainbow_rotate')
-  renderer.set_scene(startup, state_manager.current_params)
+  if not renderer.activate_scene(startup, state_manager.current_params, media_manager=media_manager):
+    fallback = display_conf.get('startup_scene', 'rainbow_rotate')
+    logger.warning(f"Failed to restore scene '{startup}', falling back to '{fallback}'")
+    renderer.set_scene(fallback)
 
   # Create app
   app = create_app(
