@@ -264,11 +264,8 @@ void sendCaps() {
   payload[18] = LEDS_PER_STRIP & 0xFF;
   payload[19] = (LEDS_PER_STRIP >> 8) & 0xFF;
 
-  // Color order
-  const char* orderStr = "GRB";
-  if (colorOrder == COLOR_ORDER_RGB) orderStr = "RGB";
-  if (colorOrder == COLOR_ORDER_BRG) orderStr = "BRG";
-  strncpy((char*)payload + 20, orderStr, 4);
+  // Color order (compile-time: WS2811_GRB)
+  strncpy((char*)payload + 20, "GRB", 4);
 
   sendPacket(PKT_CAPS, payload, sizeof(payload));
 }
