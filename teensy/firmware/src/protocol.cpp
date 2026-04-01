@@ -58,32 +58,51 @@ uint32_t crc32(const uint8_t* data, size_t len) {
 
 // --- COBS encoder ---
 size_t cobs_encode(const uint8_t* input, size_t len, uint8_t* output, size_t max_out) {
-  size_t out_idx = 0;
-  size_t read_idx = 0;
+    size_t out_idx = 0;
+    size_t read_idx = 0;
 
-  while (read_idx <= len) {
-    size_t block_start = read_idx;
-    // Scan for next zero or end of input
-    while (read_idx < len && input[read_idx] != 0 && (read_idx - block_start) < 254) {
-      read_idx++;
+    while (read_idx < len) {
+        size_t block_start = read_idx;
+        // Scan for next zero or 254-byte limit
+        while (read_idx < len && input[read_idx] != 0 && (read_idx - block_start) < 254) {
+            read_idx++;
+        }
+
+        size_t block_len = read_idx - block_start;
+
+        if (block_len == 254 && (read_idx >= len || input[read_idx] != 0)) {
+            // Non-zero run hit 254 limit — emit 0xFF continuation
+            if (out_idx >= max_out) return 0;
+            output[out_idx++] = 0xFF;
+            for (size_t i = 0; i < block_len; i++) {
+                if (out_idx >= max_out) return 0;
+                output[out_idx++] = input[block_start + i];
+            }
+            // Do not consume a zero — continue scanning
+        } else {
+            // Normal block ended by zero or end of input
+            if (out_idx >= max_out) return 0;
+            output[out_idx++] = (uint8_t)(block_len + 1);
+            for (size_t i = 0; i < block_len; i++) {
+                if (out_idx >= max_out) return 0;
+                output[out_idx++] = input[block_start + i];
+            }
+            // Consume zero if present
+            if (read_idx < len && input[read_idx] == 0) {
+                read_idx++;
+            } else {
+                break; // End of input
+            }
+        }
     }
 
-    size_t block_len = read_idx - block_start;
-    if (out_idx >= max_out) return 0;
-    output[out_idx++] = (uint8_t)(block_len + 1);
-
-    for (size_t i = 0; i < block_len; i++) {
-      if (out_idx >= max_out) return 0;
-      output[out_idx++] = input[block_start + i];
+    // Handle empty input or input that ends at a block boundary
+    if (len == 0) {
+        if (out_idx >= max_out) return 0;
+        output[out_idx++] = 0x01;
     }
 
-    if (read_idx < len && input[read_idx] == 0) {
-      read_idx++;
-    } else {
-      break;
-    }
-  }
-  return out_idx;
+    return out_idx;
 }
 
 // --- Packet verification ---
