@@ -327,14 +327,32 @@ class CylinderRotate(Effect):
   def render(self, t: float, state) -> np.ndarray:
     elapsed = self.elapsed(t)
     speed = self.params.get('speed', 1.0)
-    frame = np.zeros((self.width, self.height, 3), dtype=np.uint8)
 
-    for x in range(self.width):
-      hue = ((x / self.width) + elapsed * speed * 0.1) % 1.0
-      for y in range(self.height):
-        v = (math.sin(y / self.height * math.pi * 4 + elapsed) + 1.0) / 2.0
-        r, g, b = hsv_to_rgb(hue, 0.9, v)
-        frame[x, y] = (r, g, b)
+    xs = np.arange(self.width, dtype=np.float64) / self.width
+    ys = np.arange(self.height, dtype=np.float64)
+    xx, yy = np.meshgrid(xs, ys, indexing='ij')
+
+    hue = (xx + elapsed * speed * 0.1) % 1.0
+    val = (np.sin(yy / self.height * math.pi * 4 + elapsed) + 1.0) / 2.0
+
+    # Per-pixel v requires manual vectorized HSV→RGB
+    s = 0.9
+    h = hue % 1.0
+    i = (h * 6.0).astype(int) % 6
+    f = h * 6.0 - (h * 6.0).astype(int)
+
+    p = val * (1.0 - s)
+    q = val * (1.0 - s * f)
+    t_val = val * (1.0 - s * (1.0 - f))
+
+    rc = np.where(i == 0, val, np.where(i == 1, q, np.where(i == 2, p, np.where(i == 3, p, np.where(i == 4, t_val, val)))))
+    gc = np.where(i == 0, t_val, np.where(i == 1, val, np.where(i == 2, val, np.where(i == 3, q, np.where(i == 4, p, p)))))
+    bc = np.where(i == 0, p, np.where(i == 1, p, np.where(i == 2, t_val, np.where(i == 3, val, np.where(i == 4, val, q)))))
+
+    frame = np.zeros((self.width, self.height, 3), dtype=np.uint8)
+    frame[..., 0] = (rc * 255).astype(np.uint8)
+    frame[..., 1] = (gc * 255).astype(np.uint8)
+    frame[..., 2] = (bc * 255).astype(np.uint8)
     return frame
 
 
