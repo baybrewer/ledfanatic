@@ -83,7 +83,6 @@ class Plasma(Effect):
     elapsed = self.elapsed(t)
     speed = self.params.get('speed', 1.0)
     scale = self.params.get('scale', 2.0)
-    frame = np.zeros((self.width, self.height, 3), dtype=np.uint8)
 
     tt = elapsed * speed
 
