@@ -156,7 +156,6 @@ void handlePacket(const uint8_t* data, size_t len) {
       break;
 
     case PKT_PING:
-      sendPong();
       sendStats();
       break;
 
