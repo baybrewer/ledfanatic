@@ -109,8 +109,8 @@ class StateManager:
     self.mark_dirty()
 
   @property
-  def brightness_auto_enabled(self) -> bool:
-    return self._state.get('brightness_auto_enabled', False)
+  def brightness_auto_enabled(self) -> Optional[bool]:
+    return self._state.get('brightness_auto_enabled')
 
   @brightness_auto_enabled.setter
   def brightness_auto_enabled(self, value: bool):
