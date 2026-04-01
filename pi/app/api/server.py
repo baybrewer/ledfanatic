@@ -62,8 +62,8 @@ class TestPatternRequest(BaseModel):
 
 class AudioConfigRequest(BaseModel):
   device_index: Optional[int] = None
-  sensitivity: float = 1.0
-  gain: float = 1.0
+  sensitivity: Optional[float] = None
+  gain: Optional[float] = None
 
 
 def create_app(
