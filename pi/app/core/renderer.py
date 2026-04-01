@@ -79,6 +79,7 @@ class RenderState:
       'frames_sent': self.frames_sent,
       'frames_dropped': self.frames_dropped,
       'last_frame_time_ms': round(self.last_frame_time_ms, 2),
+      'render_cost_ms': round(self.render_cost_ms, 2),
       'audio_level': round(self.audio_level, 3),
       'audio_beat': self.audio_beat,
     }
