@@ -247,15 +247,12 @@ def create_app(
   async def play_media(item_id: str, loop: bool = True, speed: float = 1.0):
     if item_id not in media_manager.items:
       raise HTTPException(404, f"Media not found: {item_id}")
-    params = {'item_id': item_id, 'loop': loop, 'speed': speed}
-    effect = MediaPlayback(
-      width=renderer.internal_width,
-      height=172,
-      params=params,
-      media_manager=media_manager,
+    params = {'loop': loop, 'speed': speed}
+    success = renderer.activate_scene(
+      f"media:{item_id}", params, media_manager=media_manager,
     )
-    renderer.current_effect = effect
-    render_state.current_scene = f"media:{item_id}"
+    if not success:
+      raise HTTPException(500, f"Failed to activate media: {item_id}")
     await broadcast_state()
     return {"status": "playing", "item_id": item_id}
 
