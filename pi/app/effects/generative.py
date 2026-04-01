@@ -240,43 +240,60 @@ class Scanline(Effect):
 
 
 class Fire(Effect):
-  """Fire-like effect rising from the bottom."""
+  """Fire-like effect rising from the bottom. Fully vectorized."""
 
   def __init__(self, *args, **kwargs):
     super().__init__(*args, **kwargs)
     self._heat = np.zeros((self.width, self.height), dtype=np.float64)
+    self._rng = np.random.default_rng(42)
 
   def render(self, t: float, state) -> np.ndarray:
     cooling = self.params.get('cooling', 55)
     sparking = self.params.get('sparking', 120)
+
+    # Cool down: random cooling per pixel
+    cool_amount = self._rng.integers(
+      0, max(1, (cooling * 10) // self.height + 2),
+      size=(self.width, self.height)
+    ) / 255.0
+    self._heat = np.maximum(0, self._heat - cool_amount)
+
+    # Heat rises: shift upward with averaging
+    # heat[y] = avg(heat[y-1], heat[y-2], heat[y-2]) for y >= 3
+    shifted = np.zeros_like(self._heat)
+    shifted[:, 3:] = (
+      self._heat[:, 2:-1] +
+      self._heat[:, 1:-2] +
+      self._heat[:, 1:-2]
+    ) / 3.0
+    shifted[:, :3] = self._heat[:, :3]
+    self._heat = shifted
+
+    # Sparks at bottom
+    spark_mask = self._rng.integers(0, 255, size=self.width) < sparking
+    for x in np.where(spark_mask)[0]:
+      y = self._rng.integers(0, min(7, self.height))
+      self._heat[x, y] = min(1.0, self._heat[x, y] + 0.4 + self._rng.random() * 0.4)
+
+    # Vectorized heat-to-color mapping
+    h = self._heat
     frame = np.zeros((self.width, self.height, 3), dtype=np.uint8)
 
-    for x in range(self.width):
-      # Cool down
-      for y in range(self.height):
-        cooldown = np.random.randint(0, max(1, (cooling * 10) // self.height + 2))
-        self._heat[x, y] = max(0, self._heat[x, y] - cooldown / 255.0)
+    # Region 1: h < 0.33 — black to red
+    mask1 = h < 0.33
+    frame[..., 0] = np.where(mask1, np.clip(h * 3 * 255, 0, 255), frame[..., 0])
 
-      # Heat rises
-      for y in range(self.height - 1, 2, -1):
-        self._heat[x, y] = (self._heat[x, y-1] + self._heat[x, y-2] + self._heat[x, y-2]) / 3.0
+    # Region 2: 0.33 <= h < 0.66 — red to yellow
+    mask2 = (h >= 0.33) & (h < 0.66)
+    frame[..., 0] = np.where(mask2, 255, frame[..., 0])
+    frame[..., 1] = np.where(mask2, np.clip((h - 0.33) * 3 * 255, 0, 255), frame[..., 1])
 
-      # Sparks at bottom
-      if np.random.randint(0, 255) < sparking:
-        y = np.random.randint(0, min(7, self.height))
-        self._heat[x, y] = min(1.0, self._heat[x, y] + 0.4 + np.random.random() * 0.4)
+    # Region 3: h >= 0.66 — yellow to white
+    mask3 = h >= 0.66
+    frame[..., 0] = np.where(mask3, 255, frame[..., 0])
+    frame[..., 1] = np.where(mask3, 255, frame[..., 1])
+    frame[..., 2] = np.where(mask3, np.clip((h - 0.66) * 3 * 255, 0, 255), frame[..., 2])
 
-    # Map heat to color
-    for x in range(self.width):
-      for y in range(self.height):
-        h = self._heat[x, y]
-        if h < 0.33:
-          r, g, b = min(255, max(0, int(h * 3 * 255))), 0, 0
-        elif h < 0.66:
-          r, g, b = 255, min(255, max(0, int((h - 0.33) * 3 * 255))), 0
-        else:
-          r, g, b = 255, 255, min(255, max(0, int((h - 0.66) * 3 * 255)))
-        frame[x, y] = (r, g, b)
     return frame
 
 
