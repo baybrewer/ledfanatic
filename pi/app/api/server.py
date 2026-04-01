@@ -364,7 +364,7 @@ def create_app(
           await asyncio.sleep(0.5)
         except asyncio.CancelledError:
           break
-    asyncio.create_task(periodic_broadcast())
+    app.state.broadcast_task = asyncio.create_task(periodic_broadcast())
 
   # --- Static files ---
 
