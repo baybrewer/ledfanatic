@@ -271,11 +271,11 @@ class Fire(Effect):
       for y in range(self.height):
         h = self._heat[x, y]
         if h < 0.33:
-          r, g, b = int(h * 3 * 255), 0, 0
+          r, g, b = min(255, max(0, int(h * 3 * 255))), 0, 0
         elif h < 0.66:
-          r, g, b = 255, int((h - 0.33) * 3 * 255), 0
+          r, g, b = 255, min(255, max(0, int((h - 0.33) * 3 * 255))), 0
         else:
-          r, g, b = 255, 255, int((h - 0.66) * 3 * 255)
+          r, g, b = 255, 255, min(255, max(0, int((h - 0.66) * 3 * 255)))
         frame[x, y] = (r, g, b)
     return frame
 
