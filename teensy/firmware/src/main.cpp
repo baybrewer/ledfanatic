@@ -282,10 +282,6 @@ void sendStats() {
   sendPacket(PKT_STATS, payload, sizeof(payload));
 }
 
-void sendPong() {
-  sendPacket(PKT_PONG, nullptr, 0);
-}
-
 void sendPacket(uint8_t type, const uint8_t* payload, size_t len) {
   uint8_t raw[HEADER_SIZE + 128 + CRC_SIZE];
   size_t rawLen = build_packet(type, payload, len, raw, sizeof(raw));
