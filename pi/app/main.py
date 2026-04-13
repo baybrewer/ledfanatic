@@ -20,7 +20,7 @@ from .media.manager import MediaManager
 from .audio.analyzer import AudioAnalyzer
 from .effects.generative import EFFECTS
 from .effects.audio_reactive import AUDIO_EFFECTS
-from .diagnostics.tests import DIAGNOSTIC_EFFECTS
+from .diagnostics.patterns import DIAGNOSTIC_EFFECTS
 
 DEV_MODE = os.environ.get('PILLAR_DEV', '').strip() == '1'
 
@@ -123,7 +123,7 @@ def main():
   if not renderer.activate_scene(startup, state_manager.current_params, media_manager=media_manager):
     fallback = display_conf.get('startup_scene', 'rainbow_rotate')
     logger.warning(f"Failed to restore scene '{startup}', falling back to '{fallback}'")
-    renderer.set_scene(fallback)
+    renderer.activate_scene(fallback)
 
   # Create app
   app = create_app(

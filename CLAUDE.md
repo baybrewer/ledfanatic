@@ -11,13 +11,15 @@ LED pillar controller: Raspberry Pi + Teensy 4.1 + OctoWS2811.
 ## SSOT enforcement
 - `pi/config/hardware.yaml` — physical layout (strips, channels, LEDs)
 - `pi/app/hardware_constants.py` — Python constants loaded from hardware.yaml
-- `teensy/firmware/include/config.h` — Teensy constants (validated by tests)
+- `teensy/firmware/include/config.h` — Teensy constants (validated by tests, regenerable via `pi/scripts/generate_teensy_config.py`)
 - `pi/app/models/protocol.py` — protocol packet types, payload schemas, constants
 - `pi/config/effects.yaml` — effect defaults and palettes (merged into renderer)
 
 ## Key modules
 - `pi/app/main.py` — entry point, lifecycle, startup/shutdown
-- `pi/app/api/server.py` — FastAPI REST + WebSocket + auth
+- `pi/app/api/server.py` — app factory and router composition
+- `pi/app/api/routes/` — route modules (system, scenes, brightness, media, audio, diagnostics, transport, ws)
+- `pi/app/api/schemas.py` — Pydantic request/response models
 - `pi/app/api/auth.py` — centralized Bearer token auth (fail-closed)
 - `pi/app/core/renderer.py` — render loop, scene activation, effects config merge
 - `pi/app/core/brightness.py` — brightness engine + solar automation (astral)
@@ -73,7 +75,7 @@ PILLAR_DEV=1 python -m app.main  # starts on :8000
 ```bash
 cd pi
 source .venv/bin/activate
-PYTHONPATH=. pytest tests/ -v  # 104 tests
+PYTHONPATH=. pytest tests/ -v  # ~219 tests
 ```
 
 ## Deploying to Pi
@@ -89,3 +91,6 @@ pi/scripts/deploy.sh pillar.local  # updates (rsync + pip install + restart)
 - Scene activation goes through renderer.activate_scene() for all types
 - Serial I/O protected by asyncio.Lock; send_frame uses asyncio.to_thread
 - State saves are debounced (mark_dirty + periodic flush), force_save on shutdown
+- state.json and media metadata.json carry schema_version for migration safety
+- `docs/current-contracts.md` is the canonical human-readable contract reference
+- `docs/MASTER_SPEC.md` is a consolidated copy of planning docs — do not edit independently

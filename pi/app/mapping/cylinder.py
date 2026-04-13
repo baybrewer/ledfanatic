@@ -14,6 +14,12 @@ Electrical model:
   - CH0: S0 (bottom→top) + S1 (top→bottom)
   - CH1: S2 (bottom→top) + S3 (top→bottom)
   - etc.
+
+LIMITATION: This module hardcodes adjacent strip pairing (S0+S1, S2+S3, ...)
+and even/odd serpentine directions. hardware.yaml defines pairs, directions,
+and seam_position fields, but they are NOT consumed here. The mapping is
+correct for the current physical hardware. Making it config-driven is a
+backlog item — see docs/current-contracts.md §5.
 """
 
 import numpy as np
@@ -115,6 +121,9 @@ def map_frame_fast(logical_frame: np.ndarray) -> np.ndarray:
 def serialize_channels(channel_data: np.ndarray) -> bytes:
   """
   Serialize channel data to bytes for USB transport.
+
+  Data is sent as RGB triplets. The Teensy firmware configures OctoWS2811
+  with WS2811_GRB, which handles the RGB->GRB reorder internally.
 
   channel_data: shape (CHANNELS, LEDS_PER_CHANNEL, 3) uint8
   Returns: channel-major RGB bytes, CHANNELS * LEDS_PER_CHANNEL * 3 bytes

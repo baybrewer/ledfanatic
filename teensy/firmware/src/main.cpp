@@ -13,7 +13,7 @@
 // --- OctoWS2811 setup ---
 DMAMEM int displayMemory[LEDS_PER_STRIP * 6];
 int drawingMemory[LEDS_PER_STRIP * 6];
-const int octoConfig = WS2811_GRB | WS2811_800kHz;
+const int octoConfig = WS2811_BGR | WS2811_800kHz;
 OctoWS2811 leds(LEDS_PER_STRIP, displayMemory, drawingMemory, octoConfig);
 
 // --- State ---
@@ -224,7 +224,7 @@ void handleFrame(const uint8_t* payload, size_t len) {
 }
 
 void handleConfig(const uint8_t* payload, size_t len) {
-  // Color order is compile-time (WS2811_GRB in OctoWS2811 config) — no-op
+  // Color order is compile-time (WS2811_BGR in OctoWS2811 config) — no-op
   (void)payload;
   (void)len;
 }
@@ -264,8 +264,8 @@ void sendCaps() {
   payload[18] = LEDS_PER_STRIP & 0xFF;
   payload[19] = (LEDS_PER_STRIP >> 8) & 0xFF;
 
-  // Color order (compile-time: WS2811_GRB)
-  strncpy((char*)payload + 20, "GRB", 4);
+  // Color order (compile-time: WS2811_BGR)
+  strncpy((char*)payload + 20, "BGR", 4);
 
   sendPacket(PKT_CAPS, payload, sizeof(payload));
 }

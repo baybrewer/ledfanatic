@@ -75,7 +75,7 @@ So the example is a **reference**, not the final architecture.
 2. Pi networking stack brings up hotspot / AP profile.
 3. Pi application service starts.
 4. Pi opens USB connection to Teensy.
-5. Pi sends a `HELLO` / `CONFIG` packet.
+5. Pi sends a `HELLO` packet; Teensy replies with `CAPS`. (`CONFIG` exists as a packet type but is currently a no-op in firmware.)
 6. Teensy responds with firmware + capability info.
 7. UI becomes reachable from phone.
 8. Last-used scene autostarts after a short delay.

@@ -165,6 +165,8 @@ This is enough.
 - playlist builder
 - autoplay / schedule hooks
 
+> **Implementation note (v1):** Playlist builder, autoplay/schedule hooks, Wi-Fi settings UI, and client-mode Wi-Fi UX are backlog items not yet implemented. See §5.18 Backlog.
+
 #### 7. System
 - Wi-Fi settings
 - hostname / mDNS
@@ -321,25 +323,50 @@ It should not block the frame loop.
 ### Suggested layout
 ```text
 /opt/pillar/
-  app/
-  ui/
-  config/
-  media/
-  cache/
-  logs/
+  src/       # pi/ source tree, installed editable
+  venv/      # Python virtual environment
+  config/    # system.yaml, hardware.yaml, effects.yaml
+  media/     # uploaded media files
+  cache/     # transcoded frame cache
+  logs/      # application logs
 ```
 
 ## 5.12 API design
 
-### Control API classes
-- `/api/system/*`
-- `/api/scenes/*`
-- `/api/effects/*`
-- `/api/media/*`
-- `/api/audio/*`
-- `/api/mapping/*`
-- `/api/diagnostics/*`
-- `/api/transport/*`
+### Current v1 route table
+
+| Method | Path | Purpose | Auth |
+|---|---|---|---|
+| GET | `/api/system/status` | overall status | public |
+| POST | `/api/system/reboot` | reboot host | protected |
+| POST | `/api/system/restart-app` | restart systemd service | protected |
+| GET | `/api/scenes/list` | list effects by category | public |
+| POST | `/api/scenes/activate` | activate non-media scene | protected |
+| GET | `/api/scenes/presets` | list saved presets | public |
+| POST | `/api/scenes/presets/save` | save preset | protected |
+| POST | `/api/scenes/presets/load/{name}` | load preset | protected |
+| DELETE | `/api/scenes/presets/{name}` | delete preset | protected |
+| GET | `/api/brightness/status` | brightness state | public |
+| POST | `/api/brightness/config` | set brightness/solar config | protected |
+| POST | `/api/display/brightness` | legacy brightness endpoint | protected |
+| POST | `/api/display/fps` | set FPS | protected |
+| POST | `/api/display/blackout` | set blackout | protected |
+| GET | `/api/media/list` | list media | public |
+| POST | `/api/media/upload` | upload/import media | protected |
+| POST | `/api/media/play/{item_id}` | play media item | protected |
+| DELETE | `/api/media/{item_id}` | delete media item | protected |
+| GET | `/api/audio/devices` | list audio devices | public |
+| POST | `/api/audio/config` | configure audio analyzer | protected |
+| POST | `/api/audio/start` | start audio analyzer | protected |
+| POST | `/api/audio/stop` | stop audio analyzer | protected |
+| POST | `/api/diagnostics/test-pattern` | run diagnostic pattern | protected |
+| POST | `/api/diagnostics/clear` | clear diagnostic mode | protected |
+| GET | `/api/diagnostics/stats` | combined diagnostics/stats | public |
+| GET | `/api/transport/status` | transport status | public |
+| WS | `/ws` | websocket state channel | public |
+| GET | `/` | static UI root | public |
+
+> **Note:** `/api/display/brightness` is a legacy compatibility endpoint. `/api/effects/*` and `/api/mapping/*` do not exist in v1. See backlog section for planned future routes.
 
 ### Live updates
 Use WebSocket for:
@@ -392,6 +419,20 @@ That means:
 4. Media upload/transcode must not block the live frame loop.
 5. USB disconnect/reconnect must self-heal.
 6. Mapping must be configurable in a file, not hard-coded in ten places.
+
+## 5.18 Backlog (not implemented in v1)
+
+The following features appear in the planning docs but are not yet implemented:
+
+- `/api/effects/*` — per-effect parameter API
+- `/api/mapping/*` — mapping configuration API
+- Playlist API/UI
+- Autoplay / scheduling
+- Wi-Fi settings API/UI (hotspot is provisioned by setup.sh, not runtime API)
+- Client-mode Wi-Fi UX
+- Captive portal
+- PWA install prompt
+- Scrolling text media mode
 
 ## References
 

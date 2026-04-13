@@ -110,7 +110,7 @@ class Renderer:
   def register_effect(self, name: str, effect_class):
     self.effect_registry[name] = effect_class
 
-  def set_scene(self, scene_name: str, params: Optional[dict] = None):
+  def _set_scene(self, scene_name: str, params: Optional[dict] = None):
     if scene_name not in self.effect_registry:
       logger.warning(f"Unknown effect: {scene_name}")
       return False
@@ -152,7 +152,7 @@ class Renderer:
         self.state.current_scene = scene_name
         return True
       return False
-    return self.set_scene(scene_name, params)
+    return self._set_scene(scene_name, params)
 
   async def run(self):
     """Main render loop."""

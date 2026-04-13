@@ -28,7 +28,7 @@ pillar:
     odd_strip_direction: "top_to_bottom"
     seam_position: [9, 0]  # wrap boundary between S9 and S0
 
-  color_order: "GRB"
+  color_order: "BGR"
 
   # OctoWS2811 pin assignments (Teensy 4.1 defaults)
   octo_pins: [2, 14, 7, 8, 6, 20, 21, 5]

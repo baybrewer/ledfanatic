@@ -1,5 +1,10 @@
 #pragma once
 
+// LED geometry values must match pi/config/hardware.yaml.
+// To regenerate after changing hardware.yaml:
+//   python3 pi/scripts/generate_teensy_config.py
+// Cross-language validation: pi/tests/test_protocol.py::TestHardwareConstants
+
 // --- LED Configuration ---
 #define LEDS_PER_STRIP    344   // 2 × 172 LEDs per serpentine pair
 #define ACTIVE_OUTPUTS    5     // 5 serpentine pairs
@@ -53,9 +58,10 @@
 #define COLOR_ORDER_RGB  0
 #define COLOR_ORDER_GRB  1
 #define COLOR_ORDER_BRG  2
+#define COLOR_ORDER_BGR  5
 
-// Default color order for WS2812B
-#define DEFAULT_COLOR_ORDER  COLOR_ORDER_GRB
+// Default color order — determined by physical strip testing
+#define DEFAULT_COLOR_ORDER  COLOR_ORDER_BGR
 
 // --- Firmware info ---
 #define FIRMWARE_VERSION "1.0.0"

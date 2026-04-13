@@ -16,6 +16,8 @@ from datetime import datetime
 
 logger = logging.getLogger(__name__)
 
+STATE_SCHEMA_VERSION = 1
+
 
 class StateManager:
   def __init__(self, config_dir: Path):
@@ -25,6 +27,7 @@ class StateManager:
     # target_fps, gamma) are intentionally omitted so config file values
     # aren't overridden by hardcoded defaults on first load.
     self._state: dict = {
+      'schema_version': STATE_SCHEMA_VERSION,
       'current_scene': None,
       'current_params': {},
       'blackout': False,
@@ -37,15 +40,23 @@ class StateManager:
     self.config_dir.mkdir(parents=True, exist_ok=True)
 
   def load(self):
-    """Load state from disk."""
+    """Load state from disk, migrating legacy (unversioned) files."""
     if self.state_file.exists():
       try:
         with open(self.state_file) as f:
           saved = json.load(f)
+        self._migrate(saved)
         self._state.update(saved)
         logger.info(f"State loaded from {self.state_file}")
       except Exception as e:
         logger.error(f"Failed to load state: {e}")
+
+  def _migrate(self, data: dict):
+    """Migrate legacy state data to the current schema."""
+    if 'schema_version' not in data:
+      # Legacy v0 -> v1: just stamp the version
+      data['schema_version'] = STATE_SCHEMA_VERSION
+      logger.info("Migrated state.json from unversioned to v1")
 
   def _atomic_write(self):
     """Atomically save state to disk."""

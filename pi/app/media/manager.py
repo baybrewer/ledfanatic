@@ -22,6 +22,7 @@ MEDIA_DIR = Path("/opt/pillar/media")
 CACHE_DIR = Path("/opt/pillar/cache")
 VIRTUAL_WIDTH = 40
 HEIGHT = 172
+MEDIA_SCHEMA_VERSION = 1
 
 
 class MediaItem:
@@ -111,6 +112,7 @@ class MediaManager:
     np.save(cache_path / "frame_0000.npy", frame)
 
     meta = {
+      'schema_version': MEDIA_SCHEMA_VERSION,
       'id': item_id,
       'name': name,
       'type': 'image',
@@ -156,6 +158,7 @@ class MediaManager:
     fps = min(60, 1000.0 / max(10, duration))
 
     meta = {
+      'schema_version': MEDIA_SCHEMA_VERSION,
       'id': item_id,
       'name': name,
       'type': 'gif',
@@ -204,6 +207,7 @@ class MediaManager:
     container.close()
 
     meta = {
+      'schema_version': MEDIA_SCHEMA_VERSION,
       'id': item_id,
       'name': name,
       'type': 'video',

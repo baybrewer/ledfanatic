@@ -246,6 +246,137 @@ class TestCOBSGoldenVectors:
     assert result[0].packet_type == PacketType.PING
 
 
+class TestProtocolContracts:
+  """Lock the exact protocol contracts that must not change without
+  coordinated updates across Pi code, Teensy code, tests, and docs."""
+
+  def test_header_size_is_24_bytes(self):
+    assert HEADER_SIZE == 24
+
+  def test_crc_size_is_4_bytes(self):
+    assert CRC_SIZE == 4
+
+  def test_magic_is_pill(self):
+    assert MAGIC == b'PILL'
+
+  def test_protocol_version_is_1(self):
+    from app.models.protocol import PROTOCOL_VERSION
+    assert PROTOCOL_VERSION == 1
+
+  def test_header_struct_format(self):
+    """Header must pack as: magic(4) + ver(1) + type(1) + flags(2) +
+    frame_id(4) + timestamp_us(8) + payload_len(4) = 24 bytes."""
+    from app.models.protocol import pack_header, PacketHeader
+    header = PacketHeader(
+      version=1, packet_type=0x10, flags=0,
+      frame_id=1, timestamp_us=0, payload_len=0,
+    )
+    packed = pack_header(header)
+    assert len(packed) == 24
+    # Verify magic at start
+    assert packed[:4] == b'PILL'
+    # Verify version byte
+    assert packed[4] == 1
+    # Verify type byte
+    assert packed[5] == 0x10
+
+  def test_frame_payload_has_3_byte_meta(self):
+    """FRAME payload starts with channels(1) + leds_per_channel(2)."""
+    pixels = b'\x00' * 30
+    payload = build_frame_payload(5, 344, pixels)
+    # First byte: channels
+    assert payload[0] == 5
+    # Next 2 bytes: leds_per_channel (little-endian uint16)
+    lpc = struct.unpack('<H', payload[1:3])[0]
+    assert lpc == 344
+    # Rest is pixel data
+    assert payload[3:] == pixels
+
+  def test_hello_yields_caps_packet_types(self):
+    """HELLO type is 0x01, CAPS type is 0x02."""
+    assert PacketType.HELLO == 0x01
+    assert PacketType.CAPS == 0x02
+
+  def test_ping_yields_stats_packet_types(self):
+    """PING type is 0x20, STATS type is 0x30. PONG (0x21) exists but is unused."""
+    assert PacketType.PING == 0x20
+    assert PacketType.STATS == 0x30
+    assert PacketType.PONG == 0x21  # reserved/unused
+
+  def test_caps_payload_size_is_56(self):
+    from app.models.protocol import CAPS_PAYLOAD_SIZE
+    assert CAPS_PAYLOAD_SIZE == 56
+
+  def test_stats_payload_size_is_28(self):
+    assert STATS_PAYLOAD_SIZE == 28
+
+  def test_stats_struct_is_7_uint32(self):
+    """STATS payload: 7 x uint32 little-endian."""
+    assert STATS_STRUCT_FMT == '<IIIIIII'
+    assert struct.calcsize(STATS_STRUCT_FMT) == 28
+
+  def test_blackout_semantics_explicit(self):
+    """Blackout is explicit: 0x01=on, 0x00=off, never toggle."""
+    on = build_blackout_payload(True)
+    off = build_blackout_payload(False)
+    assert on == b'\x01'
+    assert off == b'\x00'
+
+  def test_test_pattern_clear_is_0xff(self):
+    from app.models.protocol import TestPattern
+    assert TestPattern.CLEAR == 0xFF
+
+  def test_hello_payload_size_is_48(self):
+    from app.models.protocol import HELLO_PAYLOAD_SIZE
+    assert HELLO_PAYLOAD_SIZE == 48
+    payload = build_hello_payload()
+    assert len(payload) == HELLO_PAYLOAD_SIZE
+
+  def test_all_packet_types_defined(self):
+    """All shipped packet types exist with correct values."""
+    assert PacketType.HELLO == 0x01
+    assert PacketType.CAPS == 0x02
+    assert PacketType.CONFIG == 0x03
+    assert PacketType.FRAME == 0x10
+    assert PacketType.PING == 0x20
+    assert PacketType.PONG == 0x21
+    assert PacketType.STATS == 0x30
+    assert PacketType.TEST_PATTERN == 0x40
+    assert PacketType.BLACKOUT == 0x41
+    assert PacketType.BRIGHTNESS == 0x42
+    assert PacketType.REBOOT_TO_BOOTLOADER == 0xFF
+
+  def test_caps_payload_field_offsets(self):
+    """Verify CAPS payload field positions match firmware."""
+    payload = bytearray(56)
+    payload[:7] = b'1.0.0\x00\x00'  # firmware_version at offset 0..15
+    payload[16] = 1                  # protocol_version at offset 16
+    payload[17] = 5                  # outputs at offset 17
+    struct.pack_into('<H', payload, 18, 344)  # leds_per_strip at offset 18..19
+    payload[20:23] = b'GRB'          # color_order at offset 20..23
+
+    caps = parse_caps_payload(bytes(payload))
+    assert caps['firmware_version'] == '1.0.0'
+    assert caps['protocol_version'] == 1
+    assert caps['outputs'] == 5
+    assert caps['leds_per_strip'] == 344
+    assert caps['color_order'] == 'GRB'
+
+  def test_stats_payload_field_order(self):
+    """STATS fields: uptime_ms, frames_received, frames_applied,
+    bad_crc, bad_frame, dropped_pending, output_fps."""
+    values = (99, 88, 77, 66, 55, 44, 33)
+    payload = struct.pack(STATS_STRUCT_FMT, *values)
+    result = parse_stats_payload(payload)
+    assert result['uptime_ms'] == 99
+    assert result['frames_received'] == 88
+    assert result['frames_applied'] == 77
+    assert result['bad_crc'] == 66
+    assert result['bad_frame'] == 55
+    assert result['dropped_pending'] == 44
+    assert result['output_fps'] == 33
+
+
 class TestHardwareConstants:
   def test_python_constants_match_yaml(self):
     from app.hardware_constants import STRIPS, LEDS_PER_STRIP, CHANNELS, LEDS_PER_CHANNEL

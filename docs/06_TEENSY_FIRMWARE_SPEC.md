@@ -111,20 +111,28 @@ Teensy replies:
 - active mapping mode
 - stats counters
 
-## 6.7 Suggested FRAME packet schema
+> **Current behavior:** `PING` returns `STATS` directly; `PONG` is defined but unused. Color order is compile-time GRB. `CONFIG` is defined as a packet type but `handleConfig()` in firmware is currently a no-op — runtime color-order configuration is a backlog item.
+
+## 6.7 Packet schema (shipped)
 
 ```text
-magic         4 bytes   e.g. 'PILL'
-version       1 byte
-type          1 byte    FRAME
-flags         2 bytes
-frame_id      4 bytes
-timestamp_us  8 bytes
-channels      1 byte    5
-leds_per_ch   2 bytes   344
-payload_len   4 bytes
-payload       N bytes   channel-major RGB data
-crc32         4 bytes
+HEADER (24 bytes):
+  magic           4 bytes   "PILL"
+  version         1 byte
+  type            1 byte
+  flags           2 bytes   little-endian uint16
+  frame_id        4 bytes   little-endian uint32
+  timestamp_us    8 bytes   little-endian uint64
+  payload_len     4 bytes   little-endian uint32
+
+PAYLOAD (for FRAME type):
+  channels        1 byte
+  leds_per_ch     2 bytes   little-endian uint16
+  pixel_data      N bytes   channel-major RGB triplets
+
+CRC32             4 bytes   over header + payload
+
+Packets are COBS-encoded with 0x00 as the delimiter.
 ```
 
 ### Payload order

@@ -4,32 +4,69 @@
 
 ```text
 pillar-controller/
-  README.md
-  docs/
+  CLAUDE.md
+  docs/                   # planning packet + current contracts
   pi/
+    pyproject.toml
     app/
+      __init__.py
+      main.py
       api/
+        __init__.py
+        auth.py
+        server.py
+        schemas.py          # (added during refactor)
+        routes/             # (added during refactor)
       audio/
+        __init__.py
+        analyzer.py
       core/
+        __init__.py
+        brightness.py
+        renderer.py
+        state.py
       diagnostics/
+        __init__.py
+        patterns.py         # (renamed from tests.py)
       effects/
+        __init__.py
+        base.py
+        generative.py
+        audio_reactive.py
+        media_playback.py
       mapping/
+        __init__.py
+        cylinder.py
       media/
+        __init__.py
+        manager.py
       models/
+        __init__.py
+        protocol.py
       transport/
+        __init__.py
+        usb.py
       ui/
+        static/
     config/
+      hardware.yaml
+      effects.yaml
+      system.yaml.example
     scripts/
+      setup.sh
+      deploy.sh
     systemd/
+      pillar.service
     tests/
   teensy/
     firmware/
+      platformio.ini
       src/
+        main.cpp
+        protocol.cpp
       include/
-      test/
-  tools/
-    asset_prep/
-    bench/
+        config.h
+        protocol.h
 ```
 
 ## 7.2 Build order

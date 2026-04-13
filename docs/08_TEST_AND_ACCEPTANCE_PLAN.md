@@ -40,7 +40,7 @@ Pass criteria:
 
 ### Test 5 — handshake
 - Pi connects
-- Teensy reports firmware + config
+- Teensy reports firmware + capabilities via CAPS response
 - UI shows connected status
 
 ### Test 6 — bad packet rejection
@@ -57,6 +57,15 @@ Unplug/replug USB.
 Pass criteria:
 - Pi reconnects automatically
 - playback resumes without operator SSH
+
+## 8.2.1 Contract tests (automated)
+
+The following automated test suites lock the current contracts:
+
+- **API contract tests** (`pi/tests/test_api_contract.py`): verify all routes exist, return stable response shapes, and enforce auth correctly. Aspirational routes (e.g. `/api/effects/*`) are explicitly tested to NOT exist.
+- **Protocol contract tests** (`pi/tests/test_protocol.py::TestProtocolContracts`): lock 24-byte header, 3-byte FRAME meta, packet type values, HELLO→CAPS / PING→STATS semantics, BLACKOUT explicit on/off, STATS 28-byte payload.
+- **Persistence migration tests** (`pi/tests/test_migrations.py`): verify unversioned state.json and metadata.json load and upgrade correctly.
+- **Hardware constant sync** (`pi/tests/test_protocol.py::TestHardwareConstants`): verify Python constants from hardware.yaml match Teensy config.h.
 
 ## 8.3 Performance tests
 

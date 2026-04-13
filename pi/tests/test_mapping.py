@@ -116,6 +116,7 @@ class TestSerializeChannels:
     assert len(result) == 5 * 344 * 3
 
   def test_byte_order(self):
+    """Bytes are RGB-ordered; OctoWS2811 firmware handles GRB reorder."""
     data = np.zeros((5, 344, 3), dtype=np.uint8)
     data[0, 0] = (10, 20, 30)
     result = serialize_channels(data)

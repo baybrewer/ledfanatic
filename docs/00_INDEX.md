@@ -1,5 +1,7 @@
 # LED Pillar Planning Packet
 
+**Note:** The numbered section files below are the authoring source for the planning packet. `MASTER_SPEC.md` is a consolidated copy and should not be edited independently — any changes should be made in the numbered files. The section docs describe the original design intent; where they conflict with shipped code, the shipped code and `docs/current-contracts.md` are authoritative.
+
 This packet is designed to be handed directly to Claude Code / Opus as the implementation specification for a Raspberry Pi + Teensy 4.1 + OctoWS2811 LED pillar controller.
 
 ## One-line conclusion

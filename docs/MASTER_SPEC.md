@@ -1,3 +1,7 @@
+<!-- THIS FILE IS A CONSOLIDATED COPY. DO NOT EDIT INDEPENDENTLY. -->
+<!-- The numbered section files (01–10) in this directory are the authoring source. -->
+<!-- For current shipped behavior, see docs/current-contracts.md -->
+
 # MASTER SPEC
 
 This is the consolidated version of the LED pillar planning packet.
