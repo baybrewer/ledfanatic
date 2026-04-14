@@ -3,7 +3,7 @@
 import struct
 from unittest.mock import MagicMock
 
-from app.api.routes.preview import PreviewService, FRAME_HEADER_FORMAT, MSG_TYPE_FRAME
+from app.preview.service import PreviewService, FRAME_HEADER_FORMAT, MSG_TYPE_FRAME
 
 
 def _make_renderer():

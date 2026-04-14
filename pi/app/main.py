@@ -25,6 +25,7 @@ from .config.installation import load_installation
 from .config.spatial_map import load_spatial_map
 from .setup.session import SetupSessionService
 from .mapping.runtime_plan import load_controller_profile, compile_output_plan
+from .preview.service import PreviewService
 
 DEV_MODE = os.environ.get('PILLAR_DEV', '').strip() == '1'
 
@@ -149,6 +150,9 @@ def main():
     state_manager=state_manager,
   )
 
+  # Preview service
+  preview_service = PreviewService(renderer)
+
   # Create app
   app = create_app(
     transport=transport,
@@ -161,6 +165,7 @@ def main():
     config=sys_conf,
     setup_session_service=setup_service,
     spatial_map=spatial_map,
+    preview_service=preview_service,
   )
 
   # Track background tasks for clean shutdown

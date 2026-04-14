@@ -8,24 +8,10 @@ that multiple imported effects need. No Pygame dependencies.
 import math
 import numpy as np
 
+from .base import hsv_to_rgb
 
-def hsv_to_rgb_fast(h: float, s: float, v: float) -> tuple[int, int, int]:
-  """Fast HSV to RGB conversion. h, s, v in [0, 1]."""
-  if s == 0:
-    val = int(v * 255)
-    return val, val, val
-  i = int(h * 6.0) % 6
-  f = (h * 6.0) - int(h * 6.0)
-  p = v * (1.0 - s)
-  q = v * (1.0 - s * f)
-  t = v * (1.0 - s * (1.0 - f))
-  if i == 0: r, g, b = v, t, p
-  elif i == 1: r, g, b = q, v, p
-  elif i == 2: r, g, b = p, v, t
-  elif i == 3: r, g, b = p, q, v
-  elif i == 4: r, g, b = t, p, v
-  else: r, g, b = v, p, q
-  return int(r * 255), int(g * 255), int(b * 255)
+# Re-export for imported effect code that references the old name
+hsv_to_rgb_fast = hsv_to_rgb
 
 
 def palette_lerp(colors: list[tuple], t: float) -> tuple[int, int, int]:

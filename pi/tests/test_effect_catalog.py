@@ -1,6 +1,6 @@
 """Tests for effect catalog service and scenes list compatibility."""
 
-from app.api.routes.effects import EffectCatalogService, EffectMeta
+from app.effects.catalog import EffectCatalogService, EffectMeta
 from app.effects.generative import EFFECTS
 from app.effects.audio_reactive import AUDIO_EFFECTS
 from app.diagnostics.patterns import DIAGNOSTIC_EFFECTS

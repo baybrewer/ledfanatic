@@ -129,7 +129,7 @@ def create_router(deps, require_auth, broadcast_state) -> APIRouter:
     if session is None or session.session_id != req.session_id:
       raise HTTPException(404, "No matching active session")
 
-    from ...setup.patterns import generate_setup_pattern
+    from ...setup.patterns import generate_setup_pattern, SetupPatternEffect
     color = tuple(req.color[:3]) if len(req.color) >= 3 else (255, 255, 255)
     frame = generate_setup_pattern(
       mode=req.mode,
@@ -138,6 +138,10 @@ def create_router(deps, require_auth, broadcast_state) -> APIRouter:
       all_others=req.all_others,
       use_compiled_color_order=req.use_compiled_color_order,
     )
+    # Inject a static frame effect into the renderer so LEDs actually show the pattern
+    pattern_effect = SetupPatternEffect(frame)
+    deps.renderer.current_effect = pattern_effect
+    deps.render_state.blackout = False
     svc.run_pattern({'mode': req.mode, 'targets': req.targets})
     return {"status": "pattern_active", "mode": req.mode}
 

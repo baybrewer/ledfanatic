@@ -9,6 +9,18 @@ import numpy as np
 from typing import Optional
 
 from ..hardware_constants import STRIPS, LEDS_PER_STRIP
+from ..effects.base import Effect
+
+
+class SetupPatternEffect(Effect):
+  """Lightweight effect that holds and replays a static setup pattern frame."""
+
+  def __init__(self, frame: np.ndarray):
+    super().__init__(width=frame.shape[0], height=frame.shape[1])
+    self._frame = frame
+
+  def render(self, t: float, state) -> np.ndarray:
+    return self._frame
 
 
 def generate_setup_pattern(
