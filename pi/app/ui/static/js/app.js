@@ -259,8 +259,9 @@ function initUpload() {
         showAuthBanner();
       } else if (res.status === 413) {
         alert('File too large');
-      } else {
-        const data = await res.json();
+      } else if (res.ok) {
+        const ct = res.headers.get('content-type') || '';
+        const data = ct.includes('application/json') ? await res.json() : { status: 'ok' };
         if (data.status === 'ok') {
           input.value = '';
           loadMedia();
