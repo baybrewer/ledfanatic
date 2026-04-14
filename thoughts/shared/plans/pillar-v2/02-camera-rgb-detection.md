@@ -16,12 +16,12 @@ via the strip config API (F1).
 
 1. Navigate to **System → Setup** sub-panel
 2. Tap **"Auto-detect RGB Order"** button
-3. A full-screen camera wizard modal opens:
+3. A full-screen camera wizard modal opens (shared `CameraWizard` component):
    - Instruction: "Point your camera at the LED pillar and hold steady"
    - Live camera preview (`<video>` element)
    - "Start Detection" button
 4. User taps "Start Detection". For each strip (0–9):
-   a. System lights strip N in **pure red** (all other strips off)
+   a. System lights strip N in **pure red** via `POST /api/setup/set-leds`
    b. Wait 600ms for camera auto-exposure to settle
    c. Capture frame, analyze dominant color in bright region
    d. Repeat for **pure green** and **pure blue**
@@ -35,124 +35,153 @@ via the strip config API (F1).
 
 ---
 
-## Camera Access
+## Camera Access (Shared with F5)
 
-### API: `navigator.mediaDevices.getUserMedia()`
+### Shared `CameraWizard` JS Component
+
+Both F4 (RGB detection) and F5 (spatial mapping) need phone camera access.
+Instead of duplicating, build a reusable component:
 
 ```javascript
-const stream = await navigator.mediaDevices.getUserMedia({
-  video: {
-    facingMode: { ideal: 'environment' },  // rear camera
-    width: { ideal: 1280 },
-    height: { ideal: 720 },
+class CameraWizard {
+  constructor(videoElement, options = {}) {
+    this.video = videoElement;
+    this.stream = null;
+    this.facingMode = options.facingMode || 'environment';
+    this.resolution = options.resolution || { width: 1280, height: 720 };
   }
-});
-const video = document.getElementById('camera-preview');
-video.srcObject = stream;
-```
 
-**Requirements:**
-- HTTPS or localhost (getUserMedia requires secure context)
-- The local WiFi portal at `http://pillar.local` is NOT secure context
-- **Solution**: The Pi must serve the portal over HTTPS with a self-signed cert,
-  OR the user accesses via `http://localhost` (not applicable for remote device).
+  async start() {
+    this.stream = await navigator.mediaDevices.getUserMedia({
+      video: {
+        facingMode: { ideal: this.facingMode },
+        width: { ideal: this.resolution.width },
+        height: { ideal: this.resolution.height },
+      }
+    });
+    this.video.srcObject = this.stream;
+    await this.video.play();
+  }
 
-**Practical workaround**: On iOS Safari, `getUserMedia` works on non-HTTPS
-origins if the page is loaded from the local network AND the user grants
-camera permission. As of iOS 16+, this works on `http://` origins for
-`getUserMedia` as long as the user explicitly grants access. We should test
-this and document the requirement. If it doesn't work, we'll need to add a
-self-signed TLS cert to the FastAPI server.
+  captureFrame() {
+    const canvas = document.createElement('canvas');
+    canvas.width = this.video.videoWidth;
+    canvas.height = this.video.videoHeight;
+    const ctx = canvas.getContext('2d');
+    ctx.drawImage(this.video, 0, 0);
+    return ctx.getImageData(0, 0, canvas.width, canvas.height);
+  }
 
-### Frame Capture
-
-```javascript
-function captureFrame(video) {
-  const canvas = document.createElement('canvas');
-  canvas.width = video.videoWidth;
-  canvas.height = video.videoHeight;
-  const ctx = canvas.getContext('2d');
-  ctx.drawImage(video, 0, 0);
-  return ctx.getImageData(0, 0, canvas.width, canvas.height);
+  stop() {
+    if (this.stream) {
+      this.stream.getTracks().forEach(t => t.stop());
+      this.stream = null;
+    }
+  }
 }
 ```
 
+F4 and F5 each provide their own detection/mapping callbacks.
+
+### HTTPS Requirement
+
+`getUserMedia` requires secure context. On iOS Safari, it works on
+non-HTTPS local network origins as long as the user grants camera permission.
+Test this first. If it doesn't work, the Pi needs a self-signed TLS cert
+added to the FastAPI server (documented as a setup step, not in this plan).
+
 ---
 
-## Backend: Strip Lighting Control
+## Backend: Unified LED Control Endpoint
 
-### `POST /api/setup/light-strip` [auth required]
+### `POST /api/setup/set-leds` [auth required]
 
-Light a single strip with a specific color for calibration.
+Unified endpoint for both F4 (strip lighting) and F5 (individual LED lighting).
+Replaces separate `light-strip` and `light-led` endpoints (DRY).
 
 **Request:**
 ```json
 {
-  "strip_id": 3,
-  "color": [255, 0, 0]
+  "leds": [
+    {"strip": 0, "index": null, "color": [255, 0, 0]},
+    {"strip": 1, "index": 42, "color": [255, 255, 255]}
+  ],
+  "all_others": "black",
+  "use_identity_permutation": true
 }
 ```
 
-**Behavior:**
-- Temporarily overrides the renderer
-- Sets ALL LEDs on strip `strip_id` to the given RGB color
-- ALL other strips are set to black
-- Sends the resulting frame to Teensy (goes through normal mapping pipeline
-  but with identity color permutation — we're testing what the strip SHOWS,
-  not what it should show after correction)
-
-**IMPORTANT**: During detection, the mapping layer must send the color **without**
-applying any existing color_order permutation. We're observing the raw hardware
-behavior to determine what the permutation should be. Use identity permutation
-`(0, 1, 2)` for all strips during the detection routine.
-
-**Response 200:**
-```json
-{"status": "ok", "strip_id": 3, "color": [255, 0, 0]}
-```
-
-### `POST /api/setup/light-strip-off` [auth required]
-
-Return to normal rendering (clear calibration override).
+- `index: null` → light ALL LEDs on that strip with the given color
+- `index: N` → light only LED N on that strip
+- `all_others: "black"` → all unspecified LEDs are black
+- `use_identity_permutation: true` → bypass color_order compensation (for
+  calibration — we're observing raw hardware behavior)
 
 **Response 200:**
 ```json
 {"status": "ok"}
 ```
 
-### Implementation: `pi/app/api/setup_routes.py`
+### `POST /api/setup/clear` [auth required]
 
-```python
-router = APIRouter(prefix="/api/setup", tags=["setup"])
+Return to normal rendering (clear calibration override).
 
-@router.post("/light-strip", dependencies=[Depends(require_auth)])
-async def light_strip(body: LightStripRequest):
-    """Light a single strip for calibration. Bypasses color permutation."""
-    renderer.set_calibration_override(body.strip_id, body.color)
-    return {"status": "ok", "strip_id": body.strip_id, "color": body.color}
-
-@router.post("/light-strip-off", dependencies=[Depends(require_auth)])
-async def light_strip_off():
-    """Clear calibration override, return to normal rendering."""
-    renderer.clear_calibration_override()
-    return {"status": "ok"}
+```json
+{"status": "ok"}
 ```
 
-The renderer needs a `calibration_override` field:
+### Implementation: `pi/app/api/routes/setup.py`
+
 ```python
-# In Renderer class:
-self.calibration_override: Optional[tuple[int, list[int]]] = None
+from fastapi import APIRouter, Depends
+from ..schemas import SetLedsRequest
 
-def set_calibration_override(self, strip_id: int, color: list[int]):
-    self.calibration_override = (strip_id, color)
+def create_router(deps, require_auth) -> APIRouter:
+    router = APIRouter(prefix="/api/setup", tags=["setup"])
 
-def clear_calibration_override(self):
-    self.calibration_override = None
+    @router.post("/set-leds", dependencies=[Depends(require_auth)])
+    async def set_leds(body: SetLedsRequest):
+        deps.renderer.set_calibration_override(body)
+        return {"status": "ok"}
+
+    @router.post("/clear", dependencies=[Depends(require_auth)])
+    async def clear_override():
+        deps.renderer.clear_override()
+        return {"status": "ok"}
+
+    return router
 ```
 
-When `calibration_override` is set, the render loop produces a frame with
-only that strip lit in that color (identity permutation), skipping the normal
-effect rendering.
+### Pydantic models in `pi/app/api/schemas.py`
+
+```python
+class LedSpec(BaseModel):
+    strip: int
+    index: Optional[int] = None  # null = all LEDs on strip
+    color: list[int]  # [R, G, B]
+
+class SetLedsRequest(BaseModel):
+    leds: list[LedSpec]
+    all_others: str = "black"
+    use_identity_permutation: bool = True
+```
+
+### Renderer Integration (unified RenderOverride)
+
+```python
+# In Renderer — uses unified override from 00-overview:
+def set_calibration_override(self, led_spec: SetLedsRequest):
+    self.render_override = RenderOverride(
+        mode="calibration",
+        led_spec=led_spec,
+    )
+
+def clear_override(self):
+    self.render_override = RenderOverride(mode="normal")
+```
+
+When `render_override.mode == "calibration"`, the render loop produces a frame
+with only the specified LEDs lit, using identity permutation if requested.
 
 ---
 
@@ -160,23 +189,17 @@ effect rendering.
 
 ### Phase 1: Capture Reference (dark frame)
 
-Before starting, capture a frame with all LEDs off. This is the "ambient
-baseline" — needed to subtract ambient light contamination.
-
 ```javascript
-await api('POST', '/api/setup/light-strip', { strip_id: -1, color: [0,0,0] });
-// Actually, just use light-strip-off to ensure normal blackout state
 await api('POST', '/api/display/blackout', { enabled: true });
 await sleep(600);
-const darkFrame = captureFrame(video);
+const darkFrame = camera.captureFrame();
+await api('POST', '/api/display/blackout', { enabled: false });
 ```
 
 ### Phase 2: Per-Strip Color Detection
 
-For each strip 0–9, for each test color [R, G, B]:
-
 ```javascript
-async function detectStripOrder(stripId, video) {
+async function detectStripOrder(stripId, camera) {
   const testColors = [
     { name: 'red',   rgb: [255, 0, 0] },
     { name: 'green', rgb: [0, 255, 0] },
@@ -186,21 +209,15 @@ async function detectStripOrder(stripId, video) {
   const observations = {};
 
   for (const test of testColors) {
-    // Light strip with test color (identity permutation)
-    await api('POST', '/api/setup/light-strip', {
-      strip_id: stripId,
-      color: test.rgb
+    await api('POST', '/api/setup/set-leds', {
+      leds: [{ strip: stripId, index: null, color: test.rgb }],
+      all_others: 'black',
+      use_identity_permutation: true,
     });
 
-    // Wait for LED + camera auto-exposure to settle
     await sleep(600);
-
-    // Capture frame
-    const frame = captureFrame(video);
-
-    // Find the bright region (diff from dark frame)
-    const dominant = analyzeDominantColor(frame, darkFrame);
-    observations[test.name] = dominant;  // e.g., { r: 12, g: 240, b: 8 }
+    const frame = camera.captureFrame();
+    observations[test.name] = analyzeDominantColor(frame, darkFrame);
   }
 
   return inferColorOrder(observations);
@@ -212,98 +229,65 @@ async function detectStripOrder(stripId, video) {
 ```javascript
 function analyzeDominantColor(frame, darkFrame) {
   const { data, width, height } = frame;
-  let maxBrightness = 0;
   let brightPixels = [];
 
-  // Find pixels significantly brighter than dark frame
   for (let i = 0; i < data.length; i += 4) {
-    const r = data[i] - darkFrame.data[i];
-    const g = data[i+1] - darkFrame.data[i+1];
-    const b = data[i+2] - darkFrame.data[i+2];
+    const r = Math.max(0, data[i] - darkFrame.data[i]);
+    const g = Math.max(0, data[i+1] - darkFrame.data[i+1]);
+    const b = Math.max(0, data[i+2] - darkFrame.data[i+2]);
     const brightness = r + g + b;
-
-    if (brightness > 100) {  // threshold: significantly lit
+    if (brightness > 100) {
       brightPixels.push({ r, g, b });
     }
   }
 
-  if (brightPixels.length === 0) {
-    return null;  // strip not visible — ask user to adjust camera
-  }
+  if (brightPixels.length === 0) return null;
 
-  // Average the bright pixels
-  const avg = {
+  return {
     r: brightPixels.reduce((s, p) => s + p.r, 0) / brightPixels.length,
     g: brightPixels.reduce((s, p) => s + p.g, 0) / brightPixels.length,
     b: brightPixels.reduce((s, p) => s + p.b, 0) / brightPixels.length,
   };
-
-  return avg;
 }
 ```
 
 ### Phase 4: Infer Color Order
 
-We sent R=255,G=0,B=0 through the LED pipeline with identity permutation.
-The OctoWS2811 (configured as GRB) will output `[G=0, R=255, B=0]` on the wire.
-
-If the camera sees **RED**: the strip reads wire bytes as GRB → R is in position 1
-→ strip order is GRB (matches system config).
-
-If the camera sees **GREEN**: the strip reads wire byte 0 as Green → wire byte 0
-is actually the R value from setPixel → the strip's first channel is its Green
-channel, meaning the strip expects RGB order (R first on wire = Green channel).
-
-Wait — this gets confusing. Instead of trying to derive analytically in JS,
-use an empirical approach:
-
 ```javascript
 function inferColorOrder(observations) {
-  // observations.red   = avg RGB seen by camera when we sent [255, 0, 0]
-  // observations.green = avg RGB seen by camera when we sent [0, 255, 0]
-  // observations.blue  = avg RGB seen by camera when we sent [0, 0, 255]
-
-  // For each observation, determine which camera channel is dominant
   function dominant(obs) {
     if (!obs) return null;
     const { r, g, b } = obs;
     if (r > g && r > b) return 'R';
     if (g > r && g > b) return 'G';
     if (b > r && b > g) return 'B';
-    return null;  // ambiguous
+    return null;
   }
 
-  const whenSentRed   = dominant(observations.red);    // what color appeared
+  const whenSentRed   = dominant(observations.red);
   const whenSentGreen = dominant(observations.green);
   const whenSentBlue  = dominant(observations.blue);
 
-  // Build the mapping: what we sent → what appeared
-  // This tells us the permutation the hardware applies
-  // From this we can determine what color order the strip expects
-
-  // If GRB strip (correct config): sent R→see R, sent G→see G, sent B→see B
-  // If RGB strip (wrong config):   sent R→see G, sent G→see R, sent B→see B
-  //   (because OctoWS2811 sends [0,255,0] wire for R input; RGB strip reads as G)
-
-  // Lookup table of known mappings
+  // Lookup: what appears when we send R,G,B through identity permutation
+  // + OctoWS2811 GRB wire output + strip's native order
+  // This table must be validated empirically with real hardware.
   const ORDER_MAP = {
-    'R,G,B': 'GRB',   // everything correct
-    'G,R,B': 'RGB',   // R↔G swapped
-    'B,G,R': 'BRG',   // derived from wire analysis
+    'G,R,B': 'BGR',   // current default — GRB wire, BGR strip
+    'R,G,B': 'GRB',   // strip matches OctoWS2811 config
+    'G,B,R': 'RGB',
+    'B,R,G': 'BRG',
     'R,B,G': 'RBG',
-    'G,B,R': 'GBR',
-    'B,R,G': 'BGR',
+    'B,G,R': 'GBR',
   };
 
   const key = `${whenSentRed},${whenSentGreen},${whenSentBlue}`;
-  return ORDER_MAP[key] || null;  // null = ambiguous, ask user
+  return ORDER_MAP[key] || null;
 }
 ```
 
-**NOTE**: The ORDER_MAP values need to be validated empirically with real
-hardware. The implementation should include a test mode where the user manually
-confirms what color they see for each test, and we build the lookup table from
-actual observations. The camera detection then uses this validated table.
+**NOTE**: The ORDER_MAP must be validated empirically with real hardware.
+Include a manual confirmation step where the user verifies what color they
+see before trusting camera-only detection.
 
 ---
 
@@ -311,71 +295,38 @@ actual observations. The camera detection then uses this validated table.
 
 | Condition | Response |
 |-----------|----------|
-| Camera permission denied | Show message: "Camera access required. Check Settings > Safari > Camera." |
-| No bright pixels found | "Strip N not visible. Adjust camera position." + Retry button |
+| Camera permission denied | "Camera access required. Check Settings > Safari > Camera." |
+| No bright pixels found | "Strip N not visible. Adjust camera position." + Retry |
 | Ambiguous color detection | "Couldn't determine color for strip N." + manual dropdown |
 | getUserMedia not available | "Camera not supported. Set color order manually below." |
-| HTTPS required | "Camera requires HTTPS. See setup guide for enabling TLS." |
 
 ---
 
 ## UI: Camera Wizard Modal
 
 ```html
-<div id="rgb-detect-modal" class="modal hidden">
+<div id="camera-wizard-modal" class="modal hidden">
   <div class="modal-content">
-    <h2>RGB Order Detection</h2>
+    <h2 id="wizard-title">RGB Order Detection</h2>
     <video id="camera-preview" autoplay playsinline></video>
-    <div id="detect-progress" class="hidden">
-      <div class="progress-bar">
-        <div id="detect-progress-fill"></div>
-      </div>
-      <p id="detect-status">Detecting strip 1/10...</p>
+    <div id="wizard-progress" class="hidden">
+      <div class="progress-bar"><div id="wizard-progress-fill"></div></div>
+      <p id="wizard-status">Detecting strip 1/10...</p>
     </div>
-    <div id="detect-results" class="hidden">
-      <table id="detect-results-table">
-        <thead>
-          <tr><th>Strip</th><th>Detected</th><th>Override</th></tr>
-        </thead>
-        <tbody><!-- Populated by JS --></tbody>
-      </table>
+    <div id="wizard-results" class="hidden">
+      <!-- Populated by JS: results table or position map -->
     </div>
     <div class="modal-actions">
-      <button id="detect-start-btn">Start Detection</button>
-      <button id="detect-apply-btn" class="hidden">Apply</button>
-      <button id="detect-cancel-btn" class="secondary">Cancel</button>
+      <button id="wizard-start-btn">Start</button>
+      <button id="wizard-apply-btn" class="hidden">Apply</button>
+      <button id="wizard-cancel-btn" class="secondary">Cancel</button>
     </div>
   </div>
 </div>
 ```
 
-### CSS (app.css additions)
-
-```css
-.modal {
-  position: fixed;
-  inset: 0;
-  z-index: 200;
-  background: rgba(0, 0, 0, 0.9);
-  display: flex;
-  align-items: center;
-  justify-content: center;
-}
-.modal.hidden { display: none; }
-.modal-content {
-  width: 95%;
-  max-width: 500px;
-  background: var(--surface);
-  border-radius: 16px;
-  padding: 20px;
-}
-#camera-preview {
-  width: 100%;
-  border-radius: 8px;
-  aspect-ratio: 16/9;
-  object-fit: cover;
-}
-```
+The modal is shared between F4 and F5. The JS configures title, start action,
+and results display based on which wizard is active.
 
 ---
 
@@ -383,14 +334,16 @@ actual observations. The camera detection then uses this validated table.
 
 - [ ] Camera wizard opens and shows live rear camera preview on iPhone Safari
 - [ ] "Start Detection" lights strips one at a time (all others off)
-- [ ] Each strip is tested with R, G, B in sequence
-- [ ] Camera frame analysis correctly identifies dominant color channel
-- [ ] Detected color order matches manual observation for at least GRB and RGB strips
+- [ ] Each strip tested with R, G, B in sequence using `POST /api/setup/set-leds`
+- [ ] Camera analysis correctly identifies dominant color channel
+- [ ] Detected color order matches manual observation for BGR and GRB strips
 - [ ] Results table shows per-strip detected order with override dropdowns
-- [ ] "Apply" saves detected orders via `POST /api/config/strips`
-- [ ] "Cancel" restores normal rendering without saving
-- [ ] Error states (no camera, no bright pixels) show helpful messages
+- [ ] "Apply" saves via `POST /api/config/strips`
+- [ ] "Cancel" calls `POST /api/setup/clear` and restores normal rendering
+- [ ] Error states show helpful messages
 - [ ] Detection completes in under 30 seconds for 10 strips
+- [ ] `docs/current-contracts.md` updated with setup endpoints
+- [ ] All ~219 existing tests pass (regression)
 
 ---
 
@@ -399,25 +352,25 @@ actual observations. The camera detection then uses this validated table.
 ### Automated (pytest)
 
 ```python
-def test_light_strip_endpoint():
-    """POST /api/setup/light-strip sets calibration override."""
+def test_set_leds_endpoint():
+    """POST /api/setup/set-leds sets calibration override."""
 
-def test_light_strip_off_clears():
-    """POST /api/setup/light-strip-off clears override."""
+def test_set_leds_identity_permutation():
+    """Override frame does NOT apply color_order permutation when requested."""
 
-def test_light_strip_requires_auth():
+def test_set_leds_strip_all():
+    """index=null lights all LEDs on specified strip."""
+
+def test_clear_restores_normal():
+    """POST /api/setup/clear returns to normal rendering."""
+
+def test_set_leds_requires_auth():
     """No token → 401."""
-
-def test_calibration_override_produces_correct_frame():
-    """When override is set, renderer produces frame with only target strip lit."""
-
-def test_calibration_override_uses_identity_permutation():
-    """Override frame does NOT apply strip color_order permutation."""
 ```
 
 ### Manual (iPhone Safari)
 
-- [ ] Camera preview displays (test on http:// and https://)
+- [ ] Camera preview displays on local WiFi
 - [ ] Detection runs through all 10 strips without freezing
 - [ ] Ambient light subtraction handles a lit room
 - [ ] Results match manually observed colors
@@ -427,8 +380,7 @@ def test_calibration_override_uses_identity_permutation():
 
 ## Security Notes
 
-- Camera access is client-side only — no video data is sent to the server
-- All frame analysis happens in the browser via Canvas API
-- The server only receives the final color_order strings via the existing
-  strip config endpoint
-- Camera stream is stopped immediately when the wizard closes
+- Camera access is client-side only — no video data sent to server
+- All frame analysis happens in browser via Canvas API
+- Server only receives final color_order strings via strip config endpoint
+- Camera stream stopped immediately when wizard closes
