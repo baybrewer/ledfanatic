@@ -604,16 +604,21 @@ class Fireplace(Effect):
     self._heat = new_heat
 
     # ── Ember bed — glowing coals across bottom 12 rows ──────────
-    for yo in range(12):
-      y = rows - 1 - yo
-      if y < 0:
-        break
-      glow = 0.30 - yo * 0.02
-      shimmer_arr = np.array([
-        (cyl_noise(x * 2 + 500, yo * 0.5, sim_t * 1.5, 1.0, 1.0) + 1) * 0.05
-        for x in range(cols)
-      ])
-      self._heat[:, y] = np.maximum(self._heat[:, y], glow + shimmer_arr)
+    bed_yo = np.arange(12, dtype=np.float64)
+    bed_y = rows - 1 - bed_yo.astype(np.int32)
+    bed_valid = bed_y >= 0
+    bed_yo = bed_yo[bed_valid]
+    bed_y = bed_y[bed_valid]
+    bed_glow = 0.30 - bed_yo * 0.02  # (12,)
+    # Vectorize shimmer: compute noise for all (cols, 12) positions
+    bed_x = np.arange(cols, dtype=np.float64) * 2 + 500  # (cols,)
+    bed_x_g = bed_x[:, np.newaxis] * np.ones(len(bed_yo))  # (cols, 12)
+    bed_yo_g = np.ones(cols)[:, np.newaxis] * (bed_yo * 0.5)  # (cols, 12)
+    bed_z = np.full_like(bed_x_g, sim_t * 1.5)
+    bed_shimmer = (perlin_grid(bed_x_g, bed_yo_g, bed_z) + 1) * 0.05  # (cols, 12)
+    bed_floor = bed_glow[np.newaxis, :] + bed_shimmer  # (cols, 12)
+    for j in range(len(bed_y)):
+      self._heat[:, bed_y[j]] = np.maximum(self._heat[:, bed_y[j]], bed_floor[:, j])
 
     # ── Ember particles (keep scalar — sparse particle system) ────
     dt_s = dt_ms * 0.001
