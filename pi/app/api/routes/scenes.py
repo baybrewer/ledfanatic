@@ -71,4 +71,12 @@ def create_router(deps, require_auth, broadcast_state) -> APIRouter:
             return {"status": "deleted"}
         raise HTTPException(404, f"Preset not found: {name}")
 
+    @router.get("/switcher/status")
+    async def switcher_status():
+        """Get Animation Switcher state if active."""
+        from ...effects.switcher import AnimationSwitcher
+        if isinstance(deps.renderer.current_effect, AnimationSwitcher):
+            return deps.renderer.current_effect.get_switcher_status()
+        return {"active": False}
+
     return router

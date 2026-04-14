@@ -27,6 +27,7 @@ from .setup.session import SetupSessionService
 from .mapping.runtime_plan import load_controller_profile, compile_output_plan
 from .preview.service import PreviewService
 from .effects.imported import IMPORTED_EFFECTS
+from .effects.switcher import AnimationSwitcher
 from .effects.catalog import EffectCatalogService, EffectMeta
 
 DEV_MODE = os.environ.get('PILLAR_DEV', '').strip() == '1'
@@ -121,11 +122,31 @@ def main():
   # Register imported animations into renderer
   for name, cls in IMPORTED_EFFECTS.items():
     renderer.register_effect(name, cls)
-  logger.info(f"Registered {len(IMPORTED_EFFECTS)} imported effects")
+  renderer.register_effect('animation_switcher', AnimationSwitcher)
+  logger.info(f"Registered {len(IMPORTED_EFFECTS)} imported effects + animation_switcher")
 
   # Create shared catalog with all effects including imported
   effect_catalog = EffectCatalogService()
+  from .effects.engine.palettes import PALETTE_NAMES, FELDSTEIN_PALETTE_NAMES
   for name, cls in IMPORTED_EFFECTS.items():
+    # Extract param metadata from class PARAMS attribute
+    param_dicts = ()
+    if hasattr(cls, 'PARAMS') and cls.PARAMS:
+      param_dicts = tuple(
+        {'name': p.attr.lower(), 'label': p.label, 'min': p.lo, 'max': p.hi,
+         'step': p.step, 'default': p.default, 'type': 'slider'}
+        for p in cls.PARAMS
+      )
+    # Determine available palettes
+    palette_support = getattr(cls, 'PALETTE_SUPPORT', False)
+    palettes = ()
+    if palette_support:
+      palettes = tuple(PALETTE_NAMES)
+    # Feldstein2 has custom palettes
+    if name == 'feldstein_og':
+      palettes = tuple(FELDSTEIN_PALETTE_NAMES)
+      palette_support = True
+
     meta = EffectMeta(
       name=name,
       label=getattr(cls, 'DISPLAY_NAME', name.replace('_', ' ').title()),
@@ -133,8 +154,24 @@ def main():
       description=getattr(cls, 'DESCRIPTION', ''),
       imported=True,
       audio_requires=getattr(cls, 'AUDIO_REQUIRES', ()),
+      params=param_dicts,
+      palettes=palettes,
+      palette_support=palette_support,
     )
     effect_catalog.register_imported(name, meta)
+
+  # Register Animation Switcher in catalog
+  effect_catalog.register_imported('animation_switcher', EffectMeta(
+    name='animation_switcher',
+    label='Animation Switcher',
+    group='special',
+    description='Automatically cycles through selected animations with cross-fade',
+    imported=True,
+    params=(
+      {'name': 'interval', 'label': 'Switch Time (s)', 'min': 5, 'max': 60, 'step': 1, 'default': 15, 'type': 'slider'},
+      {'name': 'fade_duration', 'label': 'Fade Duration (s)', 'min': 0.5, 'max': 5.0, 'step': 0.5, 'default': 2.0, 'type': 'slider'},
+    ),
+  ))
 
   # Installation config — mutable strip setup truth
   installation = load_installation(config_dir)

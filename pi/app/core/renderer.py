@@ -140,6 +140,9 @@ class Renderer:
       return True
 
     effect_cls = self.effect_registry[scene_name]
+    # Pass effect_registry to AnimationSwitcher so it can instantiate playlist effects
+    if scene_name == 'animation_switcher':
+      merged['_effect_registry'] = self.effect_registry
     self.current_effect = effect_cls(
       width=self.internal_width,
       height=N,

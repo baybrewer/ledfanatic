@@ -27,9 +27,12 @@ class EffectMeta:
   geometry_aware: bool = False
   audio_requires: tuple = ()
   default_params: dict = None
+  params: tuple = ()       # param metadata for UI controls
+  palettes: tuple = ()     # available palette names
+  palette_support: bool = False
 
   def to_dict(self) -> dict:
-    return {
+    result = {
       'name': self.name,
       'label': self.label,
       'group': self.group,
@@ -39,6 +42,12 @@ class EffectMeta:
       'geometry_aware': self.geometry_aware,
       'audio_requires': list(self.audio_requires),
     }
+    if self.params:
+      result['params'] = list(self.params)
+    if self.palettes:
+      result['palettes'] = list(self.palettes)
+      result['palette_support'] = True
+    return result
 
 
 def _name_to_label(name: str) -> str:

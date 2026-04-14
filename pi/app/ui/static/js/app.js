@@ -168,32 +168,144 @@ function initTabs() {
 
 // --- Effects ---
 
+let effectsCatalog = null;
+let currentEffectParams = {};
+
 async function loadEffects() {
-  const data = await api('GET', '/api/scenes/list');
+  const data = await api('GET', '/api/effects/catalog');
   if (!data) return;
+  effectsCatalog = data.effects;
 
-  const genList = document.getElementById('effect-list');
-  const audioList = document.getElementById('audio-effect-list');
-  genList.innerHTML = '';
-  audioList.innerHTML = '';
-
+  // Group effects by category
+  const groups = {};
   for (const [name, info] of Object.entries(data.effects)) {
     if (name.startsWith('diag_')) continue;
-    const btn = document.createElement('button');
-    btn.textContent = name.replace(/_/g, ' ');
-    if (name === data.current) btn.classList.add('active-scene');
-    btn.addEventListener('click', () => activateEffect(name));
-    if (info.type === 'audio') {
-      audioList.appendChild(btn);
-    } else {
-      genList.appendChild(btn);
+    const group = info.group || 'other';
+    if (!groups[group]) groups[group] = [];
+    groups[group].push({ name, ...info });
+  }
+
+  // Render category order
+  const order = ['classic', 'ambient', 'imported_classic', 'imported_ambient', 'generative', 'audio', 'imported_sound', 'sound', 'special', 'other'];
+  const labels = {
+    classic: 'Classic', ambient: 'Ambient', imported_classic: 'Classic',
+    imported_ambient: 'Ambient', generative: 'Built-in', audio: 'Audio-Reactive',
+    imported_sound: 'Sound-Reactive', sound: 'Sound-Reactive',
+    special: 'Special', other: 'Other',
+  };
+
+  const container = document.getElementById('effects-categories');
+  container.innerHTML = '';
+
+  // Merge groups with same label
+  const merged = {};
+  for (const key of order) {
+    if (!groups[key]) continue;
+    const label = labels[key] || key;
+    if (!merged[label]) merged[label] = [];
+    merged[label].push(...groups[key]);
+  }
+
+  for (const [label, effects] of Object.entries(merged)) {
+    const section = document.createElement('div');
+    section.className = 'effect-category';
+    const header = document.createElement('button');
+    header.className = 'category-header';
+    header.textContent = `${label} (${effects.length})`;
+    header.addEventListener('click', () => {
+      grid.classList.toggle('hidden');
+      header.classList.toggle('collapsed');
+    });
+    const grid = document.createElement('div');
+    grid.className = 'button-grid';
+    for (const eff of effects) {
+      const btn = document.createElement('button');
+      btn.textContent = eff.label || eff.name.replace(/_/g, ' ');
+      if (eff.name === data.current) btn.classList.add('active-scene');
+      btn.addEventListener('click', () => activateEffect(eff.name));
+      grid.appendChild(btn);
     }
+    section.appendChild(header);
+    section.appendChild(grid);
+    container.appendChild(section);
+  }
+
+  // Show controls for active effect
+  if (data.current && data.effects[data.current]) {
+    showEffectControls(data.current, data.effects[data.current]);
   }
 }
 
+function showEffectControls(name, meta) {
+  const wrap = document.getElementById('active-effect-controls');
+  document.getElementById('active-effect-name').textContent = meta.label || name;
+  const paramsDiv = document.getElementById('effect-params');
+  paramsDiv.innerHTML = '';
+
+  // Render param sliders
+  if (meta.params && meta.params.length > 0) {
+    for (const p of meta.params) {
+      const row = document.createElement('div');
+      row.className = 'param-row';
+      const val = currentEffectParams[p.name] ?? p.default;
+      row.innerHTML = `
+        <label>${p.label}</label>
+        <input type="range" min="${p.min}" max="${p.max}" step="${p.step}" value="${val}"
+               data-param="${p.name}" class="param-slider">
+        <span class="param-value">${val}</span>
+      `;
+      const slider = row.querySelector('input');
+      const display = row.querySelector('.param-value');
+      let debounce = null;
+      slider.addEventListener('input', () => {
+        const v = parseFloat(slider.value);
+        display.textContent = Number.isInteger(p.step) ? v : v.toFixed(1);
+        currentEffectParams[p.name] = v;
+        clearTimeout(debounce);
+        debounce = setTimeout(() => {
+          api('POST', '/api/scenes/activate', { effect: name, params: currentEffectParams });
+        }, 100);
+      });
+      paramsDiv.appendChild(row);
+    }
+  }
+
+  // Palette selector
+  const palWrap = document.getElementById('effect-palette-wrap');
+  if (meta.palettes && meta.palettes.length > 0) {
+    palWrap.classList.remove('hidden');
+    const select = document.getElementById('effect-palette-select');
+    select.innerHTML = '';
+    meta.palettes.forEach((palName, idx) => {
+      const opt = document.createElement('option');
+      opt.value = idx;  // numeric index, not name — effects expect integer
+      opt.textContent = palName;
+      select.appendChild(opt);
+    });
+    select.onchange = () => {
+      currentEffectParams.palette = parseInt(select.value);
+      api('POST', '/api/scenes/activate', { effect: name, params: currentEffectParams });
+    };
+  } else {
+    palWrap.classList.add('hidden');
+  }
+
+  wrap.classList.remove('hidden');
+}
+
 async function activateEffect(name) {
+  currentEffectParams = {};
   await api('POST', '/api/scenes/activate', { effect: name, params: {} });
-  loadEffects();
+  // Re-render to update active highlight and controls without full refetch
+  if (effectsCatalog && effectsCatalog[name]) {
+    // Update highlights
+    document.querySelectorAll('.button-grid button').forEach(b => b.classList.remove('active-scene'));
+    document.querySelectorAll('.button-grid button').forEach(b => {
+      const label = effectsCatalog[name]?.label || name.replace(/_/g, ' ');
+      if (b.textContent === label) b.classList.add('active-scene');
+    });
+    showEffectControls(name, effectsCatalog[name]);
+  }
 }
 
 // --- Presets ---
@@ -420,27 +532,192 @@ function showSetupInactive() {
   document.getElementById('setup-strip-inventory').classList.add('hidden');
 }
 
+let setupStripsCache = [];
+let setupStageTimer = null;
+
 async function loadStripInventory() {
   const data = await api('GET', '/api/setup/installation');
   if (!data || !data.strips) return;
+  setupStripsCache = data.strips;
 
-  const tbody = document.getElementById('strip-table-body');
-  tbody.innerHTML = '';
+  const container = document.getElementById('strip-cards');
+  container.innerHTML = '';
 
   for (const strip of data.strips) {
-    const tr = document.createElement('tr');
-    tr.innerHTML = `
-      <td>${strip.id}</td>
-      <td>${strip.label}</td>
-      <td>${strip.enabled ? 'Yes' : 'No'}</td>
-      <td>${strip.installed_led_count}</td>
-      <td>${strip.color_order}</td>
-      <td>${strip.direction === 'bottom_to_top' ? '↑' : '↓'}</td>
-      <td>${strip.output_channel}</td>
-      <td>${strip.output_slot}</td>
+    const dirArrow = strip.direction === 'bottom_to_top' ? '\u2191' : '\u2193';
+    const card = document.createElement('div');
+    card.className = 'strip-card';
+    card.dataset.id = strip.id;
+
+    const colorOrders = ['RGB','RBG','GRB','GBR','BRG','BGR'];
+    const colorOpts = colorOrders.map(o =>
+      `<option value="${o}" ${o === strip.color_order ? 'selected' : ''}>${o}</option>`
+    ).join('');
+
+    const dirOpts = `
+      <option value="bottom_to_top" ${strip.direction === 'bottom_to_top' ? 'selected' : ''}>\u2191 Bottom\u2192Top</option>
+      <option value="top_to_bottom" ${strip.direction === 'top_to_bottom' ? 'selected' : ''}>\u2193 Top\u2192Bottom</option>
     `;
-    tbody.appendChild(tr);
+
+    const chipsets = ['WS2812B','WS2812','WS2811','SK6812','WS2813','WS2815'];
+    const chipOpts = chipsets.map(c =>
+      `<option value="${c}" ${c === (strip.chipset || 'WS2812B') ? 'selected' : ''}>${c}</option>`
+    ).join('');
+
+    card.innerHTML = `
+      <div class="strip-card-header">
+        <span class="strip-summary">${strip.label} &mdash; Ch${strip.output_channel}:${strip.output_slot} ${dirArrow} ${strip.installed_led_count} LEDs ${strip.color_order}</span>
+        <span class="expand-icon">\u25B6</span>
+      </div>
+      <div class="strip-card-body" hidden>
+        <div class="strip-field"><label>Label</label><input type="text" value="${strip.label}" data-field="label" data-id="${strip.id}" maxlength="10"></div>
+        <div class="strip-field"><label>Enabled</label><input type="checkbox" ${strip.enabled ? 'checked' : ''} data-field="enabled" data-id="${strip.id}"></div>
+        <div class="strip-field"><label>Logical Order</label><input type="number" value="${strip.logical_order !== undefined ? strip.logical_order : strip.id}" data-field="logical_order" data-id="${strip.id}" min="0" max="9"></div>
+        <div class="strip-field"><label>LEDs</label><input type="number" value="${strip.installed_led_count}" data-field="installed_led_count" data-id="${strip.id}" min="0" max="172"></div>
+        <div class="strip-field"><label>Color Order</label><select data-field="color_order" data-id="${strip.id}">${colorOpts}</select></div>
+        <div class="strip-field"><label>Direction</label><select data-field="direction" data-id="${strip.id}">${dirOpts}</select></div>
+        <div class="strip-field"><label>Channel</label><input type="number" value="${strip.output_channel}" data-field="output_channel" data-id="${strip.id}" min="0" max="4"></div>
+        <div class="strip-field"><label>Slot</label><input type="number" value="${strip.output_slot}" data-field="output_slot" data-id="${strip.id}" min="0" max="1"></div>
+        <div class="strip-field"><label>Chipset</label><select data-field="chipset" data-id="${strip.id}">${chipOpts}</select></div>
+      </div>
+    `;
+    container.appendChild(card);
   }
+
+  // Accordion behavior
+  container.querySelectorAll('.strip-card-header').forEach(header => {
+    header.addEventListener('click', () => {
+      const card = header.closest('.strip-card');
+      const body = card.querySelector('.strip-card-body');
+      const wasHidden = body.hidden;
+      // Collapse all
+      container.querySelectorAll('.strip-card').forEach(c => {
+        c.querySelector('.strip-card-body').hidden = true;
+        c.classList.remove('expanded');
+      });
+      if (wasHidden) {
+        body.hidden = false;
+        card.classList.add('expanded');
+      }
+    });
+  });
+
+  // Attach change handlers for auto-staging
+  container.querySelectorAll('input, select').forEach(el => {
+    el.addEventListener('change', () => stageStripUpdate(el));
+  });
+
+  validateSetupStrips();
+}
+
+function stageStripUpdate(el) {
+  const id = parseInt(el.dataset.id);
+  const field = el.dataset.field;
+  let value;
+
+  if (el.type === 'checkbox') {
+    value = el.checked;
+  } else if (el.type === 'number') {
+    value = parseInt(el.value);
+  } else {
+    value = el.value;
+  }
+
+  // Update local cache
+  const cached = setupStripsCache.find(s => s.id === id);
+  if (cached) cached[field] = value;
+
+  // Update summary in card header
+  const card = el.closest('.strip-card');
+  if (card && cached) {
+    const dirArrow = cached.direction === 'bottom_to_top' ? '\u2191' : '\u2193';
+    card.querySelector('.strip-summary').innerHTML =
+      `${cached.label} &mdash; Ch${cached.output_channel}:${cached.output_slot} ${dirArrow} ${cached.installed_led_count} LEDs ${cached.color_order}`;
+  }
+
+  // Client-side validation
+  const valid = validateSetupStrips();
+
+  // Debounce PUT to server
+  clearTimeout(setupStageTimer);
+  setupStageTimer = setTimeout(async () => {
+    if (!setupSessionId) return;
+    const update = { id };
+    update[field] = value;
+    await api('PUT', '/api/setup/session/installation', {
+      session_id: setupSessionId,
+      strips: [update],
+    });
+  }, 300);
+}
+
+function validateSetupStrips() {
+  const msg = document.getElementById('setup-validation-msg');
+  const errors = [];
+
+  // Clear all invalid states
+  document.querySelectorAll('#strip-cards .invalid').forEach(el => el.classList.remove('invalid'));
+
+  // Check duplicate logical orders among enabled strips
+  const enabledStrips = setupStripsCache.filter(s => s.enabled);
+  const logOrders = enabledStrips.map(s => s.logical_order !== undefined ? s.logical_order : s.id);
+  const logOrderSet = new Set(logOrders);
+  if (logOrderSet.size < logOrders.length) {
+    errors.push('Duplicate logical orders among enabled strips');
+    // Mark duplicates
+    const seen = {};
+    for (const s of enabledStrips) {
+      const lo = s.logical_order !== undefined ? s.logical_order : s.id;
+      if (seen[lo]) {
+        markFieldInvalid(s.id, 'logical_order');
+        markFieldInvalid(seen[lo], 'logical_order');
+      }
+      seen[lo] = s.id;
+    }
+  }
+
+  // Check duplicate channel/slot pairs
+  const chSlots = enabledStrips.map(s => `${s.output_channel}:${s.output_slot}`);
+  const chSlotSet = new Set(chSlots);
+  if (chSlotSet.size < chSlots.length) {
+    errors.push('Duplicate channel/slot pairs');
+    const seen = {};
+    for (const s of enabledStrips) {
+      const key = `${s.output_channel}:${s.output_slot}`;
+      if (seen[key]) {
+        markFieldInvalid(s.id, 'output_channel');
+        markFieldInvalid(s.id, 'output_slot');
+        markFieldInvalid(seen[key], 'output_channel');
+        markFieldInvalid(seen[key], 'output_slot');
+      }
+      seen[key] = s.id;
+    }
+  }
+
+  // Check LED count range
+  for (const s of setupStripsCache) {
+    if (s.installed_led_count < 0 || s.installed_led_count > 172) {
+      errors.push(`Strip ${s.id}: LED count out of range`);
+      markFieldInvalid(s.id, 'installed_led_count');
+    }
+  }
+
+  if (errors.length === 0) {
+    msg.textContent = 'All strips valid';
+    msg.className = '';
+    msg.id = 'setup-validation-msg';
+  } else {
+    msg.textContent = errors.join('; ');
+    msg.className = 'has-errors';
+    msg.id = 'setup-validation-msg';
+  }
+
+  return errors.length === 0;
+}
+
+function markFieldInvalid(stripId, fieldName) {
+  const el = document.querySelector(`[data-id="${stripId}"][data-field="${fieldName}"]`);
+  if (el) el.classList.add('invalid');
 }
 
 function initSetup() {
@@ -549,19 +826,49 @@ function initSim() {
     document.getElementById('sim-status').textContent = 'Idle';
     if (previewWs) { previewWs.close(); previewWs = null; }
   });
+
+  // View toggle: Fit vs 1:1
+  document.querySelectorAll('.sim-view-btn').forEach(btn => {
+    btn.addEventListener('click', () => {
+      document.querySelectorAll('.sim-view-btn').forEach(b => b.classList.remove('active'));
+      btn.classList.add('active');
+      const wrap = document.getElementById('sim-canvas-wrap');
+      if (btn.dataset.mode === 'fit') {
+        wrap.classList.add('fit-mode');
+      } else {
+        wrap.classList.remove('fit-mode');
+      }
+    });
+  });
 }
 
 async function loadSimEffects() {
-  const data = await api('GET', '/api/scenes/list');
-  if (!data) return;
+  const data = await api('GET', '/api/effects/catalog');
+  if (!data || !data.effects) return;
   const select = document.getElementById('sim-effect-select');
   select.innerHTML = '';
   for (const [name, info] of Object.entries(data.effects)) {
     if (name.startsWith('diag_')) continue;
     const opt = document.createElement('option');
     opt.value = name;
-    opt.textContent = name.replace(/_/g, ' ');
+    opt.textContent = info.label || name.replace(/_/g, ' ');
     select.appendChild(opt);
+  }
+  // Load strip labels for the sim
+  loadSimStripLabels();
+}
+
+async function loadSimStripLabels() {
+  const data = await api('GET', '/api/setup/installation');
+  if (!data || !data.strips) return;
+  const container = document.getElementById('sim-strip-labels');
+  container.innerHTML = '';
+  for (const strip of data.strips) {
+    const div = document.createElement('div');
+    div.className = 'sim-strip-label';
+    const arrow = strip.direction === 'bottom_to_top' ? '\u2191' : '\u2193';
+    div.innerHTML = `S${strip.id}<br>${arrow}`;
+    container.appendChild(div);
   }
 }
 
@@ -609,23 +916,70 @@ function renderPreviewFrame(buffer) {
   const pixels = new Uint8Array(buffer, headerSize);
 
   const canvas = document.getElementById('sim-canvas');
-  canvas.width = width;
-  canvas.height = height;
-  const ctx = canvas.getContext('2d');
-  const imgData = ctx.createImageData(width, height);
+  const pixelSize = 6;
+  const gap = 2;
+  const pitch = pixelSize + gap;
+  const margin = 4;
+  const canvasW = width * pitch + margin * 2 - gap;
+  const canvasH = height * pitch + margin * 2 - gap;
 
-  // Transpose: our frame is (width, height, 3) but canvas expects (height, width, 4)
+  // Only resize if dimensions changed
+  if (canvas.width !== canvasW || canvas.height !== canvasH) {
+    canvas.width = canvasW;
+    canvas.height = canvasH;
+  }
+
+  const ctx = canvas.getContext('2d');
+  ctx.fillStyle = '#08080c';
+  ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+  const radius = pixelSize / 2;
   for (let x = 0; x < width; x++) {
     for (let y = 0; y < height; y++) {
       const srcIdx = (x * height + y) * 3;
-      const dstIdx = (y * width + x) * 4;
-      imgData.data[dstIdx] = pixels[srcIdx];
-      imgData.data[dstIdx + 1] = pixels[srcIdx + 1];
-      imgData.data[dstIdx + 2] = pixels[srcIdx + 2];
-      imgData.data[dstIdx + 3] = 255;
+      const r = pixels[srcIdx];
+      const g = pixels[srcIdx + 1];
+      const b = pixels[srcIdx + 2];
+
+      // Draw dark gray for off pixels, actual color for lit
+      const cx = x * pitch + radius + margin;
+      const cy = y * pitch + radius + margin;
+      ctx.beginPath();
+      ctx.arc(cx, cy, radius, 0, Math.PI * 2);
+      if (r === 0 && g === 0 && b === 0) {
+        ctx.fillStyle = '#08080c';
+      } else {
+        ctx.fillStyle = `rgb(${r},${g},${b})`;
+      }
+      ctx.fill();
     }
   }
-  ctx.putImageData(imgData, 0, 0);
+}
+
+// --- Help panels ---
+
+function initHelp() {
+  document.querySelectorAll('.help-toggle').forEach(btn => {
+    const panel = btn.closest('.help-panel');
+    const content = panel.querySelector('.help-content');
+    const tabId = panel.dataset.tab || 'unknown';
+
+    // Restore state from localStorage
+    const saved = localStorage.getItem(`help-${tabId}`);
+    if (saved === 'open') {
+      content.hidden = false;
+      btn.setAttribute('aria-expanded', 'true');
+      panel.classList.remove('collapsed');
+    }
+
+    btn.addEventListener('click', () => {
+      const expanded = btn.getAttribute('aria-expanded') === 'true';
+      btn.setAttribute('aria-expanded', String(!expanded));
+      content.hidden = expanded;
+      panel.classList.toggle('collapsed', expanded);
+      localStorage.setItem(`help-${tabId}`, expanded ? 'closed' : 'open');
+    });
+  });
 }
 
 // --- Tooltips (mobile long-press) ---
@@ -679,6 +1033,7 @@ document.addEventListener('DOMContentLoaded', () => {
   initSystem();
   initSim();
   initTooltips();
+  initHelp();
   connectWS();
   loadPresets();
 });

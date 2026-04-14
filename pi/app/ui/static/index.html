@@ -62,6 +62,17 @@
 
       <!-- LIVE -->
       <section id="panel-live" class="panel active" role="tabpanel" aria-labelledby="tab-live">
+        <div class="help-panel collapsed" data-tab="live">
+          <button class="help-toggle" aria-expanded="false">
+            <span class="help-icon">?</span> How to use this page
+          </button>
+          <div class="help-content" hidden>
+            <p>This is your live control dashboard.</p>
+            <p>The current scene name shows what's playing on the LEDs right now. Presets are saved combinations of effect + parameters &mdash; tap to recall them.</p>
+            <p>Use the brightness slider above to control overall LED brightness. "Blackout" turns all LEDs off immediately; "Resume" restores output.</p>
+            <p>The auto-brightness checkbox enables sunrise/sunset automation (requires location config).</p>
+          </div>
+        </div>
         <div id="scene-info">
           <p>Scene: <strong id="current-scene-name">--</strong></p>
         </div>
@@ -70,14 +81,42 @@
 
       <!-- EFFECTS -->
       <section id="panel-effects" class="panel" role="tabpanel" aria-labelledby="tab-effects">
-        <h2>Generative Effects</h2>
-        <div id="effect-list" class="button-grid"></div>
-        <h2>Audio-Reactive</h2>
-        <div id="audio-effect-list" class="button-grid"></div>
+        <div class="help-panel collapsed" data-tab="effects">
+          <button class="help-toggle" aria-expanded="false">
+            <span class="help-icon">?</span> How to use this page
+          </button>
+          <div class="help-content" hidden>
+            <p>Choose an animation for your LED pillar.</p>
+            <p>Tap any effect to activate it immediately on the live LEDs. Effects are grouped: Classic, Ambient, Sound-Reactive, and Built-in.</p>
+            <p>Sound-Reactive effects respond to music via the microphone (configure in Audio tab).</p>
+            <p>When an effect is active, controls appear below: speed slider adjusts animation speed, palette dropdown changes the color scheme, and other parameters vary per effect.</p>
+            <p>Animation Switcher: select multiple effects and the pillar will automatically cycle between them with smooth cross-fade transitions.</p>
+          </div>
+        </div>
+        <div id="effects-categories"></div>
+        <div id="active-effect-controls" class="hidden">
+          <div class="active-effect-header">
+            <span id="active-effect-name"></span>
+          </div>
+          <div id="effect-params"></div>
+          <div id="effect-palette-wrap" class="hidden">
+            <label>Palette <select id="effect-palette-select"></select></label>
+          </div>
+        </div>
       </section>
 
       <!-- MEDIA -->
       <section id="panel-media" class="panel" role="tabpanel" aria-labelledby="tab-media">
+        <div class="help-panel collapsed" data-tab="media">
+          <button class="help-toggle" aria-expanded="false">
+            <span class="help-icon">?</span> How to use this page
+          </button>
+          <div class="help-content" hidden>
+            <p>Upload and play images, GIFs, and videos on the pillar.</p>
+            <p>Tap "Upload Media" to add files from your phone or computer. Supported formats: PNG, JPG, GIF, MP4, WebM.</p>
+            <p>Uploaded media is transcoded to fit the 10x172 LED grid. Tap any media item to play it on the LEDs. Media plays in a loop by default.</p>
+          </div>
+        </div>
         <div class="upload-area">
           <input type="file" id="media-upload" accept="image/*,video/*,.gif">
           <button id="upload-btn" class="action-btn">Upload Media</button>
@@ -90,6 +129,17 @@
 
       <!-- AUDIO -->
       <section id="panel-audio" class="panel" role="tabpanel" aria-labelledby="tab-audio">
+        <div class="help-panel collapsed" data-tab="audio">
+          <button class="help-toggle" aria-expanded="false">
+            <span class="help-icon">?</span> How to use this page
+          </button>
+          <div class="help-content" hidden>
+            <p>Configure the microphone for sound-reactive effects.</p>
+            <p>Select your audio input device from the dropdown. Tap "Start Audio" to begin listening.</p>
+            <p>Sensitivity adjusts how responsive effects are to sound. Gain boosts quiet audio sources.</p>
+            <p>The meter bars show real-time bass, mid, and high frequency levels. Sound-reactive effects won't respond to music until audio is started.</p>
+          </div>
+        </div>
         <div class="audio-controls">
           <div class="control-group">
             <label>Input Device</label>
@@ -115,6 +165,16 @@
 
       <!-- DIAGNOSTICS -->
       <section id="panel-diag" class="panel" role="tabpanel" aria-labelledby="tab-diag">
+        <div class="help-panel collapsed" data-tab="diag">
+          <button class="help-toggle" aria-expanded="false">
+            <span class="help-icon">?</span> How to use this page
+          </button>
+          <div class="help-content" hidden>
+            <p>Test and troubleshoot your LED wiring.</p>
+            <p>Wiring Tests run patterns that help verify strip connections: Strip Identify lights each strip one at a time, Bottom-Top Sweep confirms vertical orientation, Serpentine Chase verifies zigzag wiring, Seam Test marks the wrap boundary, Channel Identify lights each electrical channel, and RGB Order verifies color wiring.</p>
+            <p>Teensy Tests are patterns generated by the Teensy hardware. "Return to Normal" clears any test pattern and restores your scene.</p>
+          </div>
+        </div>
         <h2>Wiring Tests</h2>
         <div class="button-grid">
           <button class="test-btn" data-test="diag_strip_identify">Strip Identify</button>
@@ -138,17 +198,36 @@
 
       <!-- SIMULATOR -->
       <section id="panel-sim" class="panel" role="tabpanel" aria-labelledby="tab-sim">
-        <h2>Simulator Preview</h2>
-        <div id="sim-controls">
-          <select id="sim-effect-select"></select>
-          <button id="sim-start-btn" class="action-btn">Preview</button>
-          <button id="sim-stop-btn" class="action-btn secondary">Stop</button>
-          <span id="sim-status">Idle</span>
+        <div class="help-panel collapsed" data-tab="sim">
+          <button class="help-toggle" aria-expanded="false">
+            <span class="help-icon">?</span> How to use this page
+          </button>
+          <div class="help-content" hidden>
+            <p>Preview animations without changing the live LEDs.</p>
+            <p>Select an effect from the dropdown and tap "Preview". The pixel grid shows what the animation looks like &mdash; each dot represents one LED matching your physical strip arrangement.</p>
+            <p>Use "Fit" to scale the canvas to fit the screen, or "1:1" for actual pixel size (scrollable). Preview runs independently from the live output.</p>
+            <p>Tap "Stop" to end the preview. The preview disconnects automatically when you leave this tab.</p>
+          </div>
         </div>
-        <div id="sim-canvas-container">
-          <canvas id="sim-canvas" width="10" height="172"></canvas>
+        <div class="sim-layout">
+          <div class="sim-controls-bar">
+            <select id="sim-effect-select"></select>
+            <button id="sim-start-btn" class="action-btn">Preview</button>
+            <button id="sim-stop-btn" class="action-btn secondary">Stop</button>
+            <span id="sim-status">Idle</span>
+          </div>
+          <div>
+            <div class="sim-view-toggle">
+              <button class="sim-view-btn active" data-mode="fit">Fit</button>
+              <button class="sim-view-btn" data-mode="full">1:1</button>
+            </div>
+            <div id="sim-canvas-wrap" class="sim-canvas-wrap fit-mode">
+              <canvas id="sim-canvas" width="86" height="1382"></canvas>
+            </div>
+            <div id="sim-strip-labels" class="sim-strip-labels"></div>
+            <p class="sim-status-line">Preview runs without changing live LEDs</p>
+          </div>
         </div>
-        <p id="sim-info" class="text-dim">Preview runs without changing live LEDs</p>
       </section>
 
       <!-- SYSTEM -->
@@ -165,6 +244,15 @@
 
           <!-- Status section -->
           <div id="system-status" class="system-section active">
+            <div class="help-panel collapsed" data-tab="system-status">
+              <button class="help-toggle" aria-expanded="false">
+                <span class="help-icon">?</span> How to use this page
+              </button>
+              <div class="help-content" hidden>
+                <p>System status and display settings.</p>
+                <p>FPS Target: how many frames per second the renderer targets (60 is standard). Transport: shows if the Teensy hardware is connected. Firmware: the version running on the Teensy. Frames Sent: total frames delivered to the LEDs since startup.</p>
+              </div>
+            </div>
             <div id="system-stats">
               <p>FPS Target: <select id="fps-select">
                 <option value="30">30</option>
@@ -180,6 +268,17 @@
 
           <!-- Setup section -->
           <div id="system-setup" class="system-section hidden">
+            <div class="help-panel collapsed" data-tab="system-setup">
+              <button class="help-toggle" aria-expanded="false">
+                <span class="help-icon">?</span> How to use this page
+              </button>
+              <div class="help-content" hidden>
+                <p>Configure your LED strip installation.</p>
+                <p>This is where you tell the controller about your physical LED hardware. Changes here affect how animations are mapped to your strips.</p>
+                <p>Start a Setup Session to begin editing. Each strip card shows: Label (a friendly name), Enabled (whether this strip is active), Logical Order (render priority), LEDs (how many are installed, max 172), Color (native byte order, usually BGR for WS2812B), Direction (wiring direction), Channel/Slot (electrical output), and Chipset (LED chip type).</p>
+                <p>Tap a card to expand and edit its fields. Changes auto-stage as you edit. Tap "Commit Changes" to save and apply, or "Cancel" to discard. Changes take effect immediately.</p>
+              </div>
+            </div>
             <h3>Installation Setup</h3>
             <p id="setup-status-msg">No active session</p>
             <div id="setup-controls">
@@ -188,31 +287,24 @@
               <button id="setup-commit-btn" class="action-btn hidden">Commit Changes</button>
             </div>
 
-            <!-- Strip inventory table (shown during active session) -->
+            <!-- Strip inventory accordion (shown during active session) -->
             <div id="setup-strip-inventory" class="hidden">
-              <h3>Strip Inventory</h3>
-              <div id="strip-table-container">
-                <table id="strip-table">
-                  <thead>
-                    <tr>
-                      <th>ID</th>
-                      <th>Label</th>
-                      <th>Enabled</th>
-                      <th>LEDs</th>
-                      <th>Color</th>
-                      <th>Dir</th>
-                      <th>Ch</th>
-                      <th>Slot</th>
-                    </tr>
-                  </thead>
-                  <tbody id="strip-table-body"></tbody>
-                </table>
-              </div>
+              <p id="setup-validation-msg"></p>
+              <div id="strip-cards"></div>
             </div>
           </div>
 
           <!-- Admin section -->
           <div id="system-admin" class="system-section hidden">
+            <div class="help-panel collapsed" data-tab="system-admin">
+              <button class="help-toggle" aria-expanded="false">
+                <span class="help-icon">?</span> How to use this page
+              </button>
+              <div class="help-content" hidden>
+                <p>System administration.</p>
+                <p>Auth Token: set a bearer token to protect the API (leave empty for open access). Restart App: restarts the pillar controller service (takes about 5 seconds). Reboot Pi: reboots the entire Raspberry Pi (takes about 30 seconds).</p>
+              </div>
+            </div>
             <div class="control-group">
               <label>Auth Token</label>
               <input type="password" id="system-token-input" placeholder="Enter token">
