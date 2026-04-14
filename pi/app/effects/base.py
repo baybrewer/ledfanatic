@@ -34,6 +34,15 @@ class Effect(ABC):
       self._start_time = t
     return t - self._start_time
 
+  def update_params(self, params: dict):
+    """Update parameters without resetting internal state.
+
+    Subclasses with structural params (particle counts, buffer sizes)
+    should override this to handle resizing. The base implementation
+    only updates the params dict.
+    """
+    self.params.update(params)
+
 
 def hsv_to_rgb(h: float, s: float, v: float) -> tuple[int, int, int]:
   """Convert HSV (0-1 range) to RGB (0-255)."""

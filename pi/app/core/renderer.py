@@ -123,8 +123,6 @@ class Renderer:
       logger.warning(f"Unknown effect: {scene_name}")
       return False
 
-    effect_cls = self.effect_registry[scene_name]
-
     # Merge: code defaults < yaml config < caller params
     yaml_params = {}
     if hasattr(self, 'effects_config') and self.effects_config:
@@ -135,6 +133,13 @@ class Renderer:
           break
     merged = {**yaml_params, **(params or {})}
 
+    # State-preserving: if same effect is already active, update params without reset
+    if scene_name == self.state.current_scene and self.current_effect is not None:
+      self.current_effect.update_params(merged)
+      logger.info(f"Scene params updated: {scene_name}")
+      return True
+
+    effect_cls = self.effect_registry[scene_name]
     self.current_effect = effect_cls(
       width=self.internal_width,
       height=N,

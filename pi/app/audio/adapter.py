@@ -42,11 +42,13 @@ class AudioSnapshot:
 
   # Musical state estimation
   buildup: float = 0.0
-  breakdown: float = 0.0
-  drop: float = 0.0
+  breakdown: bool = False
+  drop: bool = False
+  drop_intensity: float = 0.0
 
   # Time
   time_s: float = 0.0
+  _time: float = 0.0
 
 
 class AudioCompatAdapter:
@@ -118,7 +120,9 @@ class AudioCompatAdapter:
           self._buildup_acc = max(self._buildup_acc - 0.01, 0.0)
           self._drop_acc = max(self._drop_acc - 0.01, 0.0)
 
-    breakdown = max(0.0, 1.0 - level * 3) if level < 0.3 else 0.0
+    # Boolean states matching source simulator contract
+    is_breakdown = level < 0.3 and self._buildup_acc < 0.2
+    is_drop = self._drop_acc > 0.5
 
     # Bands: expand 3-band to 10-band via interpolation
     bands = self._expand_bands(bass, mid, high)
@@ -139,9 +143,11 @@ class AudioCompatAdapter:
       is_phrase=is_phrase,
       beat_phase=beat_phase,
       buildup=self._buildup_acc,
-      breakdown=breakdown,
-      drop=self._drop_acc,
+      breakdown=is_breakdown,
+      drop=is_drop,
+      drop_intensity=self._drop_acc,
       time_s=t,
+      _time=t,
     )
 
   def _expand_bands(self, bass: float, mid: float, high: float) -> np.ndarray:

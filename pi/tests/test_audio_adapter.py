@@ -91,7 +91,7 @@ class TestBeatTiming:
 
 
 class TestMusicalState:
-  def test_buildup_breakdown_drop_bounded(self):
+  def test_buildup_bounded(self):
     adapter = AudioCompatAdapter()
     for i in range(200):
       level = (i % 20) / 20.0
@@ -100,8 +100,22 @@ class TestMusicalState:
         float(i) / 60.0,
       )
     assert 0 <= snap.buildup <= 1.0
-    assert 0 <= snap.breakdown <= 1.0
-    assert 0 <= snap.drop <= 1.0
+
+  def test_drop_is_bool(self):
+    adapter = AudioCompatAdapter()
+    snap = adapter.adapt({'level': 0.8, 'bass': 0.9, 'mid': 0.5, 'high': 0.3, 'beat': True, 'bpm': 120}, 0.0)
+    assert isinstance(snap.drop, bool)
+
+  def test_breakdown_is_bool(self):
+    adapter = AudioCompatAdapter()
+    snap = adapter.adapt({'level': 0.1, 'bass': 0.05, 'mid': 0.05, 'high': 0.02, 'beat': False, 'bpm': 120}, 0.0)
+    assert isinstance(snap.breakdown, bool)
+
+  def test_drop_intensity_is_float(self):
+    adapter = AudioCompatAdapter()
+    snap = adapter.adapt({'level': 0.8, 'bass': 0.9, 'mid': 0.5, 'high': 0.3, 'beat': True, 'bpm': 120}, 0.0)
+    assert isinstance(snap.drop_intensity, float)
+    assert 0 <= snap.drop_intensity <= 1.0
 
   def test_beat_energy_positive(self):
     adapter = AudioCompatAdapter()
@@ -127,4 +141,6 @@ class TestAudioSnapshotSchema:
     assert hasattr(snap, 'buildup')
     assert hasattr(snap, 'breakdown')
     assert hasattr(snap, 'drop')
+    assert hasattr(snap, 'drop_intensity')
     assert hasattr(snap, 'time_s')
+    assert hasattr(snap, '_time')
