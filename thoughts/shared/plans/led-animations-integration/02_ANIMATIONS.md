@@ -111,12 +111,21 @@ class PortedEffect(Effect):
         return self.buf.get_frame()
 
     def update_params(self, params):
-        """Update without resetting internal state (fire buffer, particles, etc.)."""
+        """Update without resetting internal state.
+
+        IMPORTANT: Effects with structural params (particle counts, star arrays,
+        scroll buffers) MUST override this method to handle resizing.
+        The base implementation only handles scalar params safely.
+        """
         for key, val in params.items():
-            if hasattr(self, key.upper()):
-                setattr(self, key.upper(), val)
-            elif key == 'palette' and self.PALETTE_SUPPORT:
+            if key == 'palette' and self.PALETTE_SUPPORT:
                 self._set_palette(val)
+            elif key in self._SCALAR_PARAMS:
+                setattr(self, key.upper(), val)
+            # Structural params (count, density, particles, etc.) handled by override
+
+    # Each effect class defines which params are safe for scalar update
+    _SCALAR_PARAMS = set()  # Override per class
 ```
 
 ## Persistent framebuffer requirement
@@ -174,24 +183,43 @@ Each effect decides whether to `clear()` or `fade()` at the start of its update.
 | SoundPlasma | Gain (0.5-5.0, 2.0), Base Speed (0.1-3.0, 0.8) | volume, buildup, breakdown, drop | 0 |
 | StrobeChaos | Intensity (0.3-3.0, 1.0), Segments (1-10, 4) | beat, breakdown, drop | 0 |
 
-## Registration in main.py
+## Registration in main.py — COMPLETE wiring
+
+The current codebase has a gap: `AppDeps.effect_catalog` is optional and never populated. Routes fall back to a freshly-built default catalog that won't include imported effects.
+
+**Required changes:**
+
+1. **`main.py`** — create ONE shared `EffectCatalogService`, register all imported effects into it, and pass it through `create_app()`:
 
 ```python
+from .effects.catalog import EffectCatalogService, EffectMeta
 from .effects.imported import IMPORTED_EFFECTS
 
-# Register all imported effects
+# Create shared catalog (picks up built-in effects automatically)
+effect_catalog = EffectCatalogService()
+
+# Register all imported effects into ALL THREE surfaces
 for name, cls in IMPORTED_EFFECTS.items():
+    # 1. Renderer registry (for activate_scene)
     renderer.register_effect(name, cls)
 
-# Register metadata in catalog
-for name, cls in IMPORTED_EFFECTS.items():
+    # 2. Catalog service (for /api/effects/catalog and /api/scenes/list)
     meta = EffectMeta(
         name=name, label=cls.DISPLAY_NAME, group=cls.CATEGORY,
         description=cls.DESCRIPTION,
         audio_requires=getattr(cls, 'AUDIO_REQUIRES', ()),
     )
     effect_catalog.register_imported(name, meta)
+
+# Pass catalog into create_app so AppDeps.effect_catalog is populated
+app = create_app(..., effect_catalog=effect_catalog, ...)
 ```
+
+2. **`server.py create_app()`** — accept `effect_catalog` parameter and store in `AppDeps`
+
+3. **`preview/service.py start()`** — look up from `renderer.effect_registry` instead of hardcoded `EFFECTS + AUDIO_EFFECTS`
+
+This ensures imported effects appear in ALL surfaces: live activation, catalog API, scenes list, and preview.
 
 ## Update PreviewService to use renderer registry
 
@@ -221,3 +249,14 @@ def start(self, effect_name, ...):
 - Registered in all three surfaces (renderer, catalog, preview)
 - Sound effects receive adapted audio via AudioCompatAdapter
 - Param changes don't reset stateful animations
+- Effects requiring `update_params()` overrides (structural param changes):
+  - Fireflies (Count resizes particle array)
+  - FlowField (Particles resizes particle array)
+  - Starfield (Density resizes star array)
+  - MatrixRain (Density resizes drop array)
+  - ParticleBurst (Count changes burst size)
+  - LavaLamp (Blobs resizes blob array)
+  - Kaleidoscope (Segments changes symmetry calculation)
+  - Moire (Centers resizes center array)
+  - Fireplace (most params are scalars, but NOISE_OCTAVES affects computation)
+  - Feldstein2 (Palette param switches between 17 custom palettes)

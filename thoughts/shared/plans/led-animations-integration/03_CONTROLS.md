@@ -128,13 +128,16 @@ The current `loadEffects()` in `app.js` rebuilds the Effects tab from `/api/scen
 
 This prevents the param controls from being destroyed every time an effect is activated.
 
-## Param change flow
+## Param change flow (state-preserving)
 
 1. User moves speed slider
 2. JS debounces (100ms)
 3. `POST /api/scenes/activate {effect: current, params: {speed: newVal, palette: currentPalette}}`
-4. Renderer re-creates effect with merged params
-5. Effect picks up new speed on next render
+4. Renderer detects same effect is already active → calls `effect.update_params(merged)` instead of re-creating
+5. Scalar params take effect on next frame; structural params (count, density) trigger controlled resize in the effect's `update_params()` override
+6. Fire buffers, particle lists, and trail buffers are preserved
+
+**Note:** Switching to a DIFFERENT effect still re-creates. Only same-effect param changes are state-preserving.
 
 ## Tests
 

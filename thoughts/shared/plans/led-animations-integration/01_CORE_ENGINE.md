@@ -4,6 +4,10 @@
 
 Port the shared rendering primitives from `led_sim.py` into repo-native modules. No Pygame. Pure numpy + math.
 
+## Source reference
+
+The original simulator is vendored at `pi/app/effects/imported/vendor/led_sim_reference.py` (read-only reference, not imported at runtime). All porting work should reference this checked-in copy, not the external `/Users/jim/ai/led-animations/` path.
+
 ## Files to create
 
 ### `pi/app/effects/engine/` package
