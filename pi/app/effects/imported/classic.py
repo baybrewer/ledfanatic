@@ -12,7 +12,7 @@ import numpy as np
 
 from ..base import Effect
 from ..engine.buffer import LEDBuffer
-from ..engine.noise import perlin as _perlin, cyl_noise, cyl_fbm
+from ..engine.noise import perlin as _perlin, cyl_noise, cyl_fbm, cyl_noise_grid, cyl_fbm_grid, perlin_grid
 from ..engine.color import hsv2rgb, clamp, clampf, qsub8, qadd8, scale8
 from ..engine.palettes import (
   FELDSTEIN_PALETTES, NUM_FELDSTEIN_PALETTES,
@@ -165,33 +165,54 @@ class FeldsteinEquation(Effect):
       self._hue_accum -= 1000
     h = self._hue
 
-    bar_t = time_s * bar_speed * 40  # bar scroll offset in rows
+    bar_t = time_s * bar_speed * 40
 
     # Persistent buffer: fade instead of clear
     self.buf.fade_by(48)
 
-    for col in range(self.width):
-      direction = 1.0 if col % 2 == 0 else -1.0
-      y_scroll = bar_t * direction
-      for row in range(self.height):
-        scrolled_row = row + y_scroll
+    # Vectorized: compute all noise values at once
+    cols = self.width
+    rows = self.height
+    col_idx = np.arange(cols, dtype=np.float64)
+    row_idx = np.arange(rows, dtype=np.float64)
 
-        n1 = cyl_noise(col, scrolled_row, time_s * 1.0, 0.8, 0.015)
-        v1 = clamp(max(0, n1) * 300)
-        c1 = hsv2rgb(h & 255, 255, v1)
+    # Build scrolled row grids (even cols scroll +, odd cols scroll -)
+    directions = np.where(col_idx % 2 == 0, 1.0, -1.0)
+    y_scrolls = bar_t * directions  # (cols,)
+    # scrolled_row[col, row] = row + y_scroll[col]
+    scrolled = row_idx[np.newaxis, :] + y_scrolls[:, np.newaxis]  # (cols, rows)
 
-        n2 = cyl_noise(col + 20, scrolled_row, time_s * 0.7 + 50, 1.2, 0.012)
-        v2 = clamp(max(0, n2) * 300)
-        c2 = hsv2rgb((h + 96) & 255, 255, v2)
+    # Cylinder-mapped noise coordinates for each layer
+    for layer, (x_off, t_mult, t_off, x_sc, y_sc, v_mult, h_off) in enumerate([
+      (0, 1.0, 0, 0.8, 0.015, 300, 0),
+      (20, 0.7, 50, 1.2, 0.012, 300, 96),
+      (50, 0.4, 100, 0.6, 0.008, 250, 160),
+    ]):
+      angles = (col_idx + x_off) / cols * 6.2832
+      r = cols * x_sc / 6.2832
+      cx = np.cos(angles) * r  # (cols,)
+      sy = np.sin(angles) * r
+      z_vals = scrolled * y_sc + time_s * t_mult + t_off  # (cols, rows)
+      cx_grid = cx[:, np.newaxis] * np.ones(rows)
+      sy_grid = sy[:, np.newaxis] * np.ones(rows)
+      noise = perlin_grid(cx_grid, sy_grid, z_vals)  # (cols, rows)
+      vals = np.clip(np.maximum(0, noise) * v_mult, 0, 255).astype(np.uint8)
 
-        n3 = cyl_noise(col + 50, scrolled_row, time_s * 0.4 + 100, 0.6, 0.008)
-        v3 = clamp(max(0, n3) * 250)
-        c3 = hsv2rgb((h + 160) & 255, 255, v3)
+      # HSV to RGB for this layer (vectorized)
+      hue = (h + h_off) & 255
+      layer_rgb = np.zeros((cols, rows, 3), dtype=np.uint8)
+      # Fast approximate: use hsv2rgb for the single hue, vary only V
+      r_c, g_c, b_c = hsv2rgb(hue, 255, 255)
+      if r_c + g_c + b_c > 0:
+        layer_rgb[..., 0] = (vals.astype(np.uint16) * r_c // 255).astype(np.uint8)
+        layer_rgb[..., 1] = (vals.astype(np.uint16) * g_c // 255).astype(np.uint8)
+        layer_rgb[..., 2] = (vals.astype(np.uint16) * b_c // 255).astype(np.uint8)
 
-        self.buf.add_led(col, row,
-                         c1[0] + c2[0] + c3[0],
-                         c1[1] + c2[1] + c3[1],
-                         c1[2] + c2[2] + c3[2])
+      # Additive blend into buffer
+      self.buf.data = np.clip(
+        self.buf.data.astype(np.int16) + layer_rgb.astype(np.int16),
+        0, 255,
+      ).astype(np.uint8)
 
     return self.buf.get_frame()
 
@@ -262,27 +283,38 @@ class Feldstein2(Effect):
     # Persistent buffer: fade instead of clear
     self.buf.fade_by(fade)
 
-    for x in range(self.width):
-      xS = x * SCALE + self._xo
-      for y in range(self.height):
-        yS = y * SCALE + self._yo
+    # Vectorized Feldstein OG noise
+    cols, rows = self.width, self.height
+    x_idx = np.arange(cols, dtype=np.float64)
+    y_idx = np.arange(rows, dtype=np.float64)
+    xS = (x_idx * SCALE + self._xo)[:, np.newaxis] * np.ones(rows)  # (cols, rows)
+    yS = np.ones(cols)[:, np.newaxis] * (y_idx * SCALE + self._yo)   # (cols, rows)
 
-        # Layer 1
-        n1 = _inoise8_sub(xS // 10, yS // 50 + time_val // 2, time_val)
-        c1 = hsv2rgb((h + h1_off) & 255, s1, n1)
+    for h_off, sat, (nx_div, ny_div, ny_off, nz_val) in [
+      (h1_off, s1, (10, 50, time_val // 2, float(time_val))),
+      (h2_off, s2, (10, 50, time_val // 2, float(time_val + 100 * SCALE))),
+      (h3_off, s3, (100, 40, 0, float(time_val // 10 + 300 * SCALE))),
+    ]:
+      px = xS / nx_div / 256.0
+      py = (yS / ny_div + ny_off) / 256.0
+      pz = np.full_like(px, nz_val / 256.0)
+      raw = (perlin_grid(px, py, pz) + 1.0) * 127.5
+      raw = np.clip(raw, 0, 255).astype(np.int32)
+      vals = raw - 128
+      vals = np.clip(vals, 0, 255)
+      vals = vals + ((vals * 128) >> 8)
+      vals = np.clip(vals, 0, 255).astype(np.uint8)
 
-        # Layer 2
-        n2 = _inoise8_sub(xS // 10, yS // 50 + time_val // 2, time_val + 100 * SCALE)
-        c2 = hsv2rgb((h + h2_off) & 255, s2, n2)
-
-        # Layer 3
-        n3 = _inoise8_sub(xS // 100, yS // 40, time_val // 10 + 300 * SCALE)
-        c3 = hsv2rgb((h + h3_off) & 255, s3, n3)
-
-        self.buf.add_led(x, y,
-                         c1[0] + c2[0] + c3[0],
-                         c1[1] + c2[1] + c3[1],
-                         c1[2] + c2[2] + c3[2])
+      hue = (h + h_off) & 255
+      r_c, g_c, b_c = hsv2rgb(hue, sat, 255)
+      layer = np.zeros((cols, rows, 3), dtype=np.uint8)
+      if r_c + g_c + b_c > 0:
+        layer[..., 0] = (vals.astype(np.uint16) * r_c // 255).astype(np.uint8)
+        layer[..., 1] = (vals.astype(np.uint16) * g_c // 255).astype(np.uint8)
+        layer[..., 2] = (vals.astype(np.uint16) * b_c // 255).astype(np.uint8)
+      self.buf.data = np.clip(
+        self.buf.data.astype(np.int16) + layer.astype(np.int16), 0, 255
+      ).astype(np.uint8)
 
     return self.buf.get_frame()
 
