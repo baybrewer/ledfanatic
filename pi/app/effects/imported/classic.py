@@ -484,6 +484,11 @@ class Fireplace(Effect):
     half_h = height // 2
     self._x_g_half = np.arange(width, dtype=np.float64)[:, np.newaxis] * np.ones(half_h)
     self._y_g_half = np.ones(width)[:, np.newaxis] * (np.arange(half_h, dtype=np.float64) * 2)
+    # Noise cache — update at 30 Hz (every other frame), saves ~6ms/frame
+    self._noise_tick = 0
+    self._cached_nx = np.zeros((width, height), dtype=np.float64)
+    self._cached_ny = np.zeros((width, height), dtype=np.float64)
+    self._cached_cn = np.zeros((width, height), dtype=np.float64)
 
     # Warm up the spark zone
     spark_zone = int(self.params.get("spark_zone", 35))
@@ -554,13 +559,17 @@ class Fireplace(Effect):
           fade = 1.0 - yo / flare_height
           self._heat[fx, y] = min(1.0, self._heat[fx, y] + 0.6 * fade * dt)
 
-    # ── Convection (vectorized — half-res noise for speed) ───────
+    # ── Convection (vectorized — noise at 30 Hz for speed) ──────
     x_g = self._x_g
     y_g = self._y_g
 
-    # Two FBM noise grids at half vertical resolution (2x faster)
-    nx = np.repeat(cyl_fbm_xy(self._x_g_half, self._y_g_half, sim_t * 8.0, octs, 0.5, 0.015, cols), 2, axis=1)[:, :rows]
-    ny = np.repeat(cyl_fbm_xy(self._x_g_half + 5, self._y_g_half, sim_t * 7.0, octs, 0.5, 0.015, cols), 2, axis=1)[:, :rows]
+    # Update noise grids every other frame (~6ms savings)
+    self._noise_tick += 1
+    if self._noise_tick & 1 == 0:
+      self._cached_nx = np.repeat(cyl_fbm_xy(self._x_g_half, self._y_g_half, sim_t * 8.0, octs, 0.5, 0.015, cols), 2, axis=1)[:, :rows]
+      self._cached_ny = np.repeat(cyl_fbm_xy(self._x_g_half + 5, self._y_g_half, sim_t * 7.0, octs, 0.5, 0.015, cols), 2, axis=1)[:, :rows]
+    nx = self._cached_nx
+    ny = self._cached_ny
 
     # Source positions for advection
     sx = np.clip(x_g + nx * turb_x, 0, cols - 1.001)
@@ -592,7 +601,9 @@ class Fireplace(Effect):
     cb = cool_base * fuel_cool
     ch = cool_height * fuel_cool
     hf = (rows - 1 - y_g) / float(rows)  # 0=bottom, 1=top
-    cn = np.repeat((cyl_noise_xy(self._x_g_half, self._y_g_half, sim_t * 10.0, 0.8, 0.03, cols) + 1) * 0.5, 2, axis=1)[:, :rows]
+    if self._noise_tick & 1 == 0:
+      self._cached_cn = np.repeat((cyl_noise_xy(self._x_g_half, self._y_g_half, sim_t * 10.0, 0.8, 0.03, cols) + 1) * 0.5, 2, axis=1)[:, :rows]
+    cn = self._cached_cn
     rng = np.random.random((cols, rows))
     top_frac = np.clip((hf - 0.5) * 2, 0, 1)
     cool = np.where(
