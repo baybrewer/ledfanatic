@@ -3,37 +3,31 @@
 from fastapi import APIRouter, Depends, HTTPException
 
 from ..schemas import SceneRequest, SceneSaveRequest
-from ...effects.generative import EFFECTS
-from ...effects.audio_reactive import AUDIO_EFFECTS
-from ...diagnostics.patterns import DIAGNOSTIC_EFFECTS
+from ...effects.catalog import EffectCatalogService
 
 
 def create_router(deps, require_auth, broadcast_state) -> APIRouter:
     router = APIRouter(prefix="/api/scenes", tags=["scenes"])
 
+    # Shared catalog instance for consistent metadata
+    _catalog = EffectCatalogService()
+
     @router.get("/list")
     async def list_effects():
+        """Compatibility endpoint — projects catalog metadata into the legacy shape."""
+        catalog = (
+            deps.effect_catalog.get_catalog()
+            if hasattr(deps, 'effect_catalog') and deps.effect_catalog
+            else _catalog.get_catalog()
+        )
         all_effects = {}
-        for name, cls in EFFECTS.items():
-            desc = cls.__doc__.strip().split('\n')[0] if cls.__doc__ else ''
+        for name, meta in catalog.items():
+            # Map catalog group to legacy type field
+            effect_type = meta.group if meta.group != 'imported' else 'generative'
             all_effects[name] = {
-                'type': 'generative',
-                'description': desc,
-                'preview_supported': True,
-            }
-        for name, cls in AUDIO_EFFECTS.items():
-            desc = cls.__doc__.strip().split('\n')[0] if cls.__doc__ else ''
-            all_effects[name] = {
-                'type': 'audio',
-                'description': desc,
-                'preview_supported': True,
-            }
-        for name, cls in DIAGNOSTIC_EFFECTS.items():
-            desc = cls.__doc__.strip().split('\n')[0] if cls.__doc__ else ''
-            all_effects[name] = {
-                'type': 'diagnostic',
-                'description': desc,
-                'preview_supported': False,
+                'type': effect_type,
+                'description': meta.description,
+                'preview_supported': meta.preview_supported,
             }
         return {'effects': all_effects, 'current': deps.render_state.current_scene}
 

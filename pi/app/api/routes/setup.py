@@ -195,4 +195,67 @@ def create_router(deps, require_auth, broadcast_state) -> APIRouter:
       deps.spatial_map = spatial_map
     return {"status": "saved", "profile_id": spatial_map.profile_id}
 
+  @router.post("/rgb-order/analyze")
+  async def analyze_rgb_order(auth=Depends(require_auth)):
+    """Analyze strip capture set for RGB order detection.
+
+    Accepts multipart/form-data with dark_frame, red_frame, green_frame,
+    blue_frame images plus session_id and strip_id fields.
+    This is a placeholder that will be expanded with file upload handling.
+    """
+    svc = _get_setup_service()
+    if svc.get_session() is None:
+      raise HTTPException(409, "No active setup session")
+    # Full implementation requires multipart file upload parsing
+    # For now, return the expected shape so the API contract exists
+    raise HTTPException(501, "RGB order analysis requires image upload — use multipart/form-data")
+
+  @router.post("/geometry/analyze")
+  async def analyze_geometry(auth=Depends(require_auth)):
+    """Analyze geometry capture batch for strip position detection.
+
+    Accepts multipart/form-data with capture frames and phase metadata.
+    """
+    svc = _get_setup_service()
+    if svc.get_session() is None:
+      raise HTTPException(409, "No active setup session")
+    raise HTTPException(501, "Geometry analysis requires image upload — use multipart/form-data")
+
+  @router.post("/geometry/solve")
+  async def solve_geometry(body: dict, auth=Depends(require_auth)):
+    """Solve or validate a front-projection geometry fit from anchor observations."""
+    svc = _get_setup_service()
+    if svc.get_session() is None:
+      raise HTTPException(409, "No active setup session")
+    from ...setup.geometry import (
+      fit_strip_from_anchors, AnchorObservation, build_spatial_map,
+    )
+    fits = []
+    for strip_data in body.get('strips', []):
+      anchors = [
+        AnchorObservation(
+          strip_id=strip_data['strip_id'],
+          anchor_index=a['anchor_index'],
+          centroid_x=a['centroid_x'],
+          centroid_y=a['centroid_y'],
+          brightness=a.get('brightness', 200),
+        )
+        for a in strip_data.get('anchors', [])
+      ]
+      fit = fit_strip_from_anchors(
+        strip_data['strip_id'],
+        anchors,
+        strip_data.get('installed_led_count', 172),
+        body.get('image_width', 1280),
+        body.get('image_height', 720),
+      )
+      fits.append({
+        'strip_id': fit.strip_id,
+        'passed': fit.passed,
+        'fit_method': fit.fit_method,
+        'anchor_count': len(fit.anchors),
+        'position_count': len(fit.positions),
+      })
+    return {'fits': fits}
+
   return router

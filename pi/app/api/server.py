@@ -74,7 +74,7 @@ def create_app(
     app.include_router(transport_routes.create_router(deps))
     app.include_router(setup.create_router(deps, require_auth, broadcast_state))
     app.include_router(effects.create_router(deps))
-    app.include_router(preview.create_router(deps))
+    app.include_router(preview.create_router(deps, require_auth))
     app.include_router(ws_router)
 
     # --- Periodic broadcast ---

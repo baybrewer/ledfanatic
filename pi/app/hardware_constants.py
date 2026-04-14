@@ -54,10 +54,11 @@ LEDS_PER_STRIP = _pillar.get('leds_per_strip', 172)
 TOTAL_LEDS = _pillar.get('total_leds', STRIPS * LEDS_PER_STRIP)
 CHANNELS = _channels.get('count', 5)
 LEDS_PER_CHANNEL = _channels.get('leds_per_channel', LEDS_PER_STRIP * 2)
-COLOR_ORDER = _pillar.get('color_order', 'BGR')
 
 # --- Exported controller envelope constants ---
 CONTROLLER_WIRE_ORDER = _controller.get('controller_wire_order', 'BGR')
+# Legacy alias — CONTROLLER_WIRE_ORDER is the SSOT for color order
+COLOR_ORDER = CONTROLLER_WIRE_ORDER
 ACTIVE_OUTPUTS = _controller.get('active_outputs', 5)
 TOTAL_OUTPUTS = _controller.get('total_outputs', 8)
 ELECTRICAL_LEDS_PER_OUTPUT = _controller.get('electrical_leds_per_output', 344)

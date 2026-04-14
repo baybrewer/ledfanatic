@@ -7,7 +7,7 @@ Routes only; service logic lives in pi/app/preview/service.py.
 import asyncio
 import logging
 
-from fastapi import APIRouter, HTTPException, WebSocket, WebSocketDisconnect
+from fastapi import APIRouter, Depends, HTTPException, WebSocket, WebSocketDisconnect
 from pydantic import BaseModel
 
 from ...preview.service import PreviewService
@@ -21,7 +21,7 @@ class PreviewStartRequest(BaseModel):
   fps: int = 30
 
 
-def create_router(deps) -> APIRouter:
+def create_router(deps, require_auth) -> APIRouter:
   router = APIRouter(prefix="/api/preview", tags=["preview"])
 
   def _get_preview_service() -> PreviewService:
@@ -35,7 +35,7 @@ def create_router(deps) -> APIRouter:
     return svc.get_status()
 
   @router.post("/start")
-  async def preview_start(req: PreviewStartRequest):
+  async def preview_start(req: PreviewStartRequest, auth=Depends(require_auth)):
     svc = _get_preview_service()
     try:
       svc.start(req.effect, req.params, req.fps)
@@ -44,7 +44,7 @@ def create_router(deps) -> APIRouter:
     return svc.get_status()
 
   @router.post("/stop")
-  async def preview_stop():
+  async def preview_stop(auth=Depends(require_auth)):
     svc = _get_preview_service()
     svc.stop()
     return {'status': 'stopped'}

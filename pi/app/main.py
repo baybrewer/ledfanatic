@@ -123,6 +123,9 @@ def main():
   compiled_plan = compile_output_plan(installation, controller_profile)
   logger.info(f"Installation: {installation.profile_name}, {len(installation.strips)} strips, geometry={installation.geometry_mode}")
   logger.info(f"Compiled plan: {compiled_plan.channels}ch x {compiled_plan.leds_per_channel}leds")
+
+  # Apply compiled plan to renderer so it uses plan-driven dimensions and mapping
+  renderer.apply_output_plan(compiled_plan)
   if spatial_map:
     logger.info(f"Spatial map: {spatial_map.profile_id}, {len(spatial_map.visible_strips)} visible strips")
 

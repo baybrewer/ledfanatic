@@ -152,8 +152,9 @@ class SetupSessionService:
     # Update live installation
     self.installation.__dict__.update(staged.__dict__)
 
-    # Compile new runtime plan
+    # Compile new runtime plan and hot-swap into renderer
     new_plan = compile_output_plan(staged, self.controller)
+    self.renderer.apply_output_plan(new_plan)
 
     # Restore live context from snapshot
     snapshot = self._session.snapshot

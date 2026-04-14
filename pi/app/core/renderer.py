@@ -12,6 +12,7 @@ from typing import Optional
 import numpy as np
 
 from ..mapping.cylinder import map_frame_fast, serialize_channels, downsample_width, N
+from ..mapping.runtime_mapper import map_frame_compiled, serialize_channels_compiled
 from ..transport.usb import TeensyTransport
 from .brightness import BrightnessEngine
 
@@ -101,6 +102,7 @@ class Renderer:
     self.internal_width = internal_width
     self.effect_registry: dict = {}
     self.current_effect = None
+    self._output_plan = None  # CompiledOutputPlan, set via apply_output_plan()
     self._running = False
     self._gamma_lut = _build_gamma_lut(state.gamma)
     self._fps_samples: list[float] = []
@@ -109,6 +111,11 @@ class Renderer:
 
   def register_effect(self, name: str, effect_class):
     self.effect_registry[name] = effect_class
+
+  def apply_output_plan(self, plan):
+    """Hot-swap the compiled output plan. Thread-safe: next frame picks it up."""
+    self._output_plan = plan
+    logger.info(f"Output plan applied: {plan.channels}ch x {plan.leds_per_channel}leds")
 
   def _set_scene(self, scene_name: str, params: Optional[dict] = None):
     if scene_name not in self.effect_registry:
@@ -197,10 +204,15 @@ class Renderer:
     """Render one frame and send to Teensy."""
     from datetime import datetime, timezone
 
+    plan = self._output_plan
+    # Use plan dimensions when available, fall back to legacy constants
+    ch = plan.channels if plan else 5
+    lpc = plan.leds_per_channel if plan else 344
+
     if self.state.blackout:
-      channel_data = np.zeros((5, 344, 3), dtype=np.uint8)
+      channel_data = np.zeros((ch, lpc, 3), dtype=np.uint8)
     elif self.current_effect is None:
-      channel_data = np.zeros((5, 344, 3), dtype=np.uint8)
+      channel_data = np.zeros((ch, lpc, 3), dtype=np.uint8)
     else:
       t = time.monotonic()
       internal_frame = self.current_effect.render(t, self.state)
@@ -219,12 +231,19 @@ class Renderer:
       # Apply gamma
       logical_frame = self._gamma_lut[logical_frame]
 
-      channel_data = map_frame_fast(logical_frame)
+      # Use compiled plan mapper when available, legacy mapper as fallback
+      if plan:
+        channel_data = map_frame_compiled(logical_frame, plan)
+      else:
+        channel_data = map_frame_fast(logical_frame)
 
     self.state.frames_rendered += 1
 
     # Send — only count as sent on success
-    pixel_bytes = serialize_channels(channel_data)
+    if plan:
+      pixel_bytes = serialize_channels_compiled(channel_data)
+    else:
+      pixel_bytes = serialize_channels(channel_data)
     success = await self.transport.send_frame(pixel_bytes)
     if success:
       self.state.frames_sent += 1
