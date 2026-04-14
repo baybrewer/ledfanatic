@@ -25,7 +25,12 @@ function authHeaders() {
 
 // --- WebSocket ---
 
+let wsRetryTimer = null;
+
 function connectWS() {
+  if (ws && (ws.readyState === WebSocket.CONNECTING || ws.readyState === WebSocket.OPEN)) return;
+  if (wsRetryTimer) { clearTimeout(wsRetryTimer); wsRetryTimer = null; }
+
   const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
   ws = new WebSocket(`${proto}//${location.host}/ws`);
 
@@ -35,7 +40,8 @@ function connectWS() {
 
   ws.onclose = () => {
     document.getElementById('connection-dot').className = 'dot disconnected';
-    setTimeout(connectWS, 2000);
+    ws = null;
+    wsRetryTimer = setTimeout(connectWS, 2000);
   };
 
   ws.onerror = () => { ws.close(); };
@@ -92,7 +98,15 @@ async function api(method, path, body) {
       showAuthBanner();
       return null;
     }
-    return await res.json();
+    if (res.status === 204 || res.headers.get('content-length') === '0') {
+      return { status: 'ok' };
+    }
+    const ct = res.headers.get('content-type') || '';
+    if (ct.includes('application/json')) {
+      return await res.json();
+    }
+    // Non-JSON success — return status wrapper
+    return res.ok ? { status: 'ok' } : null;
   } catch (e) {
     console.error(`API error: ${method} ${path}`, e);
     return null;
@@ -105,21 +119,50 @@ function showAuthBanner() {
 
 // --- Tab navigation ---
 
-function initTabs() {
-  document.querySelectorAll('.tab').forEach(tab => {
-    tab.addEventListener('click', () => {
-      document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
-      document.querySelectorAll('.panel').forEach(p => p.classList.remove('active'));
-      tab.classList.add('active');
-      document.getElementById(`panel-${tab.dataset.tab}`).classList.add('active');
+function activateTab(tab) {
+  const tabs = Array.from(document.querySelectorAll('.tab'));
+  tabs.forEach(t => {
+    t.classList.remove('active');
+    t.setAttribute('aria-selected', 'false');
+    t.setAttribute('tabindex', '-1');
+  });
+  document.querySelectorAll('.panel').forEach(p => p.classList.remove('active'));
+  tab.classList.add('active');
+  tab.setAttribute('aria-selected', 'true');
+  tab.setAttribute('tabindex', '0');
+  tab.focus();
+  document.getElementById(`panel-${tab.dataset.tab}`).classList.add('active');
 
-      if (tab.dataset.tab === 'effects') loadEffects();
-      if (tab.dataset.tab === 'media') loadMedia();
-      if (tab.dataset.tab === 'audio') loadAudioDevices();
-      if (tab.dataset.tab === 'diag') loadStats();
-      if (tab.dataset.tab === 'sim') loadSimEffects();
-      if (tab.dataset.tab === 'system') loadSystemStatus();
-    });
+  if (tab.dataset.tab === 'effects') loadEffects();
+  if (tab.dataset.tab === 'media') loadMedia();
+  if (tab.dataset.tab === 'audio') loadAudioDevices();
+  if (tab.dataset.tab === 'diag') loadStats();
+  if (tab.dataset.tab === 'sim') loadSimEffects();
+  if (tab.dataset.tab === 'system') loadSystemStatus();
+}
+
+function initTabs() {
+  const tabs = Array.from(document.querySelectorAll('.tab'));
+  tabs.forEach(tab => {
+    tab.addEventListener('click', () => activateTab(tab));
+  });
+
+  // Keyboard navigation: Arrow Left/Right, Home, End
+  document.getElementById('tabs').addEventListener('keydown', (e) => {
+    const current = document.querySelector('.tab[aria-selected="true"]');
+    if (!current) return;
+    const idx = tabs.indexOf(current);
+    let next = -1;
+
+    if (e.key === 'ArrowRight') next = (idx + 1) % tabs.length;
+    else if (e.key === 'ArrowLeft') next = (idx - 1 + tabs.length) % tabs.length;
+    else if (e.key === 'Home') next = 0;
+    else if (e.key === 'End') next = tabs.length - 1;
+
+    if (next >= 0) {
+      e.preventDefault();
+      activateTab(tabs[next]);
+    }
   });
 }
 
@@ -521,11 +564,19 @@ async function loadSimEffects() {
   }
 }
 
+let previewWsRetry = null;
+
 function connectPreviewWs() {
-  if (previewWs) previewWs.close();
+  if (previewWs && (previewWs.readyState === WebSocket.CONNECTING || previewWs.readyState === WebSocket.OPEN)) return;
+  if (previewWsRetry) { clearTimeout(previewWsRetry); previewWsRetry = null; }
+
   const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
   previewWs = new WebSocket(`${proto}//${location.host}/api/preview/ws`);
   previewWs.binaryType = 'arraybuffer';
+
+  previewWs.onopen = () => {
+    document.getElementById('sim-status').textContent = 'Connected';
+  };
 
   previewWs.onmessage = (evt) => {
     if (evt.data instanceof ArrayBuffer && evt.data.byteLength > 10) {
@@ -533,7 +584,17 @@ function connectPreviewWs() {
     }
   };
 
-  previewWs.onclose = () => { previewWs = null; };
+  previewWs.onerror = () => { previewWs.close(); };
+
+  previewWs.onclose = () => {
+    previewWs = null;
+    document.getElementById('sim-status').textContent = 'Disconnected';
+    // Auto-retry if preview was active
+    previewWsRetry = setTimeout(async () => {
+      const status = await api('GET', '/api/preview/status');
+      if (status && status.active) connectPreviewWs();
+    }, 3000);
+  };
 }
 
 function renderPreviewFrame(buffer) {

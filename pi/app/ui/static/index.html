@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
   <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
   <meta name="apple-mobile-web-app-capable" content="yes">
   <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
   <title>Pillar Control</title>
@@ -47,21 +47,21 @@
     </section>
 
     <!-- Tab navigation -->
-    <nav id="tabs">
-      <button class="tab active" data-tab="live">Live</button>
-      <button class="tab" data-tab="effects">Effects</button>
-      <button class="tab" data-tab="media">Media</button>
-      <button class="tab" data-tab="audio">Audio</button>
-      <button class="tab" data-tab="diag">Diag</button>
-      <button class="tab" data-tab="sim">Sim</button>
-      <button class="tab" data-tab="system">System</button>
+    <nav id="tabs" role="tablist" aria-label="Main navigation">
+      <button class="tab active" data-tab="live" role="tab" aria-selected="true" aria-controls="panel-live" tabindex="0">Live</button>
+      <button class="tab" data-tab="effects" role="tab" aria-selected="false" aria-controls="panel-effects" tabindex="-1">Effects</button>
+      <button class="tab" data-tab="media" role="tab" aria-selected="false" aria-controls="panel-media" tabindex="-1">Media</button>
+      <button class="tab" data-tab="audio" role="tab" aria-selected="false" aria-controls="panel-audio" tabindex="-1">Audio</button>
+      <button class="tab" data-tab="diag" role="tab" aria-selected="false" aria-controls="panel-diag" tabindex="-1">Diag</button>
+      <button class="tab" data-tab="sim" role="tab" aria-selected="false" aria-controls="panel-sim" tabindex="-1">Sim</button>
+      <button class="tab" data-tab="system" role="tab" aria-selected="false" aria-controls="panel-system" tabindex="-1">System</button>
     </nav>
 
     <!-- Tab panels -->
     <main id="panels">
 
       <!-- LIVE -->
-      <section id="panel-live" class="panel active">
+      <section id="panel-live" class="panel active" role="tabpanel" aria-labelledby="tab-live">
         <div id="scene-info">
           <p>Scene: <strong id="current-scene-name">--</strong></p>
         </div>
@@ -69,7 +69,7 @@
       </section>
 
       <!-- EFFECTS -->
-      <section id="panel-effects" class="panel">
+      <section id="panel-effects" class="panel" role="tabpanel" aria-labelledby="tab-effects">
         <h2>Generative Effects</h2>
         <div id="effect-list" class="button-grid"></div>
         <h2>Audio-Reactive</h2>
@@ -77,7 +77,7 @@
       </section>
 
       <!-- MEDIA -->
-      <section id="panel-media" class="panel">
+      <section id="panel-media" class="panel" role="tabpanel" aria-labelledby="tab-media">
         <div class="upload-area">
           <input type="file" id="media-upload" accept="image/*,video/*,.gif">
           <button id="upload-btn" class="action-btn">Upload Media</button>
@@ -89,7 +89,7 @@
       </section>
 
       <!-- AUDIO -->
-      <section id="panel-audio" class="panel">
+      <section id="panel-audio" class="panel" role="tabpanel" aria-labelledby="tab-audio">
         <div class="audio-controls">
           <div class="control-group">
             <label>Input Device</label>
@@ -114,7 +114,7 @@
       </section>
 
       <!-- DIAGNOSTICS -->
-      <section id="panel-diag" class="panel">
+      <section id="panel-diag" class="panel" role="tabpanel" aria-labelledby="tab-diag">
         <h2>Wiring Tests</h2>
         <div class="button-grid">
           <button class="test-btn" data-test="diag_strip_identify">Strip Identify</button>
@@ -137,7 +137,7 @@
       </section>
 
       <!-- SIMULATOR -->
-      <section id="panel-sim" class="panel">
+      <section id="panel-sim" class="panel" role="tabpanel" aria-labelledby="tab-sim">
         <h2>Simulator Preview</h2>
         <div id="sim-controls">
           <select id="sim-effect-select"></select>
@@ -152,7 +152,7 @@
       </section>
 
       <!-- SYSTEM -->
-      <section id="panel-system" class="panel">
+      <section id="panel-system" class="panel" role="tabpanel" aria-labelledby="tab-system">
         <div class="system-info">
           <h2>System</h2>
 
