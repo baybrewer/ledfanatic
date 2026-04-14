@@ -382,6 +382,10 @@ class BassFire(Effect):
     # Pre-compute coordinate grids (reused every frame)
     self._x_g = np.arange(width, dtype=np.float64)[:, np.newaxis] * np.ones(height)
     self._y_g = np.ones(width)[:, np.newaxis] * np.arange(height, dtype=np.float64)
+    # Half-resolution grids for noise (2x faster, visually identical for fire)
+    half_h = height // 2
+    self._x_g_half = np.arange(width, dtype=np.float64)[:, np.newaxis] * np.ones(half_h)
+    self._y_g_half = np.ones(width)[:, np.newaxis] * (np.arange(half_h, dtype=np.float64) * 2)
 
     # Warm up the spark zone
     self._heat[:, height - self._SPARK_ZONE:] = np.random.uniform(
@@ -480,8 +484,8 @@ class BassFire(Effect):
     buoy = self._BUOYANCY * (0.2 + fuel * 0.8)
     octs = max(1, int(self._NOISE_OCTAVES))
 
-    nx = cyl_fbm_xy(x_g, y_g, sim_t * 8.0, octs, 0.5, 0.015, cols)
-    ny = cyl_fbm_xy(x_g + 5, y_g, sim_t * 7.0, octs, 0.5, 0.015, cols)
+    nx = np.repeat(cyl_fbm_xy(self._x_g_half, self._y_g_half, sim_t * 8.0, octs, 0.5, 0.015, cols), 2, axis=1)[:, :rows]
+    ny = np.repeat(cyl_fbm_xy(self._x_g_half + 5, self._y_g_half, sim_t * 7.0, octs, 0.5, 0.015, cols), 2, axis=1)[:, :rows]
 
     sx = np.clip(x_g + nx * turb_x, 0, cols - 1.001)
     sy = np.clip(y_g + ty_bias + self._heat * buoy + np.abs(ny) * ty_range,
@@ -515,7 +519,7 @@ class BassFire(Effect):
     cn_amt = self._COOL_NOISE
 
     hf = (rows - 1 - y_g) / float(rows)
-    cn = (cyl_noise_xy(x_g, y_g, sim_t * 10.0, 0.8, 0.03, cols) + 1) * 0.5
+    cn = np.repeat((cyl_noise_xy(self._x_g_half, self._y_g_half, sim_t * 10.0, 0.8, 0.03, cols) + 1) * 0.5, 2, axis=1)[:, :rows]
     rng = np.random.random((cols, rows))
     top_frac = np.clip((hf - 0.5) * 2, 0, 1)
     cool = np.where(

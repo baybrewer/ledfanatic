@@ -477,6 +477,14 @@ class Fireplace(Effect):
     self._embers = []
     self._last_t = None
 
+    # Pre-compute coordinate grids (reused every frame)
+    self._x_g = np.arange(width, dtype=np.float64)[:, np.newaxis] * np.ones(height)
+    self._y_g = np.ones(width)[:, np.newaxis] * np.arange(height, dtype=np.float64)
+    # Half-resolution grids for noise (2x faster, visually identical for fire)
+    half_h = height // 2
+    self._x_g_half = np.arange(width, dtype=np.float64)[:, np.newaxis] * np.ones(half_h)
+    self._y_g_half = np.ones(width)[:, np.newaxis] * (np.arange(half_h, dtype=np.float64) * 2)
+
     # Warm up the spark zone
     spark_zone = int(self.params.get("spark_zone", 35))
     self._heat[:, height - spark_zone:] = np.random.uniform(0.4, 0.9, (width, spark_zone))
@@ -546,13 +554,13 @@ class Fireplace(Effect):
           fade = 1.0 - yo / flare_height
           self._heat[fx, y] = min(1.0, self._heat[fx, y] + 0.6 * fade * dt)
 
-    # ── Convection (vectorized — was THE bottleneck) ─────────────
-    x_g = np.arange(cols, dtype=np.float64)[:, np.newaxis] * np.ones(rows)  # (cols, rows)
-    y_g = np.ones(cols)[:, np.newaxis] * np.arange(rows, dtype=np.float64)  # (cols, rows)
+    # ── Convection (vectorized — half-res noise for speed) ───────
+    x_g = self._x_g
+    y_g = self._y_g
 
-    # Two FBM noise grids
-    nx = cyl_fbm_xy(x_g, y_g, sim_t * 8.0, octs, 0.5, 0.015, cols)
-    ny = cyl_fbm_xy(x_g + 5, y_g, sim_t * 7.0, octs, 0.5, 0.015, cols)
+    # Two FBM noise grids at half vertical resolution (2x faster)
+    nx = np.repeat(cyl_fbm_xy(self._x_g_half, self._y_g_half, sim_t * 8.0, octs, 0.5, 0.015, cols), 2, axis=1)[:, :rows]
+    ny = np.repeat(cyl_fbm_xy(self._x_g_half + 5, self._y_g_half, sim_t * 7.0, octs, 0.5, 0.015, cols), 2, axis=1)[:, :rows]
 
     # Source positions for advection
     sx = np.clip(x_g + nx * turb_x, 0, cols - 1.001)
@@ -584,7 +592,7 @@ class Fireplace(Effect):
     cb = cool_base * fuel_cool
     ch = cool_height * fuel_cool
     hf = (rows - 1 - y_g) / float(rows)  # 0=bottom, 1=top
-    cn = (cyl_noise_xy(x_g, y_g, sim_t * 10.0, 0.8, 0.03, cols) + 1) * 0.5
+    cn = np.repeat((cyl_noise_xy(self._x_g_half, self._y_g_half, sim_t * 10.0, 0.8, 0.03, cols) + 1) * 0.5, 2, axis=1)[:, :rows]
     rng = np.random.random((cols, rows))
     top_frac = np.clip((hf - 0.5) * 2, 0, 1)
     cool = np.where(
