@@ -61,6 +61,43 @@ class SetupCommitRequest(BaseModel):
   session_id: str
 
 
+class AnchorEntry(BaseModel):
+  anchor_index: int
+  centroid_x: float
+  centroid_y: float
+  brightness: float = 200.0
+
+
+class GeometryStripEntry(BaseModel):
+  strip_id: int
+  anchors: list[AnchorEntry] = []
+  installed_led_count: int = 172
+
+
+class GeometrySolveRequest(BaseModel):
+  strips: list[GeometryStripEntry]
+  image_width: int = 1280
+  image_height: int = 720
+
+
+class SpatialMapStripEntry(BaseModel):
+  id: int
+  anchors: list[list[float]] = []
+  positions: list[list[float]] = []
+  fit_method: str = "anchor_polyline_v1"
+  visibility: str = "direct"
+
+
+class SpatialMapRequest(BaseModel):
+  schema_version: int = 1
+  profile_id: str = "default"
+  coordinate_space: str = "front_projection_uv"
+  camera_resolution: list[int] = [1280, 720]
+  visible_strips: list[int] = []
+  strips: list[SpatialMapStripEntry] = []
+  bounds: dict = {"x_min": 0.0, "x_max": 1.0, "y_min": 0.0, "y_max": 1.0}
+
+
 def create_router(deps, require_auth, broadcast_state) -> APIRouter:
   router = APIRouter(prefix="/api/setup", tags=["setup"])
 
@@ -185,10 +222,10 @@ def create_router(deps, require_auth, broadcast_state) -> APIRouter:
     return {"status": "no_spatial_map"}
 
   @router.post("/spatial-map")
-  async def save_spatial_map_route(body: dict, auth=Depends(require_auth)):
+  async def save_spatial_map_route(req: SpatialMapRequest, auth=Depends(require_auth)):
     """Save a solved spatial map atomically."""
-    from ...config.spatial_map import SpatialMap, save_spatial_map, _parse_spatial_map
-    spatial_map = _parse_spatial_map(body)
+    from ...config.spatial_map import save_spatial_map, _parse_spatial_map
+    spatial_map = _parse_spatial_map(req.model_dump())
     svc = _get_setup_service()
     save_spatial_map(spatial_map, svc.config_dir)
     if hasattr(deps, 'spatial_map'):
@@ -222,32 +259,34 @@ def create_router(deps, require_auth, broadcast_state) -> APIRouter:
     raise HTTPException(501, "Geometry analysis requires image upload — use multipart/form-data")
 
   @router.post("/geometry/solve")
-  async def solve_geometry(body: dict, auth=Depends(require_auth)):
+  async def solve_geometry(req: GeometrySolveRequest, auth=Depends(require_auth)):
     """Solve or validate a front-projection geometry fit from anchor observations."""
     svc = _get_setup_service()
     if svc.get_session() is None:
       raise HTTPException(409, "No active setup session")
+    if req.image_width < 1 or req.image_height < 1:
+      raise HTTPException(422, "image_width and image_height must be >= 1")
     from ...setup.geometry import (
-      fit_strip_from_anchors, AnchorObservation, build_spatial_map,
+      fit_strip_from_anchors, AnchorObservation,
     )
     fits = []
-    for strip_data in body.get('strips', []):
+    for strip_data in req.strips:
       anchors = [
         AnchorObservation(
-          strip_id=strip_data['strip_id'],
-          anchor_index=a['anchor_index'],
-          centroid_x=a['centroid_x'],
-          centroid_y=a['centroid_y'],
-          brightness=a.get('brightness', 200),
+          strip_id=strip_data.strip_id,
+          anchor_index=a.anchor_index,
+          centroid_x=a.centroid_x,
+          centroid_y=a.centroid_y,
+          brightness=a.brightness,
         )
-        for a in strip_data.get('anchors', [])
+        for a in strip_data.anchors
       ]
       fit = fit_strip_from_anchors(
-        strip_data['strip_id'],
+        strip_data.strip_id,
         anchors,
-        strip_data.get('installed_led_count', 172),
-        body.get('image_width', 1280),
-        body.get('image_height', 720),
+        strip_data.installed_led_count,
+        req.image_width,
+        req.image_height,
       )
       fits.append({
         'strip_id': fit.strip_id,
