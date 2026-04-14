@@ -78,40 +78,64 @@ On wider screens (>600px), an editable table is acceptable as an alternative vie
 6. "Commit" persists and hot-applies
 7. "Cancel" restores previous state
 
-### JS implementation
+### JS implementation (accordion card mode — mobile default)
 
 ```javascript
-function renderEditableStripTable(strips) {
-  const tbody = document.getElementById('strip-table-body');
-  tbody.innerHTML = '';
+function renderStripCards(strips) {
+  const container = document.getElementById('strip-cards');
+  container.innerHTML = '';
   for (const strip of strips) {
-    const tr = document.createElement('tr');
-    tr.innerHTML = `
-      <td>${strip.id}</td>
-      <td><input type="text" value="${strip.label}" data-field="label" data-id="${strip.id}" maxlength="10"></td>
-      <td><input type="checkbox" ${strip.enabled ? 'checked' : ''} data-field="enabled" data-id="${strip.id}"></td>
-      <td><input type="number" value="${strip.installed_led_count}" data-field="installed_led_count" data-id="${strip.id}" min="0" max="172"></td>
-      <td><select data-field="color_order" data-id="${strip.id}">
-        ${['RGB','RBG','GRB','GBR','BRG','BGR'].map(o => `<option ${o===strip.color_order?'selected':''}>${o}</option>`).join('')}
-      </select></td>
-      <td><select data-field="direction" data-id="${strip.id}">
-        <option value="bottom_to_top" ${strip.direction==='bottom_to_top'?'selected':''}>↑ Up</option>
-        <option value="top_to_bottom" ${strip.direction==='top_to_bottom'?'selected':''}>↓ Down</option>
-      </select></td>
-      <td><input type="number" value="${strip.output_channel}" data-field="output_channel" data-id="${strip.id}" min="0" max="4"></td>
-      <td><input type="number" value="${strip.output_slot}" data-field="output_slot" data-id="${strip.id}" min="0" max="1"></td>
-      <td><select data-field="chipset" data-id="${strip.id}">
-        ${['WS2812B','WS2812','WS2811','SK6812','WS2813','WS2815'].map(c => `<option ${c===strip.chipset?'selected':''}>${c}</option>`).join('')}
-      </select></td>
+    // Direction comes from the config, NOT assumed from even/odd
+    const dirArrow = strip.direction === 'bottom_to_top' ? '↑' : '↓';
+    const card = document.createElement('div');
+    card.className = 'strip-card';
+    card.innerHTML = `
+      <div class="strip-card-header" data-id="${strip.id}">
+        <span>${strip.label} — Ch${strip.output_channel}:${strip.output_slot} ${dirArrow} ${strip.installed_led_count} LEDs ${strip.color_order}</span>
+        <span class="expand-icon">▶</span>
+      </div>
+      <div class="strip-card-body" hidden>
+        <label>Label <input type="text" value="${strip.label}" data-field="label" data-id="${strip.id}" maxlength="10"></label>
+        <label>Enabled <input type="checkbox" ${strip.enabled ? 'checked' : ''} data-field="enabled" data-id="${strip.id}"></label>
+        <label>Logical Order <input type="number" value="${strip.logical_order}" data-field="logical_order" data-id="${strip.id}" min="0" max="9"></label>
+        <label>LEDs <input type="number" value="${strip.installed_led_count}" data-field="installed_led_count" data-id="${strip.id}" min="0" max="172"></label>
+        <label>Color Order <select data-field="color_order" data-id="${strip.id}">
+          ${['RGB','RBG','GRB','GBR','BRG','BGR'].map(o => `<option ${o===strip.color_order?'selected':''}>${o}</option>`).join('')}
+        </select></label>
+        <label>Direction <select data-field="direction" data-id="${strip.id}">
+          <option value="bottom_to_top" ${strip.direction==='bottom_to_top'?'selected':''}>↑ Bottom→Top</option>
+          <option value="top_to_bottom" ${strip.direction==='top_to_bottom'?'selected':''}>↓ Top→Bottom</option>
+        </select></label>
+        <label>Channel <input type="number" value="${strip.output_channel}" data-field="output_channel" data-id="${strip.id}" min="0" max="4"></label>
+        <label>Slot <input type="number" value="${strip.output_slot}" data-field="output_slot" data-id="${strip.id}" min="0" max="1"></label>
+        <label>Chipset <select data-field="chipset" data-id="${strip.id}">
+          ${['WS2812B','WS2812','WS2811','SK6812','WS2813','WS2815'].map(c => `<option ${c===strip.chipset?'selected':''}>${c}</option>`).join('')}
+        </select></label>
+      </div>
     `;
-    tbody.appendChild(tr);
+    container.appendChild(card);
   }
+  // Accordion: expand one, collapse others
+  container.querySelectorAll('.strip-card-header').forEach(h => {
+    h.addEventListener('click', () => {
+      const body = h.nextElementSibling;
+      const wasHidden = body.hidden;
+      container.querySelectorAll('.strip-card-body').forEach(b => b.hidden = true);
+      container.querySelectorAll('.expand-icon').forEach(i => i.textContent = '▶');
+      if (wasHidden) {
+        body.hidden = false;
+        h.querySelector('.expand-icon').textContent = '▼';
+      }
+    });
+  });
   // Attach change handlers
-  tbody.querySelectorAll('input, select').forEach(el => {
+  container.querySelectorAll('input, select').forEach(el => {
     el.addEventListener('change', () => stageStripUpdate(el));
   });
 }
 ```
+
+**Note:** Direction comes from the strip's `direction` field in the installation config, NOT assumed from even/odd strip ID. The `logical_order` field is included and editable.
 
 ### Debounced staging
 

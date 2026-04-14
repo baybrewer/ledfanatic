@@ -157,7 +157,7 @@ Replace the current Sim tab with a responsive layout:
 - Preview service renders correct frame dimensions
 - Canvas receives and parses binary frames
 - Strip labels match installation config
-- Direction indicators correct for even/odd strips
+- Direction indicators read from each strip's `direction` field in installation config (NOT assumed from even/odd parity)
 
 ## Gate
 

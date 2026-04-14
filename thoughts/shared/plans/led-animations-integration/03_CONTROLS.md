@@ -51,6 +51,35 @@ Add per-effect parameter metadata derived from each class's `PARAMS` attribute:
 ```
 
 **Key:** Params and palettes come from each class's metadata, not assumed. Feldstein OG has 17 custom palettes. Fireplace has 16 params and uses fire palette (no standard palette selector). Sound effects without `speed` don't show a speed slider.
+
+### Canonical naming scheme
+
+Imported effect IDs must avoid collisions with existing built-in effects. Use the `sim_` prefix for imported effects that share names with built-ins:
+
+| Source class | Imported ID | Note |
+|-------------|-------------|------|
+| Plasma | `sim_plasma` | Avoids collision with built-in `plasma` |
+| RainbowCycle | `sim_rainbow_cycle` | Avoids collision with built-in `rainbow_rotate` |
+| All others | snake_case of display name | e.g., `aurora_borealis`, `fireplace`, `bass_fire` |
+
+This matches the existing `imported_sim_meta.py` convention (`plasma_sim`, `rainbow_cycle_sim`).
+
+### Palette wire format
+
+Palettes are sent as **strings** in the `params` object for standard palettes, and as **integers** for Feldstein's custom system:
+
+```json
+// Standard palette (10 options):
+{"palette": "Ocean"}
+
+// Feldstein custom palette (17 options):
+{"palette": 3}   // integer index into _FELD_PALETTES
+
+// Fireplace:
+// No palette param — uses fire palette always
+```
+
+The UI renders the appropriate control (dropdown for strings, slider for integers) based on the `palette_type` field in catalog metadata.
 ```
 
 ### Activate with params

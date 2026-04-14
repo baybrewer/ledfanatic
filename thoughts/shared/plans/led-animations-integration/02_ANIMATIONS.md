@@ -141,47 +141,42 @@ The `LEDBuffer` class must support `fade(factor)` and `add_led()` (additive blen
 
 Each effect decides whether to `clear()` or `fade()` at the start of its update.
 
-## Classic animations — ACTUAL params from source
+## Param metadata — DO NOT hand-write, extract from source
 
-| Name | Actual params (from led_sim.py) | Palette |
-|------|--------------------------------|---------|
-| RainbowCycle | Speed (0.1-5.0, default 1.0) | Yes (standard 10) |
-| FeldsteinEquation | Speed (0.1-3.0, default 0.6), Bar Speed (0.1-3.0, default 1.0) | Yes (standard 10) |
-| Feldstein2 (OG) | Speed (0.1-3.0, default 1.0), Fade (10-200, default 40), Palette (0-16, default 0) — **CUSTOM 17-entry palette system, NOT standard 10** | Custom (17 named Feldstein palettes) |
-| BrettsFavorite | Speed (0.2-5.0, default 1.0), Bands (4-32, default 12), Damping (0.80-0.99, default 0.95) | Yes (standard 10) |
-| Fireplace | **16 params:** FUEL (0-1, 0.65), SPARK_ZONE (0.05-0.5, 0.18), SPARK_PROB (0-1, 0.55), COOL_BASE (0-1, 0.28), COOL_HEIGHT (0-1, 0.6), COOL_NOISE (0-0.5, 0.12), DIFFUSE_CENTER (0-1, 0.65), DIFFUSE_SIDE (0-0.5, 0.15), TURB_X_SCALE (0-1, 0.3), TURB_Y_BIAS (0-1, 0.35), TURB_Y_RANGE (0-0.5, 0.15), BUOYANCY (0-1, 0.4), NOISE_OCTAVES (1-4, 2), EMBER_RATE (0-1, 0.4), EMBER_BURST (0-1, 0.7), EMBER_SPREAD (0-1, 0.5) | Uses fire palette (special) |
+**Critical rule:** Do NOT maintain hand-written param tables in this plan document. They drift from the source and cause wrong implementations.
 
-## Ambient animations — ACTUAL params from source
+Instead, each ported effect class MUST define its params by reading the vendored source's `Param(...)` entries directly:
 
-| Name | Actual params | Default palette idx |
-|------|--------------|-------------------|
-| Plasma | Speed (0.1-5.0, 1.0), Scale (0.5-5.0, 2.0) | 0 (Rainbow) |
-| Aurora | Speed (0.05-2.0, 0.4), Wave (0.2-3.0, 1.0), Bright (0.2-1.0, 0.9) | 0 (Rainbow) |
-| LavaLamp | Speed (0.1-3.0, 0.5), Blobs (2-12, 6), Size (0.3-3.0, 1.2) | 0 (Rainbow) |
-| OceanWaves | Speed (0.1-3.0, 0.8), Depth (0.3-1.5, 0.7), Layers (1-5, 3) | **1 (Ocean)** |
-| Starfield | Density (0.01-0.1, 0.03), Twinkle (0.5-5.0, 2.0), Speed (0.1-3.0, 0.5) | 0 (Rainbow) |
-| MatrixRain | Speed (0.5-5.0, 2.0), Density (0.01-0.1, 0.04), Trail (0.8-0.99, 0.92) | **3 (Forest)** |
-| Breathing | Speed (0.1-3.0, 0.5), Wave (0.1-2.0, 0.5) | 0 (Rainbow) |
-| Fireflies | Count (3-60, 20), Speed (0.1-3.0, 1.0), Glow (1-5, 2) | 0 (Rainbow) |
-| Nebula | Speed (0.05-1.0, 0.2), Scale (0.5-5.0, 2.0), Layers (1-3, 2) | **9 (Vapor)** |
-| Kaleidoscope | Speed (0.1-3.0, 0.5), Segments (3-12, 6), Zoom (0.5-3.0, 1.0) | 0 (Rainbow) |
-| FlowField | Speed (0.1-3.0, 0.8), Particles (10-200, 80), Fade (0.80-0.99, 0.95), Noise Scale (0.5-5.0, 2.0) | 0 (Rainbow) |
-| Moire | Speed (0.1-3.0, 0.5), Scale (0.5-5.0, 2.0), Centers (2-5, 3) | 0 (Rainbow) |
+```python
+# In each ported effect class, define PARAMS from the source's exact values:
+# Reference: pi/app/effects/imported/vendor/led_sim_reference.py
+# Search for the class name, find its `params = [Param(...), ...]` block
+# Copy label, attr, lo, hi, step, default exactly.
+```
 
-## Sound-reactive animations — ACTUAL params and audio deps
+### What the implementer must do per effect:
 
-| Name | Actual params | Audio fields used | Default palette |
-|------|--------------|------------------|----------------|
-| Spectrum | Gain (0.5-5.0, 2.0), Decay (0.5-0.99, 0.92) | bands, drop, buildup | 0 |
-| VUMeter | Gain (0.5-5.0, 2.5), Decay (0.5-0.99, 0.9) | volume, buildup, breakdown, drop, **_time** | 0 |
-| BeatPulse | Decay (0.8-0.99, 0.92), Flash (0.5-3.0, 1.5) | beat, drop, breakdown, **_time** | 0 |
-| BassFire | Gain (0.5-5.0, 2.0), Base Spark (0.1-0.8, 0.3) | bands, bass, beat, beat_energy, drop, is_downbeat, is_phrase | fire palette |
-| SoundRipples | Gain (0.5-5.0, 2.0), Speed (0.5-3.0, 1.5), Decay (0.9-0.99, 0.96), Sensitivity (0.1-1.0, 0.5) | bass, mids, highs, beat, beat_energy, is_downbeat, is_phrase | 0 |
-| Spectrogram | Gain (0.5-5.0, 2.0), Scroll Speed (0.5-3.0, 1.0) | bands, buildup, drop | 0 |
-| SoundWorm | Gain (0.5-5.0, 2.0), Speed (0.5-5.0, 2.0), Width (1-5, 2) | volume, buildup, drop | 0 |
-| ParticleBurst | Gravity (0.1-2.0, 0.5), Speed (0.5-5.0, 2.0), Count (5-50, 20) | beat, buildup, breakdown, drop | 0 |
-| SoundPlasma | Gain (0.5-5.0, 2.0), Base Speed (0.1-3.0, 0.8) | volume, buildup, breakdown, drop | 0 |
-| StrobeChaos | Intensity (0.3-3.0, 1.0), Segments (1-10, 4) | beat, breakdown, drop | 0 |
+1. Open `vendor/led_sim_reference.py`
+2. Find the animation class (e.g., `class Aurora(AnimBase):`)
+3. Copy its `params = [Param(...)]` entries exactly
+4. Copy its `has_palette` flag and default palette index
+5. Copy its `__init__` defaults for each param attribute
+6. For Feldstein2: note it has 17 custom `_FELD_PALETTES`, selected by integer `PALETTE` param — NOT the standard 10
+7. For Fireplace: note it has 16 params and uses fire palette — NOT the standard palettes
+8. For sound effects: note which `audio.xxx` fields are accessed in `update()` — these are the actual audio deps
+
+### Summary of special cases (verified against source)
+
+| Effect | Special handling |
+|--------|-----------------|
+| Feldstein2 | 17 custom palettes via integer PALETTE param (0-16), not standard palette system |
+| Fireplace | 16 params, fire palette only, no standard palette, no speed param |
+| Spectrum, VUMeter, BeatPulse, BassFire, StrobeChaos | No speed param — only gain/decay/intensity |
+| VUMeter, BeatPulse | Use `audio._time` for breakdown sine |
+| All sound effects | Use `audio.drop` as boolean event trigger |
+| OceanWaves | Default palette idx 1 (Ocean) |
+| MatrixRain | Default palette idx 3 (Forest) |
+| Nebula | Default palette idx 9 (Vapor) |
 
 ## Registration in main.py — COMPLETE wiring
 

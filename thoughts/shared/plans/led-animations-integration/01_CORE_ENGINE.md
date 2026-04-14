@@ -82,15 +82,18 @@ class LEDBuffer:
 
 ## Audio adapter fixes (prerequisite for Phase 2 sound effects)
 
-The existing `pi/app/audio/adapter.py` `AudioSnapshot` needs these additions before sound-reactive ports can work:
+The existing `pi/app/audio/adapter.py` `AudioSnapshot` must match the exact contract the vendored effects use. **Frozen target shape:**
 
-| Field | Current | Fix |
-|-------|---------|-----|
-| `drop` | `float` accumulator (0-1) | Keep as `drop_intensity: float`. Add `drop_event: bool` — True on onset frame only, False after |
-| `_time` | Not exposed | Add `_time` as alias for `time_s` (VUMeter/BeatPulse breakdown sine uses it) |
-| `drop_intensity` | Not exposed | Add from existing `_drop_acc` |
+| Field | Type | Description | Current adapter status |
+|-------|------|-------------|----------------------|
+| `drop` | `bool` | True during drop moment (onset trigger) | Currently float — **must change to bool** |
+| `drop_intensity` | `float` | 0-1+ magnitude of drop | **Add** (from existing `_drop_acc`) |
+| `breakdown` | `bool` | True during tension before drop | Currently float — **must change to bool** |
+| `_time` | `float` | Alias for `time_s` | **Add** (VUMeter/BeatPulse use it) |
 
-This is a small change to `AudioSnapshot` + `AudioCompatAdapter.adapt()`.
+All other existing fields (`volume`, `bass`, `mids`, `highs`, `beat`, `bpm`, `bands`, `beat_energy`, `beat_count`, `bar_beat`, `phrase_beat`, `is_downbeat`, `is_phrase`, `beat_phase`, `buildup`, `time_s`) stay as-is.
+
+All ported effects use these exact field names. No other names allowed.
 
 ## Tests
 
