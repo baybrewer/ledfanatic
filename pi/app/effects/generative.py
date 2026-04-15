@@ -116,21 +116,22 @@ class Twinkle(Effect):
     elapsed = self.elapsed(t)
     speed = self.params.get('speed', 1.0)
     density = self.params.get('density', 0.05)
+    darkness = self.params.get('darkness', 0.0)
+    pal_idx = self.params.get('palette', 0) % NUM_PALETTES
 
     brightness = (np.sin(self._stars * 3.0 + elapsed * speed * 2.0) + 1.0) / 2.0
     mask = self._rng.random((self.width, self.height)) < density
-
-    # Combine: pixel is visible if bright enough OR randomly selected
     visible = (brightness > 0.7) | mask
 
-    # Vectorized hue: varies by row position and time
+    # Palette position varies by row and time
     y_coords = np.arange(self.height, dtype=np.float64) / self.height * 0.3
-    hue = (elapsed * 0.02 + y_coords[np.newaxis, :]) % 1.0  # (width, height)
+    hue = (elapsed * 0.02 + y_coords[np.newaxis, :]) % 1.0
 
-    # Vectorized HSV->RGB at full brightness, then scale per pixel
     frame = np.zeros((self.width, self.height, 3), dtype=np.uint8)
-    rgb = _hsv_array_to_rgb(hue, 0.3, 1.0)  # (width, height, 3) uint8
-    scaled = (rgb.astype(np.float32) * brightness[..., np.newaxis]).astype(np.uint8)
+    rgb = pal_color_grid(pal_idx, hue)
+    # Apply per-pixel brightness and darkness
+    dim = 1.0 - min(1.0, max(0.0, darkness))
+    scaled = (rgb.astype(np.float32) * brightness[..., np.newaxis] * dim).astype(np.uint8)
     frame[visible] = scaled[visible]
 
     return frame
