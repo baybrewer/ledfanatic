@@ -72,7 +72,8 @@ class LEDBuffer:
     A pixel at 100 with amount=48 becomes ~81 (proportional), not 52 (subtractive).
     """
     scale = 255 - int(amount)
-    np.multiply(self.data, scale, out=self._scratch_u16, casting='unsafe')
+    np.copyto(self._scratch_u16, self.data, casting='unsafe')
+    np.multiply(self._scratch_u16, scale, out=self._scratch_u16)
     np.right_shift(self._scratch_u16, 8, out=self._scratch_u16)
     np.copyto(self.data, self._scratch_u16, casting='unsafe')
 
