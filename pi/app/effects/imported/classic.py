@@ -483,7 +483,7 @@ class Fireplace(Effect):
     self._cached_cn = np.zeros((width, height), dtype=np.float64)
 
     # Warm up the spark zone
-    spark_zone = int(self.params.get("spark_zone", 35))
+    spark_zone = int(self.params.get("spark_zone", 60))
     self._heat[:, height - spark_zone:] = np.random.uniform(0.4, 0.9, (width, spark_zone))
 
   def render(self, t, state):
@@ -498,11 +498,11 @@ class Fireplace(Effect):
     # Read all params
     fuel = clampf(self.params.get("fuel", 0.6))
     fuel_sq = fuel * fuel
-    sz = max(3, int(self.params.get("spark_zone", 35) * (0.2 + fuel * 0.8)))
-    spark_prob = self.params.get("spark_prob", 0.85)
+    sz = max(3, int(self.params.get("spark_zone", 60) * (0.2 + fuel * 0.8)))
+    spark_prob = self.params.get("spark_prob", 1.0)
     cool_base = self.params.get("cool_base", 0.012)
     cool_height = self.params.get("cool_height", 0.045)
-    cool_noise_amt = self.params.get("cool_noise", 0.50)
+    cool_noise_amt = self.params.get("cool_noise", 0.5)
     diffuse_ctr = self.params.get("diffuse_center", 0.74)
     diffuse_side = self.params.get("diffuse_side", 0.13)
     turb_x = self.params.get("turb_x_scale", 1.8) * (0.5 + fuel * 0.5)
