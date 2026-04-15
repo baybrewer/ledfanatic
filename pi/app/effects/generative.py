@@ -209,22 +209,33 @@ class NoiseWash(Effect):
 
 
 class ColorWipe(Effect):
-  """Color wipe sweeping up the pillar."""
+  """Color wipe — sweeps one palette color over another, ping-pong."""
 
   def render(self, t: float, state) -> np.ndarray:
     elapsed = self.elapsed(t)
-    speed = self.params.get('speed', 1.0)
-    color = hex_to_rgb(self.params.get('color', '#0099FF'))
+    speed = self.params.get('speed', 0.5)
+    pal_idx = self.params.get('palette', 0) % NUM_PALETTES
     frame = np.zeros((self.width, self.height, 3), dtype=np.uint8)
 
-    pos = (elapsed * speed * 30) % (self.height * 2)
-    for y in range(self.height):
-      if y < pos and pos < self.height:
-        frame[:, y] = color
-      elif pos >= self.height and y >= (pos - self.height):
-        pass  # wipe off
-      elif pos >= self.height:
-        frame[:, y] = color
+    # Two colors from the palette — current and next
+    cycle_pos = (elapsed * speed * 0.1) % 1.0
+    color_a_pos = cycle_pos % 1.0
+    color_b_pos = (cycle_pos + 0.5) % 1.0
+    color_a = pal_color_grid(pal_idx, np.array([color_a_pos]))[0]
+    color_b = pal_color_grid(pal_idx, np.array([color_b_pos]))[0]
+
+    # Ping-pong wipe position
+    raw_pos = (elapsed * speed * 0.3) % 2.0
+    if raw_pos > 1.0:
+      wipe_frac = 2.0 - raw_pos  # bouncing back
+    else:
+      wipe_frac = raw_pos
+    wipe_y = int(wipe_frac * self.height)
+
+    # Fill: color_a below wipe, color_b above
+    frame[:, :wipe_y] = color_a
+    frame[:, wipe_y:] = color_b
+
     return frame
 
 
