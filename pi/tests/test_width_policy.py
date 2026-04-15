@@ -65,3 +65,51 @@ class TestImportedWidthPolicy:
     for name, cls in IMPORTED_EFFECTS.items():
       assert hasattr(cls, 'NATIVE_WIDTH'), f"{name}: missing NATIVE_WIDTH"
       assert cls.NATIVE_WIDTH == 10, f"{name}: NATIVE_WIDTH is {cls.NATIVE_WIDTH}, expected 10"
+
+
+import time
+
+
+class TestBrokenWidthEffects:
+  """Spectrum and Spectrogram must not crash at their native width."""
+
+  def test_spectrum_renders_at_width_10(self):
+    from app.effects.imported.sound import Spectrum
+    state = MagicMock()
+    state._audio_lock_free = {
+      'level': 0.5, 'bass': 0.6, 'mid': 0.4, 'high': 0.3,
+      'beat': False, 'bpm': 128.0,
+    }
+    eff = Spectrum(width=10, height=172)
+    t = time.monotonic()
+    for _ in range(10):
+      frame = eff.render(t, state)
+      assert frame.shape == (10, 172, 3)
+      t += 0.017
+
+  def test_spectrogram_renders_at_width_10(self):
+    from app.effects.imported.sound import Spectrogram
+    state = MagicMock()
+    state._audio_lock_free = {
+      'level': 0.5, 'bass': 0.6, 'mid': 0.4, 'high': 0.3,
+      'beat': False, 'bpm': 128.0,
+    }
+    eff = Spectrogram(width=10, height=172)
+    t = time.monotonic()
+    for _ in range(10):
+      frame = eff.render(t, state)
+      assert frame.shape == (10, 172, 3)
+      t += 0.017
+
+  def test_spectrum_crashes_at_width_40(self):
+    """Document that Spectrum does NOT support width > 10."""
+    from app.effects.imported.sound import Spectrum
+    import pytest
+    state = MagicMock()
+    state._audio_lock_free = {
+      'level': 0.5, 'bass': 0.6, 'mid': 0.4, 'high': 0.3,
+      'beat': False, 'bpm': 128.0,
+    }
+    eff = Spectrum(width=40, height=172)
+    with pytest.raises(IndexError):
+      eff.render(time.monotonic(), state)

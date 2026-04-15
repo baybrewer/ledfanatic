@@ -387,6 +387,7 @@ class MatrixRain(Effect):
   DISPLAY_NAME = "Matrix Rain"
   DESCRIPTION = "Falling digital rain with speed-varied drops and fade trails"
   PALETTE_SUPPORT = True
+  NATIVE_WIDTH = 10
 
   PARAMS = [
     _Param("Speed", "speed", 0.2, 4.0, 0.1, 1.0),
@@ -394,17 +395,25 @@ class MatrixRain(Effect):
     _Param("Trail", "trail", 5, 60, 1, 25),
   ]
   _SCALAR_PARAMS = {"speed": 1.0, "density": 0.4, "trail": 25, "palette": 3}
-  NATIVE_WIDTH = 10
+
+  # Fixed capacity — 10 columns * 20 max concurrent drops per column
+  _MAX_DROPS = 200
 
   def __init__(self, width=10, height=N, params=None):
     super().__init__(width, height, params)
-    # Default palette to Forest (idx 3) if not overridden
     if "palette" not in self.params:
       self.params["palette"] = 3
     self.buf = LEDBuffer(width, height)
     self._last_t = None
-    # Each drop: [x, y_float, speed, brightness]
-    self._drops = []
+
+    # Struct-of-arrays: fixed-capacity drop state
+    cap = self._MAX_DROPS
+    self._drop_x = np.zeros(cap, dtype=np.int32)
+    self._drop_y = np.zeros(cap, dtype=np.float64)
+    self._drop_speed = np.zeros(cap, dtype=np.float64)
+    self._drop_bright = np.zeros(cap, dtype=np.float64)
+    self._active_mask = np.zeros(cap, dtype=np.bool_)
+    self._drop_count = 0
 
   def render(self, t, state):
     dt_ms = self._calc_dt_ms(t)
@@ -412,43 +421,70 @@ class MatrixRain(Effect):
     speed = self.params.get("speed", 1.0)
     density = self.params.get("density", 0.4)
     trail = int(self.params.get("trail", 25))
-    pal_idx = self.params.get("palette", 3)
+    pal_idx = self.params.get("palette", 3) % NUM_PALETTES
 
     cols = self.width
     rows = self.height
 
     self.buf.clear()
 
-    # Spawn new drops
+    # --- Spawn new drops ---
     for x in range(cols):
       if random.random() < density * dt * 3:
-        # Mix of speeds: many slow, some medium, few fast
+        slot = self._find_free_slot()
+        if slot < 0:
+          continue  # at capacity
         r = random.random()
         if r < 0.5:
-          spd = random.uniform(6, 20)     # slow drips
+          spd = random.uniform(6, 20)
         elif r < 0.85:
-          spd = random.uniform(20, 50)    # medium
+          spd = random.uniform(20, 50)
         else:
-          spd = random.uniform(50, 90)    # fast streaks
-        self._drops.append([x, -1.0, spd * speed, random.uniform(0.5, 1.0)])
+          spd = random.uniform(50, 90)
+        self._drop_x[slot] = x
+        self._drop_y[slot] = -1.0
+        self._drop_speed[slot] = spd * speed
+        self._drop_bright[slot] = random.uniform(0.5, 1.0)
+        self._active_mask[slot] = True
 
-    # Update and render drops
-    alive = []
-    for d in self._drops:
-      d[1] += d[2] * dt
-      head = int(d[1])
-      if head - trail < rows:
-        alive.append(d)
-        for ty in range(trail):
-          py = head - ty
-          if 0 <= py < rows:
-            fade = (1.0 - ty / trail) ** 1.5
-            c = pal_color(pal_idx % NUM_PALETTES, fade)
-            b = fade * d[3]
-            self.buf.add_led(d[0], py, c[0] * b, c[1] * b, c[2] * b)
-    self._drops = alive
+    # --- Update positions (vectorized) ---
+    active = self._active_mask
+    self._drop_y[active] += self._drop_speed[active] * dt
+
+    # --- Cull dead drops (head - trail past bottom) ---
+    heads = self._drop_y.astype(np.int32)
+    dead = active & ((heads - trail) >= rows)
+    self._active_mask[dead] = False
+
+    # --- Draw trails ---
+    # Build the palette LUT once per frame
+    fade_lut = np.arange(trail, dtype=np.float64)
+    fade_factors = (1.0 - fade_lut / trail) ** 1.5  # (trail,)
+    pal_colors = pal_color_grid(pal_idx, fade_factors)  # (trail, 3) uint8
+
+    active_indices = np.where(self._active_mask)[0]
+    for idx in active_indices:
+      head = int(self._drop_y[idx])
+      bright = self._drop_bright[idx]
+      dx = self._drop_x[idx]
+      for ty in range(trail):
+        py = head - ty
+        if 0 <= py < rows:
+          c = pal_colors[ty]
+          b = fade_factors[ty] * bright
+          d = self.buf.data[dx, py]
+          d[0] = min(255, int(d[0]) + int(c[0] * b))
+          d[1] = min(255, int(d[1]) + int(c[1] * b))
+          d[2] = min(255, int(d[2]) + int(c[2] * b))
 
     return self.buf.get_frame()
+
+  def _find_free_slot(self):
+    """Return index of first inactive slot, or -1 if full."""
+    inactive = np.where(~self._active_mask)[0]
+    if len(inactive) == 0:
+      return -1
+    return int(inactive[0])
 
   def _calc_dt_ms(self, t):
     if self._last_t is None:
