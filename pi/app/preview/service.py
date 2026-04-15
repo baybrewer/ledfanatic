@@ -61,6 +61,9 @@ class PreviewService:
           break
     merged = {**yaml_params, **(params or {})}
 
+    if effect_name == 'animation_switcher':
+      merged['_effect_registry'] = self._renderer.effect_registry
+
     self._effect = effect_cls(width=effect_width, height=N, params=merged)
     self._effect_name = effect_name
     self._fps = max(1, min(fps, 60))
