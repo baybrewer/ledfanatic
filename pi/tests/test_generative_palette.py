@@ -91,7 +91,10 @@ class TestSolidColorModes:
 
 class TestFireDirection:
   def test_fire_hot_at_bottom(self):
-    """Fire should be brightest at the bottom (low y values)."""
+    """Fire should be brightest at the bottom of the physical pillar.
+
+    After the y-flip, hot pixels are at high y indices (physical bottom).
+    """
     from app.effects.generative import Fire
     state = _make_state()
     eff = Fire(width=10, height=172, params={'sparking': 200})
@@ -100,9 +103,9 @@ class TestFireDirection:
     for _ in range(120):
       frame = eff.render(t, state)
       t += 0.017
-    # Bottom quarter should be brighter than top quarter on average
-    bottom_brightness = frame[:, :43, :].astype(float).mean()
-    top_brightness = frame[:, 129:, :].astype(float).mean()
+    # After y-flip: high y = physical bottom (hot), low y = physical top (cool)
+    bottom_brightness = frame[:, 129:, :].astype(float).mean()
+    top_brightness = frame[:, :43, :].astype(float).mean()
     assert bottom_brightness > top_brightness, (
       f"Fire is upside down: bottom={bottom_brightness:.1f}, top={top_brightness:.1f}"
     )

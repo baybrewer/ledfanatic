@@ -259,8 +259,9 @@ class Fire(Effect):
   def render(self, t: float, state) -> np.ndarray:
     cooling = self.params.get('cooling', 55)
     sparking = self.params.get('sparking', 120)
+    pal_idx = self.params.get('palette', 4) % NUM_PALETTES  # default Lava
 
-    # Cool down: random cooling per pixel
+    # Cool down
     cool_amount = self._rng.integers(
       0, max(1, (cooling * 10) // self.height + 2),
       size=(self.width, self.height)
@@ -268,7 +269,6 @@ class Fire(Effect):
     self._heat = np.maximum(0, self._heat - cool_amount)
 
     # Heat rises: shift upward with averaging
-    # heat[y] = avg(heat[y-1], heat[y-2], heat[y-2]) for y >= 3
     shifted = np.zeros_like(self._heat)
     shifted[:, 3:] = (
       self._heat[:, 2:-1] +
@@ -284,26 +284,12 @@ class Fire(Effect):
       y = self._rng.integers(0, min(7, self.height))
       self._heat[x, y] = min(1.0, self._heat[x, y] + 0.4 + self._rng.random() * 0.4)
 
-    # Vectorized heat-to-color mapping
-    h = self._heat
-    frame = np.zeros((self.width, self.height, 3), dtype=np.uint8)
+    # Palette-based color mapping — heat value (0-1) maps to palette position
+    frame = pal_color_grid(pal_idx, self._heat)
 
-    # Region 1: h < 0.33 — black to red
-    mask1 = h < 0.33
-    frame[..., 0] = np.where(mask1, np.clip(h * 3 * 255, 0, 255), frame[..., 0])
-
-    # Region 2: 0.33 <= h < 0.66 — red to yellow
-    mask2 = (h >= 0.33) & (h < 0.66)
-    frame[..., 0] = np.where(mask2, 255, frame[..., 0])
-    frame[..., 1] = np.where(mask2, np.clip((h - 0.33) * 3 * 255, 0, 255), frame[..., 1])
-
-    # Region 3: h >= 0.66 — yellow to white
-    mask3 = h >= 0.66
-    frame[..., 0] = np.where(mask3, 255, frame[..., 0])
-    frame[..., 1] = np.where(mask3, 255, frame[..., 1])
-    frame[..., 2] = np.where(mask3, np.clip((h - 0.66) * 3 * 255, 0, 255), frame[..., 2])
-
-    return frame
+    # Flip vertically — heat sim uses y=0 as hot base, but physical pillar
+    # needs hot pixels at high y (bottom of display)
+    return frame[:, ::-1, :]
 
 
 class SineBands(Effect):
