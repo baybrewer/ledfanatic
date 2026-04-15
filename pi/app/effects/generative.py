@@ -240,22 +240,47 @@ class ColorWipe(Effect):
 
 
 class Scanline(Effect):
-  """Horizontal scanline / comet moving up."""
+  """Horizontal scanline with gaussian glow, ping-pong bounce."""
 
   def render(self, t: float, state) -> np.ndarray:
     elapsed = self.elapsed(t)
-    speed = self.params.get('speed', 2.0)
-    width_param = self.params.get('width', 3)
-    color = hex_to_rgb(self.params.get('color', '#FFFFFF'))
+    speed = self.params.get('speed', 0.5)
+    width_param = self.params.get('width', 8)
+    pal_idx = self.params.get('palette', 0) % NUM_PALETTES
     frame = np.zeros((self.width, self.height, 3), dtype=np.uint8)
 
-    pos = (elapsed * speed * 20) % self.height
-    for y in range(self.height):
-      dist = abs(y - pos)
-      if dist < width_param:
-        fade = 1.0 - dist / width_param
-        c = (int(color[0] * fade), int(color[1] * fade), int(color[2] * fade))
-        frame[:, y] = c
+    # Ping-pong position
+    raw = (elapsed * speed * 0.3) % 2.0
+    if raw > 1.0:
+      pos = (2.0 - raw) * self.height
+    else:
+      pos = raw * self.height
+
+    # Gaussian brightness around center
+    ys = np.arange(self.height, dtype=np.float64)
+    dist = np.abs(ys - pos)
+    sigma = max(1.0, width_param)
+    gaussian = np.exp(-0.5 * (dist / sigma) ** 2)
+
+    # Center is blown-out white, edges get palette color with increasing saturation
+    center_color = np.array([255, 255, 255], dtype=np.float64)
+    # Palette position varies along the gaussian wings
+    pal_pos = (ys / self.height + elapsed * 0.02) % 1.0
+    pal_rgb = pal_color_grid(pal_idx, pal_pos)  # (height, 3) uint8
+
+    # Blend: at center (gaussian ~1) -> white; at edges -> palette color
+    # Use gaussian^2 for a tighter white core
+    white_blend = gaussian ** 2
+    result_1d = (
+      center_color[np.newaxis, :] * white_blend[:, np.newaxis] +
+      pal_rgb.astype(np.float64) * (1.0 - white_blend[:, np.newaxis])
+    )
+    # Scale by overall gaussian envelope for falloff
+    result_1d = result_1d * gaussian[:, np.newaxis]
+    result_1d = np.clip(result_1d, 0, 255).astype(np.uint8)
+
+    # Broadcast across width
+    frame[:, :, :] = result_1d[np.newaxis, :, :]
     return frame
 
 
