@@ -319,6 +319,7 @@ class Starfield(Effect):
     _Param("Speed", "speed", 0.2, 3.0, 0.1, 1.0),
   ]
   _SCALAR_PARAMS = {"density": 0.03, "twinkle": 1.0, "speed": 1.0}
+  NATIVE_WIDTH = 10
 
   def __init__(self, width=10, height=N, params=None):
     super().__init__(width, height, params)
@@ -393,6 +394,7 @@ class MatrixRain(Effect):
     _Param("Trail", "trail", 5, 60, 1, 25),
   ]
   _SCALAR_PARAMS = {"speed": 1.0, "density": 0.4, "trail": 25, "palette": 3}
+  NATIVE_WIDTH = 10
 
   def __init__(self, width=10, height=N, params=None):
     super().__init__(width, height, params)

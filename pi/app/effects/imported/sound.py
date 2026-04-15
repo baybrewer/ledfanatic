@@ -85,6 +85,7 @@ class Spectrum(Effect):
     _Param("Decay", "decay", 0.5, 0.99, 0.01, 0.85),
   ]
   _SCALAR_PARAMS = {"gain": 1.0, "decay": 0.85}
+  NATIVE_WIDTH = 10
 
   def __init__(self, width=10, height=N, params=None):
     super().__init__(width, height, params)
@@ -178,6 +179,7 @@ class VUMeter(Effect):
     _Param("Decay", "decay", 0.5, 0.99, 0.01, 0.9),
   ]
   _SCALAR_PARAMS = {"gain": 1.5, "decay": 0.9}
+  NATIVE_WIDTH = 10
 
   def __init__(self, width=10, height=N, params=None):
     super().__init__(width, height, params)
@@ -260,6 +262,7 @@ class BeatPulse(Effect):
     _Param("Flash", "flash", 0.3, 2.0, 0.1, 1.0),
   ]
   _SCALAR_PARAMS = {"decay": 0.92, "flash": 1.0}
+  NATIVE_WIDTH = 10
 
   def __init__(self, width=10, height=N, params=None):
     super().__init__(width, height, params)
@@ -362,6 +365,7 @@ class BassFire(Effect):
   _EMBER_BURST = 6
   _EMBER_SPREAD = 0.65
   _MAX_EMBERS = 150
+  NATIVE_WIDTH = 10
 
   def __init__(self, width=10, height=N, params=None):
     super().__init__(width, height, params)
@@ -656,6 +660,7 @@ class SoundRipples(Effect):
     _Param("Sensitivity", "sensitivity", 0.02, 0.5, 0.02, 0.15),
   ]
   _SCALAR_PARAMS = {"gain": 2.0, "speed": 1.5, "decay": 0.93, "sensitivity": 0.15}
+  NATIVE_WIDTH = 10
 
   def __init__(self, width=10, height=N, params=None):
     super().__init__(width, height, params)
@@ -790,6 +795,7 @@ class Spectrogram(Effect):
     _Param("Scroll", "scroll", 0.3, 3.0, 0.1, 1.0),
   ]
   _SCALAR_PARAMS = {"gain": 2.0, "scroll": 1.0}
+  NATIVE_WIDTH = 10
 
   def __init__(self, width=10, height=N, params=None):
     super().__init__(width, height, params)
@@ -882,6 +888,7 @@ class SoundWorm(Effect):
     _Param("Width", "worm_width", 1, 5, 1, 2),
   ]
   _SCALAR_PARAMS = {"gain": 1.0, "speed": 1.0, "worm_width": 2}
+  NATIVE_WIDTH = 10
 
   def __init__(self, width=10, height=N, params=None):
     super().__init__(width, height, params)
@@ -973,6 +980,7 @@ class ParticleBurst(Effect):
     _Param("Count", "count", 5, 60, 5, 30),
   ]
   _SCALAR_PARAMS = {"gravity": 0.5, "speed": 1.0, "count": 30}
+  NATIVE_WIDTH = 10
 
   def __init__(self, width=10, height=N, params=None):
     super().__init__(width, height, params)
@@ -1081,6 +1089,7 @@ class SoundPlasma(Effect):
     _Param("Base Speed", "base_speed", 0.1, 3.0, 0.1, 0.5),
   ]
   _SCALAR_PARAMS = {"gain": 1.5, "base_speed": 0.5}
+  NATIVE_WIDTH = 10
 
   def __init__(self, width=10, height=N, params=None):
     super().__init__(width, height, params)
@@ -1169,6 +1178,7 @@ class StrobeChaos(Effect):
     _Param("Segments", "segments", 1, 10, 1, 4),
   ]
   _SCALAR_PARAMS = {"intensity": 0.8, "segments": 4}
+  NATIVE_WIDTH = 10
 
   def __init__(self, width=10, height=N, params=None):
     super().__init__(width, height, params)
