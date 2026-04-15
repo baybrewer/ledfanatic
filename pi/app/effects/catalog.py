@@ -12,6 +12,7 @@ from typing import Optional
 from .generative import EFFECTS
 from .audio_reactive import AUDIO_EFFECTS
 from ..diagnostics.patterns import DIAGNOSTIC_EFFECTS
+from .engine.palettes import PALETTE_NAMES
 
 logger = logging.getLogger(__name__)
 
@@ -71,13 +72,24 @@ class EffectCatalogService:
     self._catalog: dict[str, EffectMeta] = {}
     self._build_catalog()
 
+  # Generative effects that support palette selection
+  _PALETTE_EFFECTS = {
+    'vertical_gradient', 'rainbow_rotate', 'plasma', 'twinkle', 'spark',
+    'noise_wash', 'color_wipe', 'scanline', 'fire', 'sine_bands',
+    'cylinder_rotate', 'solid_color',
+  }
+
   def _build_catalog(self):
+    palette_names = tuple(PALETTE_NAMES)
     for name, cls in EFFECTS.items():
+      has_palette = name in self._PALETTE_EFFECTS
       self._catalog[name] = EffectMeta(
         name=name,
         label=_name_to_label(name),
         group='generative',
         description=_get_description(name, cls),
+        palettes=palette_names if has_palette else (),
+        palette_support=has_palette,
       )
     for name, cls in AUDIO_EFFECTS.items():
       self._catalog[name] = EffectMeta(

@@ -49,6 +49,7 @@ class PreviewService:
     effect_cls = self._renderer.effect_registry[effect_name]
     from ..mapping.cylinder import N
     internal_width = self._renderer.internal_width if hasattr(self._renderer, 'internal_width') else 10
+    effect_width = getattr(effect_cls, 'NATIVE_WIDTH', None) or internal_width
 
     # Merge params
     yaml_params = {}
@@ -60,7 +61,7 @@ class PreviewService:
           break
     merged = {**yaml_params, **(params or {})}
 
-    self._effect = effect_cls(width=internal_width, height=N, params=merged)
+    self._effect = effect_cls(width=effect_width, height=N, params=merged)
     self._effect_name = effect_name
     self._fps = max(1, min(fps, 60))
     self._running = True
