@@ -12,6 +12,8 @@ from ..mapping.cylinder import N
 class Effect(ABC):
   """Base class for all effects."""
 
+  NATIVE_WIDTH = None  # None = use renderer's internal_width
+
   def __init__(self, width: int = 10, height: int = N, params: Optional[dict] = None):
     self.width = width
     self.height = height

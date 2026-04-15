@@ -143,8 +143,9 @@ class Renderer:
     # Pass effect_registry to AnimationSwitcher so it can instantiate playlist effects
     if scene_name == 'animation_switcher':
       merged['_effect_registry'] = self.effect_registry
+    effect_width = getattr(effect_cls, 'NATIVE_WIDTH', None) or self.internal_width
     self.current_effect = effect_cls(
-      width=self.internal_width,
+      width=effect_width,
       height=N,
       params=merged,
     )
