@@ -7,6 +7,7 @@ import numpy as np
 from typing import Optional
 
 from .base import Effect, hsv_to_rgb, hex_to_rgb, palette_sample, lerp_color
+from .engine.palettes import pal_color_grid, NUM_PALETTES
 from ..mapping.cylinder import N
 
 

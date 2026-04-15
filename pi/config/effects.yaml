@@ -20,68 +20,74 @@ effects:
   solid_color:
     params:
       color: "#FF6600"
+      speed: 0.0
+      hue: 0.0
+      palette: 0
 
   vertical_gradient:
     params:
-      palette: "rainbow"
-      speed: 0.5
+      speed: 0.05
+      palette: 0
 
   rainbow_rotate:
     params:
-      speed: 1.0
+      speed: 0.1
       scale: 1.0
+      palette: 0
 
   plasma:
     params:
       speed: 1.0
       scale: 2.0
-      complexity: 3
+      palette: 0
 
   twinkle:
     params:
       density: 0.05
       speed: 1.0
-      palette: "ice"
+      darkness: 0.0
+      palette: 5
 
   spark:
     params:
       rate: 10
       speed: 2.0
-      palette: "fire"
+      brightness: 1.0
+      palette: 4
 
   noise_wash:
     params:
       speed: 0.5
       scale: 3.0
-      palette: "ocean"
+      palette: 1
 
   color_wipe:
     params:
-      color: "#0099FF"
-      speed: 1.0
+      speed: 0.5
+      palette: 0
 
   scanline:
     params:
-      width: 3
-      speed: 2.0
-      color: "#FFFFFF"
+      width: 8
+      speed: 0.5
+      palette: 0
 
   fire:
     params:
       cooling: 55
       sparking: 120
-      palette: "fire"
+      palette: 4
 
   sine_bands:
     params:
       frequency: 3.0
       speed: 1.0
-      palette: "rainbow"
+      palette: 0
 
   cylinder_rotate:
     params:
-      speed: 1.0
-      palette: "sunset"
+      speed: 0.1
+      palette: 2
 
 audio_effects:
   vu_pulse:
