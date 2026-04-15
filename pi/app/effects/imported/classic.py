@@ -523,7 +523,7 @@ class Fireplace(Effect):
 
     # Read all params
     fuel_raw = clampf(self.params.get("fuel", 1.5), 0.2, 15.0)
-    fuel = clampf(fuel_raw / 15.0, 0.01, 1.0)  # normalize to 0-1 for sim
+    fuel = clampf(fuel_raw / 5.0, 0.04, 3.0)  # normalize: 5.0=1.0 (old max), 15.0=3.0 (inferno)
     fuel_sq = fuel * fuel
     sz = max(3, int(self.params.get("spark_zone", 60) * (0.2 + fuel * 0.8)))
     spark_prob = self.params.get("spark_prob", 1.0)
@@ -616,7 +616,7 @@ class Fireplace(Effect):
     )
 
     # ── Cooling (vectorized) ─────────────────────────────────────
-    fuel_cool = 1.5 - fuel
+    fuel_cool = max(0.0, 1.5 - fuel)  # high fuel reduces cooling; above 1.5 = zero cooling
     cb = cool_base * fuel_cool
     ch = cool_height * fuel_cool
     hf = (rows - 1 - y_g) / float(rows)  # 0=bottom, 1=top

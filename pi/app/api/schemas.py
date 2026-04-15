@@ -6,7 +6,7 @@ from pydantic import BaseModel
 
 class SceneRequest(BaseModel):
     effect: str
-    params: dict = {}
+    params: Optional[dict] = None
 
 
 class BrightnessConfigRequest(BaseModel):

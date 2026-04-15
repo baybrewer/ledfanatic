@@ -372,9 +372,16 @@ function showEffectControls(name, meta) {
 }
 
 async function activateEffect(name) {
-  currentEffectParams = {};
   activeEffectName = name;
-  await api('POST', '/api/scenes/activate', { effect: name, params: {} });
+  // Activate without sending params — backend keeps saved/default params
+  const result = await api('POST', '/api/scenes/activate', { effect: name });
+  // Load the actual active params from the backend
+  const catalog = await api('GET', '/api/effects/catalog');
+  if (catalog && catalog.current_params && Object.keys(catalog.current_params).length > 0) {
+    currentEffectParams = { ...catalog.current_params };
+  } else {
+    currentEffectParams = {};
+  }
   // Re-render to update active highlight and controls without full refetch
   if (effectsCatalog && effectsCatalog[name]) {
     // Update highlights in effects grid
