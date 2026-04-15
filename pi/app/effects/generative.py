@@ -149,6 +149,8 @@ class Spark(Effect):
     elapsed = self.elapsed(t)
     speed = self.params.get('speed', 2.0)
     rate = self.params.get('rate', 10)
+    brightness = self.params.get('brightness', 1.0)
+    pal_idx = self.params.get('palette', 0) % NUM_PALETTES
     frame = np.zeros((self.width, self.height, 3), dtype=np.uint8)
 
     # Spawn new sparks
@@ -170,18 +172,18 @@ class Spark(Effect):
       s['life'] -= 0.01
       if s['life'] > 0 and int(s['y']) < self.height:
         yi = int(s['y'])
-        r, g, b = hsv_to_rgb(s['hue'], 1.0, s['life'])
-        frame[s['x'] % self.width, yi] = (r, g, b)
+        c = pal_color_grid(pal_idx, np.array([s['hue']]))[0]
+        b = s['life'] * min(2.0, max(0.1, brightness))
+        frame[s['x'] % self.width, yi] = np.clip(c.astype(np.float32) * b, 0, 255).astype(np.uint8)
         # Tail
         for tail in range(1, 4):
           ty = yi - tail
           if 0 <= ty < self.height:
-            fade = s['life'] * (1 - tail * 0.25)
+            fade = s['life'] * (1 - tail * 0.25) * min(2.0, max(0.1, brightness))
             if fade > 0:
-              r2, g2, b2 = hsv_to_rgb(s['hue'], 1.0, fade)
-              frame[s['x'] % self.width, ty] = (r2, g2, b2)
+              frame[s['x'] % self.width, ty] = np.clip(c.astype(np.float32) * fade, 0, 255).astype(np.uint8)
         alive.append(s)
-    self._sparks = alive[-200:]  # cap active sparks
+    self._sparks = alive[-200:]
     return frame
 
 
