@@ -81,7 +81,7 @@ PYTHONPATH=. pytest tests/ -v  # ~219 tests
 ## Deploying to Pi
 ```bash
 pi/scripts/setup.sh            # first time (creates user, venv, hotspot, sudoers)
-pi/scripts/deploy.sh pillar.local  # updates (rsync + pip install + restart)
+pi/scripts/deploy.sh ledfanatic.local  # updates (rsync + pip install + restart)
 ```
 
 ## Rules

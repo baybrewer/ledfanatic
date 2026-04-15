@@ -4,8 +4,8 @@
 
 set -euo pipefail
 
-PI_HOST="${1:-pillar.local}"
-PI_USER="pillar"
+PI_HOST="${1:-ledfanatic.local}"
+PI_USER="jim"
 PI_PATH="/opt/pillar"
 SRC_PATH="${PI_PATH}/src"
 REPO_DIR="$(cd "$(dirname "$0")/../.." && pwd)"

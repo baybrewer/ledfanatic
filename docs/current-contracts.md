@@ -152,7 +152,7 @@ sudo journalctl -u pillar -f
 
 ### Deploying updates
 ```bash
-pi/scripts/deploy.sh pillar.local
+pi/scripts/deploy.sh ledfanatic.local
 # Syncs pi/ → /opt/pillar/src, reinstalls package, restarts service
 ```
 
