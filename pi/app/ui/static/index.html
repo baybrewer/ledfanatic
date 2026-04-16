@@ -283,8 +283,9 @@
             <h3>Channel Layout</h3>
             <canvas id="mapping-diagram" width="400" height="300"></canvas>
 
-            <div class="setup-layout">
-              <div class="setup-main">
+            <h3 style="margin-top:16px;">Live Output</h3>
+            <canvas id="setup-live-canvas" width="600" height="100"></canvas>
+
             <h3 style="margin-top:16px;">Strip Mapping</h3>
             <div id="strip-status" class="status-msg"></div>
             <div class="strip-table-wrap">
@@ -324,15 +325,6 @@
             <button id="diag-clear-btn" class="action-btn secondary">Return to Normal</button>
             <div id="diag-stats">
               <pre id="stats-output">Loading...</pre>
-            </div>
-              </div>
-              <!-- Right side: live LED output mirror -->
-              <div class="setup-preview">
-                <div class="setup-preview-inner">
-                  <div class="setup-preview-label">Live Output</div>
-                  <canvas id="setup-live-canvas" width="60" height="600"></canvas>
-                </div>
-              </div>
             </div>
           </div>
 

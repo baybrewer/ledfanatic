@@ -869,7 +869,7 @@ function initSystem() {
         section.classList.add('active');
       }
       if (btn.dataset.section === 'system-setup') { loadStripConfig(); loadStats(); startSetupLivePreview(); }
-      else { stopSetupLivePreview(); }
+      else stopSetupLivePreview();
     });
   });
 
@@ -1416,39 +1416,45 @@ function stopSetupLivePreview() {
 
 function renderSetupLiveFrame(ctx, canvas, width, height, pixels) {
   // Frame is (width, height, 3) — columns are strips, y=0 is bottom.
-  // Canvas is 60×600; each strip gets 6px wide column, each pixel 3.5px tall.
-  const cw = canvas.width;
-  const ch = canvas.height;
-  const img = ctx.createImageData(cw, ch);
-  const data = img.data;
-  const colW = cw / width;
-  const rowH = ch / height;
+  // Canvas is horizontal: strips side-by-side as vertical bars.
+  const dpr = window.devicePixelRatio || 1;
+  const rect = canvas.getBoundingClientRect();
+  if (rect.width < 10) return;
+  canvas.width = rect.width * dpr;
+  canvas.height = rect.height * dpr;
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+
+  const cw = rect.width;
+  const ch = rect.height;
+  const gap = 2;
+  const colW = (cw - gap * (width + 1)) / width;
+
+  ctx.fillStyle = '#000';
+  ctx.fillRect(0, 0, cw, ch);
 
   for (let x = 0; x < width; x++) {
+    const px = gap + x * (colW + gap);
     for (let y = 0; y < height; y++) {
       const srcIdx = (x * height + y) * 3;
       const r = pixels[srcIdx];
       const g = pixels[srcIdx + 1];
       const b = pixels[srcIdx + 2];
-      // Flip y so bottom-of-strip renders at bottom of canvas
-      const py = ch - 1 - Math.floor(y * rowH);
-      const px = Math.floor(x * colW);
-      for (let dy = 0; dy < Math.ceil(rowH); dy++) {
-        const py2 = py - dy;
-        if (py2 < 0 || py2 >= ch) continue;
-        for (let dx = 0; dx < Math.ceil(colW); dx++) {
-          const px2 = px + dx;
-          if (px2 >= cw) continue;
-          const di = (py2 * cw + px2) * 4;
-          data[di] = r;
-          data[di + 1] = g;
-          data[di + 2] = b;
-          data[di + 3] = 255;
-        }
-      }
+      // Flip y: y=0 (bottom) draws at canvas bottom
+      const py = ch * (1 - (y + 1) / height);
+      const rowH = ch / height;
+      ctx.fillStyle = `rgb(${r},${g},${b})`;
+      ctx.fillRect(px, py, colW, Math.ceil(rowH) + 1);
     }
   }
-  ctx.putImageData(img, 0, 0);
+
+  // Strip labels at bottom
+  ctx.font = '9px system-ui, sans-serif';
+  ctx.fillStyle = '#888';
+  ctx.textAlign = 'center';
+  for (let x = 0; x < width; x++) {
+    const px = gap + x * (colW + gap) + colW / 2;
+    ctx.fillText(`S${x}`, px, ch - 2);
+  }
 }
 
 // --- Init ---
