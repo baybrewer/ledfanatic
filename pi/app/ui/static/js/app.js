@@ -162,7 +162,6 @@ function activateTab(tab) {
 
   if (tab.dataset.tab === 'media') loadMedia();
   if (tab.dataset.tab === 'audio') { loadAudioDevices(); loadAudioConfig(); }
-  if (tab.dataset.tab === 'diag') loadStats();
   if (tab.dataset.tab === 'system') loadSystemStatus();
 }
 
@@ -866,7 +865,7 @@ function initSystem() {
         section.classList.remove('hidden');
         section.classList.add('active');
       }
-      if (btn.dataset.section === 'system-setup') loadStripConfig();
+      if (btn.dataset.section === 'system-setup') { loadStripConfig(); loadStats(); }
     });
   });
 
