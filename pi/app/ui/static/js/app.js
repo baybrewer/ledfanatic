@@ -163,6 +163,9 @@ function activateTab(tab) {
   if (tab.dataset.tab === 'media') loadMedia();
   if (tab.dataset.tab === 'audio') { loadAudioDevices(); loadAudioConfig(); }
   if (tab.dataset.tab === 'system') loadSystemStatus();
+
+  // Stop setup live preview when leaving System tab
+  if (tab.dataset.tab !== 'system') stopSetupLivePreview();
 }
 
 async function stopEffectsPreview() {
@@ -865,7 +868,8 @@ function initSystem() {
         section.classList.remove('hidden');
         section.classList.add('active');
       }
-      if (btn.dataset.section === 'system-setup') { loadStripConfig(); loadStats(); }
+      if (btn.dataset.section === 'system-setup') { loadStripConfig(); loadStats(); startSetupLivePreview(); }
+      else { stopSetupLivePreview(); }
     });
   });
 
@@ -1371,6 +1375,80 @@ function initTooltips() {
 
   document.addEventListener('touchend', hideTooltip);
   document.addEventListener('touchcancel', hideTooltip);
+}
+
+// --- Setup live preview: mirrors live LED output on Setup screen ---
+
+let setupLiveWs = null;
+const SETUP_LIVE_HEADER_SIZE = 10;  // 1 + 4 + 2 + 2 + 1
+
+function startSetupLivePreview() {
+  if (setupLiveWs) return;
+  const canvas = document.getElementById('setup-live-canvas');
+  if (!canvas) return;
+  const ctx = canvas.getContext('2d');
+  const proto = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+  const url = `${proto}//${window.location.host}/api/preview/live`;
+  const ws = new WebSocket(url);
+  ws.binaryType = 'arraybuffer';
+  ws.onmessage = (evt) => {
+    try {
+      const buf = new DataView(evt.data);
+      const msgType = buf.getUint8(0);
+      if (msgType !== 0x01) return;
+      const width = buf.getUint16(5, true);
+      const height = buf.getUint16(7, true);
+      const pixels = new Uint8Array(evt.data, SETUP_LIVE_HEADER_SIZE);
+      renderSetupLiveFrame(ctx, canvas, width, height, pixels);
+    } catch (e) {}
+  };
+  ws.onclose = () => { setupLiveWs = null; };
+  ws.onerror = () => { try { ws.close(); } catch (e) {} };
+  setupLiveWs = ws;
+}
+
+function stopSetupLivePreview() {
+  if (setupLiveWs) {
+    try { setupLiveWs.close(); } catch (e) {}
+    setupLiveWs = null;
+  }
+}
+
+function renderSetupLiveFrame(ctx, canvas, width, height, pixels) {
+  // Frame is (width, height, 3) — columns are strips, y=0 is bottom.
+  // Canvas is 60×600; each strip gets 6px wide column, each pixel 3.5px tall.
+  const cw = canvas.width;
+  const ch = canvas.height;
+  const img = ctx.createImageData(cw, ch);
+  const data = img.data;
+  const colW = cw / width;
+  const rowH = ch / height;
+
+  for (let x = 0; x < width; x++) {
+    for (let y = 0; y < height; y++) {
+      const srcIdx = (x * height + y) * 3;
+      const r = pixels[srcIdx];
+      const g = pixels[srcIdx + 1];
+      const b = pixels[srcIdx + 2];
+      // Flip y so bottom-of-strip renders at bottom of canvas
+      const py = ch - 1 - Math.floor(y * rowH);
+      const px = Math.floor(x * colW);
+      for (let dy = 0; dy < Math.ceil(rowH); dy++) {
+        const py2 = py - dy;
+        if (py2 < 0 || py2 >= ch) continue;
+        for (let dx = 0; dx < Math.ceil(colW); dx++) {
+          const px2 = px + dx;
+          if (px2 >= cw) continue;
+          const di = (py2 * cw + px2) * 4;
+          data[di] = r;
+          data[di + 1] = g;
+          data[di + 2] = b;
+          data[di + 3] = 255;
+        }
+      }
+    }
+  }
+  ctx.putImageData(img, 0, 0);
 }
 
 // --- Init ---

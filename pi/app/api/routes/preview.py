@@ -6,11 +6,12 @@ Routes only; service logic lives in pi/app/preview/service.py.
 
 import asyncio
 import logging
+import struct
 
 from fastapi import APIRouter, Depends, HTTPException, WebSocket, WebSocketDisconnect
 from pydantic import BaseModel
 
-from ...preview.service import PreviewService
+from ...preview.service import PreviewService, FRAME_HEADER_FORMAT, MSG_TYPE_FRAME
 
 logger = logging.getLogger(__name__)
 
@@ -97,5 +98,27 @@ def create_router(deps, require_auth) -> APIRouter:
       pass
     finally:
       svc.remove_client(ws)
+
+  @router.websocket("/live")
+  async def live_preview_websocket(ws: WebSocket):
+    """Stream the live renderer's logical frame at ~15 FPS for setup-panel simulator."""
+    await ws.accept()
+    frame_id = 0
+    try:
+      while True:
+        renderer = deps.renderer
+        frame = getattr(renderer, '_last_logical_frame', None)
+        if frame is not None and frame.ndim == 3:
+          width, height = frame.shape[0], frame.shape[1]
+          frame_id += 1
+          header = struct.pack(
+            FRAME_HEADER_FORMAT, MSG_TYPE_FRAME, frame_id, width, height, 0,
+          )
+          await ws.send_bytes(header + frame.tobytes())
+        await asyncio.sleep(1.0 / 15)
+    except WebSocketDisconnect:
+      pass
+    except asyncio.CancelledError:
+      pass
 
   return router

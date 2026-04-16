@@ -119,6 +119,9 @@ class Renderer:
     self._fps_samples: list[float] = []
     self._fps_window = 60
     self._last_frame_start: float = 0.0
+    # Last logical (10×172×3 uint8) frame — snapshot after brightness+gamma,
+    # read by live-preview WebSocket. Ring buffer of one frame.
+    self._last_logical_frame = np.zeros((10, 172, 3), dtype=np.uint8)
 
   def register_effect(self, name: str, effect_class):
     self.effect_registry[name] = effect_class
@@ -244,8 +247,10 @@ class Renderer:
 
     if self.state.blackout:
       channel_data = np.zeros((ch, lpc, 3), dtype=np.uint8)
+      self._last_logical_frame = np.zeros((10, 172, 3), dtype=np.uint8)
     elif self.current_effect is None:
       channel_data = np.zeros((ch, lpc, 3), dtype=np.uint8)
+      self._last_logical_frame = np.zeros((10, 172, 3), dtype=np.uint8)
     else:
       t = time.monotonic()
       internal_frame = self.current_effect.render(t, self.state)
@@ -281,6 +286,9 @@ class Renderer:
                 break
         else:
           self._test_strip_id = None
+
+      # Snapshot logical frame for live preview (post-brightness/gamma/test-strip)
+      self._last_logical_frame = logical_frame
 
       # Use compiled plan mapper when available, legacy mapper as fallback
       if plan:
