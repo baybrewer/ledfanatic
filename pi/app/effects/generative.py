@@ -154,8 +154,10 @@ class Twinkle(Effect):
 
     # Each star twinkles at its own rate — no global phase shift
     brightness = (np.sin(self._stars * 3.0 + self._stars * elapsed * speed * 0.5) + 1.0) / 2.0
-    mask = self._rng.random((self.width, self.height)) < density
-    visible = (brightness > 0.7) | mask
+    # Density controls how narrow the "bright" window is — lower density = fewer stars visible at once.
+    # density=0.005 → threshold=0.99 (only brightest peaks), density=0.05 → threshold=0.9 (more visible).
+    threshold = max(0.0, 1.0 - density * 20.0)
+    visible = brightness > threshold
 
     # Palette position varies by row and time
     y_coords = np.arange(self.height, dtype=np.float64) / self.height * 0.3
