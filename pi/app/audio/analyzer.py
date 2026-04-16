@@ -22,6 +22,9 @@ BASS_RANGE = (20, 250)
 MID_RANGE = (250, 4000)
 HIGH_RANGE = (4000, 16000)
 
+_SPECTRUM_BINS = 16
+_BIN_EDGES = np.geomspace(20, 16000, _SPECTRUM_BINS + 1)
+
 
 class AudioAnalyzer:
   def __init__(self, render_state, device_index: Optional[int] = None):
@@ -51,6 +54,9 @@ class AudioAnalyzer:
     # Config
     self.sensitivity = 1.0
     self.gain = 1.0
+    self.bass_sensitivity = 1.0
+    self.mid_sensitivity = 1.0
+    self.treble_sensitivity = 1.0
 
   def start(self):
     if self._running:
@@ -116,9 +122,15 @@ class AudioAnalyzer:
     mid = self._band_energy(spectrum, freqs, *MID_RANGE)
     high = self._band_energy(spectrum, freqs, *HIGH_RANGE)
 
+    bass *= self.bass_sensitivity
+    mid *= self.mid_sensitivity
+    high *= self.treble_sensitivity
+
     self._bass_smooth = self._bass_smooth * self._smoothing + bass * (1 - self._smoothing)
     self._mid_smooth = self._mid_smooth * self._smoothing + mid * (1 - self._smoothing)
     self._high_smooth = self._high_smooth * self._smoothing + high * (1 - self._smoothing)
+
+    spectrum_bins = self._compute_spectrum_bins(spectrum, freqs)
 
     # Beat detection
     energy = float(np.sum(spectrum[:len(spectrum) // 4]))
@@ -138,11 +150,12 @@ class AudioAnalyzer:
     # Build snapshot under lock and push to render state
     snapshot = {
       'level': min(1.0, self._level_smooth),
-      'bass': min(1.0, self._bass_smooth * self.sensitivity),
-      'mid': min(1.0, self._mid_smooth * self.sensitivity),
-      'high': min(1.0, self._high_smooth * self.sensitivity),
+      'bass': min(1.0, self._bass_smooth),
+      'mid': min(1.0, self._mid_smooth),
+      'high': min(1.0, self._high_smooth),
       'beat': beat,
       'bpm': 0.0,
+      'spectrum': spectrum_bins,
     }
 
     with self._lock:
@@ -150,6 +163,24 @@ class AudioAnalyzer:
 
     # Push to render state (dict assignment is atomic in CPython)
     self._render_state.update_audio(snapshot)
+
+  def _compute_spectrum_bins(self, spectrum: np.ndarray, freqs: np.ndarray) -> list[float]:
+    bins = []
+    for i in range(_SPECTRUM_BINS):
+      lo, hi = _BIN_EDGES[i], _BIN_EDGES[i + 1]
+      mask = (freqs >= lo) & (freqs < hi)
+      if np.any(mask):
+        val = float(np.sqrt(np.mean(spectrum[mask] ** 2))) * 0.01
+      else:
+        val = 0.0
+      if hi <= 250:
+        val *= self.bass_sensitivity
+      elif lo >= 4000:
+        val *= self.treble_sensitivity
+      else:
+        val *= self.mid_sensitivity
+      bins.append(min(1.0, val))
+    return bins
 
   def _band_energy(self, spectrum: np.ndarray, freqs: np.ndarray,
                    low_hz: float, high_hz: float) -> float:
