@@ -112,6 +112,8 @@ class Renderer:
     self.effect_registry: dict = {}
     self.current_effect = None
     self._output_plan = None  # CompiledOutputPlan, set via apply_output_plan()
+    self._test_strip_id: Optional[int] = None
+    self._test_strip_until: float = 0.0
     self._running = False
     self._gamma_lut = _build_gamma_lut(state.gamma)
     self._fps_samples: list[float] = []
@@ -125,6 +127,15 @@ class Renderer:
     """Hot-swap the compiled output plan. Thread-safe: next frame picks it up."""
     self._output_plan = plan
     logger.info(f"Output plan applied: {plan.channels}ch x {plan.leds_per_channel}leds")
+
+  def set_test_strip(self, strip_id: Optional[int], duration: float = 5.0):
+    """Activate a test pattern on a single strip for identification."""
+    if strip_id is not None:
+      self._test_strip_id = strip_id
+      self._test_strip_until = time.monotonic() + duration
+    else:
+      self._test_strip_id = None
+      self._test_strip_until = 0.0
 
   def _set_scene(self, scene_name: str, params: Optional[dict] = None):
     if scene_name not in self.effect_registry:
@@ -252,6 +263,24 @@ class Renderer:
 
       # Apply gamma
       logical_frame = self._gamma_lut[logical_frame]
+
+      # Test strip pattern: override one logical column with gradient
+      if self._test_strip_id is not None:
+        if time.monotonic() < self._test_strip_until:
+          logical_frame[:] = 0  # black out everything
+          plan = self._output_plan
+          if plan:
+            for strip in plan.strips:
+              if strip.strip_id == self._test_strip_id:
+                col = strip.logical_order
+                if col < logical_frame.shape[0]:
+                  h = logical_frame.shape[1]
+                  for y in range(h):
+                    t = y / max(h - 1, 1)
+                    logical_frame[col, y] = [int(255 * (1 - t)), 0, int(255 * t)]
+                break
+        else:
+          self._test_strip_id = None
 
       # Use compiled plan mapper when available, legacy mapper as fallback
       if plan:

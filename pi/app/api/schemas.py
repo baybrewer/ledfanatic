@@ -43,6 +43,9 @@ class AudioConfigRequest(BaseModel):
     treble_sensitivity: Optional[float] = None
 
 
-class ChannelConfigRequest(BaseModel):
-    color_order: Optional[str] = None
+class StripConfigRequest(BaseModel):
+    channel: Optional[int] = None
+    offset: Optional[int] = None
+    direction: Optional[str] = None
     led_count: Optional[int] = None
+    color_order: Optional[str] = None

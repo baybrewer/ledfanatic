@@ -1,55 +1,113 @@
 """
-Setup API routes — live channel configuration.
+Setup API routes — live strip-to-channel mapping.
 
-Each channel edit validates, recompiles the output plan, hot-applies
-to the renderer, and persists to installation.yaml. No sessions.
+Each strip edit validates, recompiles the output plan, hot-applies
+to the renderer, and persists to installation.yaml.
 """
 
 import logging
 
 from fastapi import APIRouter, Depends, HTTPException
 
-from ..schemas import ChannelConfigRequest
+from ..schemas import StripConfigRequest
 from ...config.installation import (
-  save_installation, VALID_COLOR_ORDERS, MAX_LEDS_PER_CHANNEL,
+  StripMapping, save_installation,
+  VALID_COLOR_ORDERS, VALID_DIRECTIONS, MAX_LEDS_PER_CHANNEL,
 )
 from ...mapping.runtime_plan import compile_strip_plan
 
 logger = logging.getLogger(__name__)
 
 
+def _recompile_and_apply(deps):
+  """Validate, recompile, hot-apply, persist."""
+  errors = deps.installation.validate()
+  if errors:
+    raise HTTPException(422, f"Validation failed: {'; '.join(errors)}")
+  plan = compile_strip_plan(deps.installation, deps.controller_profile)
+  deps.renderer.apply_output_plan(plan)
+  save_installation(deps.installation, deps.config_dir)
+
+
 def create_router(deps, require_auth, broadcast_state) -> APIRouter:
     router = APIRouter(prefix="/api/setup", tags=["setup"])
 
-    @router.get("/channels")
-    async def get_channels():
-        return {"channels": deps.installation.channels_api_dict()}
+    @router.get("/strips")
+    async def get_strips():
+        return {"strips": deps.installation.strips_api_list()}
 
-    @router.post("/channels/{n}", dependencies=[Depends(require_auth)])
-    async def update_channel(n: int, req: ChannelConfigRequest):
-        if not 0 <= n <= 7:
-            raise HTTPException(400, f"Channel must be 0-7, got {n}")
+    @router.post("/strips/{strip_id}", dependencies=[Depends(require_auth)])
+    async def update_strip(strip_id: int, req: StripConfigRequest):
+        strip = next((s for s in deps.installation.strips if s.id == strip_id), None)
+        if strip is None:
+            raise HTTPException(404, f"Strip {strip_id} not found")
 
-        ch = deps.installation.channels[n]
-
+        if req.channel is not None:
+            if not 0 <= req.channel < 8:
+                raise HTTPException(422, "channel must be 0-7")
+            strip.channel = req.channel
+        if req.offset is not None:
+            if req.offset < 0:
+                raise HTTPException(422, "offset must be >= 0")
+            strip.offset = req.offset
+        if req.direction is not None:
+            if req.direction not in VALID_DIRECTIONS:
+                raise HTTPException(422, f"direction must be one of: {', '.join(sorted(VALID_DIRECTIONS))}")
+            strip.direction = req.direction
+        if req.led_count is not None:
+            if not 1 <= req.led_count <= MAX_LEDS_PER_CHANNEL:
+                raise HTTPException(422, f"led_count must be 1-{MAX_LEDS_PER_CHANNEL}")
+            strip.led_count = req.led_count
         if req.color_order is not None:
             if req.color_order not in VALID_COLOR_ORDERS:
-                raise HTTPException(422, f"Invalid color_order: {req.color_order}. Must be one of: {', '.join(sorted(VALID_COLOR_ORDERS))}")
-            ch.color_order = req.color_order
+                raise HTTPException(422, f"color_order must be one of: {', '.join(sorted(VALID_COLOR_ORDERS))}")
+            strip.color_order = req.color_order
 
-        if req.led_count is not None:
-            if not 0 <= req.led_count <= MAX_LEDS_PER_CHANNEL:
-                raise HTTPException(422, f"led_count must be 0-{MAX_LEDS_PER_CHANNEL}, got {req.led_count}")
-            ch.led_count = req.led_count
+        _recompile_and_apply(deps)
+        logger.info(f"Strip {strip_id} updated: ch{strip.channel}+{strip.offset} {strip.direction} {strip.led_count}LEDs {strip.color_order}")
+        return {"status": "ok", "strips": deps.installation.strips_api_list()}
 
-        # Persist (plan recompile disabled until mapping interface is built)
-        # plan = compile_strip_plan(deps.installation, deps.controller_profile)
-        # deps.renderer.apply_output_plan(plan)
+    @router.post("/strips", dependencies=[Depends(require_auth)])
+    async def add_strip(req: StripConfigRequest):
+        new_id = deps.installation.next_id()
+        strip = StripMapping(
+            id=new_id,
+            channel=req.channel if req.channel is not None else 0,
+            offset=req.offset if req.offset is not None else 0,
+            direction=req.direction if req.direction is not None else 'bottom_to_top',
+            led_count=req.led_count if req.led_count is not None else 172,
+            color_order=req.color_order if req.color_order is not None else 'BGR',
+        )
+        deps.installation.strips.append(strip)
 
-        # Persist
-        save_installation(deps.installation, deps.config_dir)
+        try:
+            _recompile_and_apply(deps)
+        except HTTPException:
+            deps.installation.strips.pop()
+            raise
 
-        logger.info(f"Channel {n} updated: {ch.color_order}, {ch.led_count} LEDs")
-        return {"status": "ok", "channels": deps.installation.channels_api_dict()}
+        logger.info(f"Strip {new_id} added: ch{strip.channel}+{strip.offset}")
+        return {"status": "ok", "strips": deps.installation.strips_api_list()}
+
+    @router.delete("/strips/{strip_id}", dependencies=[Depends(require_auth)])
+    async def delete_strip(strip_id: int):
+        strip = next((s for s in deps.installation.strips if s.id == strip_id), None)
+        if strip is None:
+            raise HTTPException(404, f"Strip {strip_id} not found")
+
+        deps.installation.strips.remove(strip)
+        deps.installation.renumber_ids()
+
+        _recompile_and_apply(deps)
+        logger.info(f"Strip {strip_id} deleted, {len(deps.installation.strips)} remaining")
+        return {"status": "ok", "strips": deps.installation.strips_api_list()}
+
+    @router.post("/strips/{strip_id}/test", dependencies=[Depends(require_auth)])
+    async def test_strip(strip_id: int):
+        strip = next((s for s in deps.installation.strips if s.id == strip_id), None)
+        if strip is None:
+            raise HTTPException(404, f"Strip {strip_id} not found")
+        deps.renderer.set_test_strip(strip_id)
+        return {"status": "ok", "strip_id": strip_id, "duration": 5}
 
     return router
