@@ -486,9 +486,96 @@ class SRMoire(Effect):
     return max(0.0, dt)
 
 
+# ═══════════════════════════════════════════════════════════════════
+#  SR FLOW FIELD
+# ═══════════════════════════════════════════════════════════════════
+
+class SRFlowField(Effect):
+  """Sound-reactive Flow Field: bass speeds flow, beat flashes existing
+  particles full-bright, buildup boosts trail brightness. No extra
+  particle spawning (keeps 60 FPS budget)."""
+
+  CATEGORY = "sound"
+  DISPLAY_NAME = "SR Flow Field"
+  DESCRIPTION = "Audio-reactive flow field — bass velocity, beat flash, buildup glow"
+  PALETTE_SUPPORT = True
+  NATIVE_WIDTH = 10
+
+  PARAMS = [
+    _Param("Gain", "gain", 0.2, 5.0, 0.1, 1.0),
+    _Param("Speed", "speed", 0.05, 2.0, 0.05, 0.3),
+    _Param("Particles", "particles", 10, 200, 10, 80),
+    _Param("Fade", "fade", 0.8, 0.99, 0.01, 0.92),
+    _Param("Noise Scale", "noise_scale", 0.3, 3.0, 0.1, 1.0),
+  ]
+  _SCALAR_PARAMS = {"gain": 1.0, "speed": 0.3, "particles": 80, "fade": 0.92, "noise_scale": 1.0, "palette": 0}
+
+  def __init__(self, width=10, height=N, params=None):
+    super().__init__(width, height, params)
+    self._audio_adapter = AudioCompatAdapter()
+    self.buf = LEDBuffer(width, height)
+    self._t = 0.0
+    self._pts = []
+    for _ in range(200):
+      self._pts.append([
+        random.uniform(0, width),
+        random.uniform(0, height),
+        random.random(),
+      ])
+    self._beat_flash = 0.0
+    self._last_t = None
+
+  def render(self, t, state):
+    dt_ms = self._calc_dt_ms(t)
+    dt = dt_ms * 0.001
+    raw = state._audio_lock_free
+    audio = self._audio_adapter.adapt(raw, t)
+
+    gain = self.params.get("gain", 1.0)
+    base_speed = self.params.get("speed", 0.3)
+    count = int(self.params.get("particles", 80))
+    fade = self.params.get("fade", 0.92)
+    ns = self.params.get("noise_scale", 1.0)
+    pal_idx = _get_pal_idx(self.params)
+
+    # Audio modulations
+    speed = base_speed * (1.0 + audio.bass * gain * 1.5)
+    if audio.beat:
+      self._beat_flash = 1.0
+    self._beat_flash *= 0.85 ** (dt * 60)
+    bright_scale = 0.8 + min(0.8, audio.buildup * gain + self._beat_flash * 0.8)
+
+    self._t += dt * speed
+    self.buf.fade(fade)
+
+    for p in self._pts[:count]:
+      angle = cyl_noise(p[0], p[1], self._t * 0.5, ns, 0.008 * ns) * 6.28
+      p[0] += math.cos(angle) * 30 * dt * speed
+      p[1] += math.sin(angle) * 30 * dt * speed
+      p[0] = p[0] % self.width
+      if p[1] < 0 or p[1] >= self.height:
+        p[0] = random.uniform(0, self.width)
+        p[1] = random.uniform(0, self.height)
+        p[2] = random.random()
+      c = pal_color(pal_idx, p[2])
+      self.buf.add_led(int(p[0]), int(p[1]),
+                       c[0] * bright_scale, c[1] * bright_scale, c[2] * bright_scale)
+
+    return self.buf.get_frame()
+
+  def _calc_dt_ms(self, t):
+    if self._last_t is None:
+      self._last_t = t
+      return 16.67
+    dt = (t - self._last_t) * 1000.0
+    self._last_t = t
+    return max(0.0, dt)
+
+
 SOUND_VARIANTS_EFFECTS = {
   'sr_feldstein': SRFeldstein,
   'sr_lava_lamp': SRLavaLamp,
   'sr_matrix_rain': SRMatrixRain,
   'sr_moire': SRMoire,
+  'sr_flow_field': SRFlowField,
 }
