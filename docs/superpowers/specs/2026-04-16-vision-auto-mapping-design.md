@@ -260,13 +260,13 @@ Effects must know they're rendering to strip columns. Geometry is baked into the
 ```
 Effect.render() → raster canvas (W × H × 3)
   → sample at each LED's UV position from spatial map
-  → per-LED RGB values (flat array, one per mapped LED)
+  → logical frame (strips × leds_per_strip × 3)  [same format as strip-indexed]
   → brightness/gamma
-  → pack into channel data via output plan
+  → map_frame_compiled() → channel data  [same pipeline from here on]
   → serialize → USB → Teensy
 ```
 
-Effects render to a generic 2D canvas with no knowledge of strip geometry. The spatial map provides the bridge.
+Effects render to a generic 2D canvas with no knowledge of strip geometry. The raster sampler converts it to a standard logical frame, which then flows through the existing pipeline unchanged.
 
 ### Design
 
@@ -293,13 +293,13 @@ The renderer checks `effect.RENDER_MODE` to route through the correct path — n
 | File | Change |
 |------|--------|
 | `pi/app/core/renderer.py` | After effect renders raster, sample at UV positions instead of calling `map_frame_compiled` directly. Fallback to strip-indexed path when no spatial map. |
-| `pi/app/core/raster_sampler.py` (new) | Precomputes UV lookup table from spatial map. Provides `sample_raster(canvas, lut) → channel_data`. Bilinear interpolation. |
+| `pi/app/core/raster_sampler.py` (new) | Precomputes UV lookup table from spatial map. Provides `sample_raster(canvas, lut) → logical_frame (strips × leds × 3)`. Bilinear interpolation. The output is a standard logical frame that then flows through the existing `map_frame_compiled()` pipeline (which applies strip direction, per-strip brightness, swizzle, channel packing). |
 | `pi/app/effects/base.py` (if exists) | Update base effect class with canvas dimensions. |
 
 ### Backward Compatibility
 
 - Effects default to `RENDER_MODE = "strip"` — no code changes needed for existing effects.
-- The spatial map is optional. Without it, only `"strip"` mode works. `"raster"` mode effects require a populated spatial map; if none is loaded, the renderer falls back to treating them as strip-indexed (with a warning log).
+- The spatial map is optional. Without it, only `"strip"` mode works. `"raster"` mode effects require a populated spatial map; if none is loaded, the renderer outputs black for that effect and logs a warning. Raster canvases cannot be meaningfully interpreted as strip-indexed frames.
 - This is a gradual migration: effects can be updated one at a time to set `RENDER_MODE = "raster"` and render to the canvas.
 
 ## Non-Goals
