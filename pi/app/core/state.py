@@ -110,6 +110,20 @@ class StateManager:
     self._state['current_params'] = value
     self.mark_dirty()
 
+  # --- Per-effect param memory ---
+
+  def get_effect_params(self, effect_name: str) -> dict:
+    """Return saved params for a specific effect, or empty dict if none."""
+    store = self._state.get('effect_params', {})
+    return dict(store.get(effect_name, {}))
+
+  def set_effect_params(self, effect_name: str, params: dict):
+    """Save params for a specific effect. Also used to remember each effect's last state."""
+    if 'effect_params' not in self._state:
+      self._state['effect_params'] = {}
+    self._state['effect_params'][effect_name] = dict(params)
+    self.mark_dirty()
+
   @property
   def brightness_manual_cap(self) -> Optional[float]:
     return self._state.get('brightness_manual_cap')
