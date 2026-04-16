@@ -312,12 +312,16 @@ class SRMatrixRain(Effect):
 
     self.buf.clear()
 
-    # Spawn new drops — density AND speed per column from the band at that column
+    # Spawn new drops — density purely sound-driven per column.
+    # No sound = no rain. Each band's energy gates its column's spawn rate.
     for x in range(cols):
       band_val = float(bands[x]) if x < len(bands) else 0.0
-      col_density = base_density * (1.0 + band_val * gain * 2.0)
+      # Dead zone: below this, no drops at all
+      if band_val < 0.03:
+        continue
+      col_density = band_val * gain * base_density * 6.0
       if audio.beat:
-        col_density *= 2.0
+        col_density *= 1.5
       if random.random() < col_density * dt * 3:
         slot = self._find_free_slot()
         if slot < 0:

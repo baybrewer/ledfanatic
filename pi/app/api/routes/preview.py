@@ -42,8 +42,33 @@ def create_router(deps, require_auth) -> APIRouter:
       meta = deps.effect_catalog.get_meta(req.effect)
       if meta and not meta.preview_supported:
         raise HTTPException(400, f"Effect '{req.effect}' does not support preview")
+
+    # Merge in saved per-effect params so preview reflects what live would show
+    params = dict(req.params or {})
+    if hasattr(deps, 'state_manager') and deps.state_manager:
+      saved = deps.state_manager.get_effect_params(req.effect)
+      if saved:
+        # Explicit params from request take precedence; saved fills gaps
+        merged = dict(saved)
+        merged.update(params)
+        params = merged
+
+    # Animation Switcher: inject default playlist if none present (mirrors scenes route)
+    if req.effect == 'animation_switcher' and 'playlist' not in params:
+      if hasattr(deps, 'effect_catalog') and deps.effect_catalog:
+        catalog = deps.effect_catalog.get_catalog()
+        entries = [
+          (name, meta.label or name)
+          for name, meta in catalog.items()
+          if name != 'animation_switcher'
+          and meta.group != 'diagnostic'
+          and not name.startswith('diag_')
+        ]
+        entries.sort(key=lambda e: e[1].lower())
+        params['playlist'] = [name for name, _ in entries]
+
     try:
-      svc.start(req.effect, req.params, req.fps)
+      svc.start(req.effect, params, req.fps)
     except ValueError as e:
       raise HTTPException(404, str(e))
     return svc.get_status()
