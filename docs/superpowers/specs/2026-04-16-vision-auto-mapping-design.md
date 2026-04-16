@@ -278,11 +278,15 @@ Effects render to a generic 2D canvas with no knowledge of strip geometry. The s
 3. Sample the raster at that pixel (bilinear interpolation for sub-pixel positions)
 4. Result: RGB color for that LED
 
-**LEDs without spatial positions** (null in the spatial map): fall back to the existing strip-indexed mapping (column = strip logical_order, row = LED index). This means effects work immediately even before auto-mapping — the spatial map is an enhancement, not a requirement.
+**LEDs without spatial positions** (null in the spatial map) in a raster effect: rendered as black (off). The raster canvas has no strip-indexed data to fall back to — only LEDs with known UV positions can be sampled. This is expected: strips not visible during mapping have no spatial coordinates and don't participate in raster effects.
 
 **Precomputed lookup table:** The UV → pixel mapping is static once the spatial map is loaded. On spatial map load/change, precompute a lookup table: `led_uv_lut[strip_id][led_index] = (px_x, px_y)` or `None`. This avoids per-frame UV lookups.
 
-**Effect API change:** Effects currently implement `render(t, state) → np.ndarray(width, height, 3)`. The new API: `render(t, state) → np.ndarray(canvas_h, canvas_w, 3)`. The canvas dimensions are passed to the effect constructor. Existing effects that render to the old strip-indexed format continue to work via the fallback path — migration is gradual.
+**Effect render mode:** Effects declare their output type via a class attribute `RENDER_MODE`:
+- `RENDER_MODE = "strip"` (default) — legacy strip-indexed output `(width, height, 3)`. Renderer uses `map_frame_compiled` pipeline.
+- `RENDER_MODE = "raster"` — 2D canvas output `(canvas_h, canvas_w, 3)`. Renderer samples at LED UV positions via the lookup table.
+
+The renderer checks `effect.RENDER_MODE` to route through the correct path — no shape-based guessing. Existing effects default to `"strip"` with no code changes required.
 
 ### Modified Files (additional)
 
@@ -294,9 +298,9 @@ Effects render to a generic 2D canvas with no knowledge of strip geometry. The s
 
 ### Backward Compatibility
 
-- Effects that haven't been updated render to the old strip-indexed format. The renderer detects the output shape and routes through the appropriate path (raster-sample vs strip-map).
-- The spatial map is optional. Without it, the renderer uses the existing `map_frame_compiled` pipeline. With it, effects that output a raster canvas get sampled at LED positions.
-- This is a gradual migration: effects can be updated one at a time to render to the raster canvas.
+- Effects default to `RENDER_MODE = "strip"` — no code changes needed for existing effects.
+- The spatial map is optional. Without it, only `"strip"` mode works. `"raster"` mode effects require a populated spatial map; if none is loaded, the renderer falls back to treating them as strip-indexed (with a warning log).
+- This is a gradual migration: effects can be updated one at a time to set `RENDER_MODE = "raster"` and render to the canvas.
 
 ## Non-Goals
 
