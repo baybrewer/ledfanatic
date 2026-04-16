@@ -15,8 +15,10 @@
 | File | Action | Responsibility |
 |------|--------|----------------|
 | `pi/app/effects/imported/sound.py` | Modify | Add "SR " prefix to 10 DISPLAY_NAMEs |
-| `pi/app/main.py` | Modify | Bump switcher interval max to 120; override audio_reactive labels with "SR " prefix |
-| `pi/app/effects/switcher.py` | Modify | `update_params` handles playlist; default to all-non-diagnostic when playlist empty |
+| `pi/app/main.py` | Modify | Bump switcher interval max to 120 |
+| `pi/app/effects/catalog.py` | Modify | Explicit SR-prefixed labels for audio_reactive effects |
+| `pi/app/api/routes/scenes.py` | Modify | Inject default playlist on first animation_switcher activation |
+| `pi/app/effects/switcher.py` | Modify | `update_params` handles runtime playlist changes |
 | `pi/app/ui/static/index.html` | Modify | Add switcher-controls container |
 | `pi/app/ui/static/js/app.js` | Modify | Render checkbox list; wire changes; status polling |
 | `pi/app/ui/static/css/app.css` | Modify | Section headers, checkbox rows, Select All buttons |
@@ -80,15 +82,31 @@ git commit -m "feat: add SR prefix to sound-reactive effect display names"
 
 ---
 
-### Task 2: Relabel audio_reactive Effects via Catalog + Bump Interval Max
+### Task 2: Relabel audio_reactive Effects via Explicit Label Map + Bump Interval Max
 
 **Files:**
-- Modify: `pi/app/main.py` (audio_reactive registration + switcher interval max)
+- Modify: `pi/app/main.py` (switcher interval max)
 - Modify: `pi/app/effects/catalog.py` (audio group labels in _build_catalog)
 
-- [ ] **Step 1: Understand current label source**
+- [ ] **Step 1: Add explicit label map**
 
-The audio_reactive effects (vu_pulse, band_colors, beat_flash, energy_ring, spectral_glow) are registered in `pi/app/effects/catalog.py` within `_build_catalog`'s `AUDIO_EFFECTS` loop. Their label comes from `_name_to_label(name)` which converts `vu_pulse` → "Vu Pulse". We need to inject "SR " prefix.
+`_name_to_label('vu_pulse')` produces "Vu Pulse", which makes "SR Vu Pulse" awkward. Use an explicit map for acronym-heavy effects.
+
+In `pi/app/effects/catalog.py`, near the top of the `EffectCatalogService` class (next to `_EFFECT_PARAMS`), add:
+
+```python
+  # Explicit display labels for audio_reactive effects — all SR-prefixed,
+  # with proper acronym casing (VU not Vu).
+  _AUDIO_LABELS = {
+    'vu_pulse': 'SR VU Pulse',
+    'band_colors': 'SR Band Colors',
+    'beat_flash': 'SR Beat Flash',
+    'energy_ring': 'SR Energy Ring',
+    'spectral_glow': 'SR Spectral Glow',
+  }
+```
+
+- [ ] **Step 2: Use the map in AUDIO_EFFECTS loop**
 
 In `pi/app/effects/catalog.py`, find the AUDIO_EFFECTS loop inside `_build_catalog`:
 
@@ -108,10 +126,10 @@ for name, cls in AUDIO_EFFECTS.items():
 Replace the `label=_name_to_label(name)` line with:
 
 ```python
-    label=f"SR {_name_to_label(name)}",
+    label=self._AUDIO_LABELS.get(name, f"SR {_name_to_label(name)}"),
 ```
 
-Result: VU Pulse → "SR Vu Pulse", Band Colors → "SR Band Colors", Beat Flash → "SR Beat Flash", Energy Ring → "SR Energy Ring", Spectral Glow → "SR Spectral Glow".
+Result: SR VU Pulse, SR Band Colors, SR Beat Flash, SR Energy Ring, SR Spectral Glow.
 
 - [ ] **Step 2: Bump switcher interval max**
 
@@ -142,10 +160,12 @@ git commit -m "feat: SR prefix for audio_reactive effects; switcher interval max
 
 ---
 
-### Task 3: Switcher Handles Runtime Playlist Updates + Default
+### Task 3: Switcher Handles Runtime Playlist Updates
 
 **Files:**
 - Modify: `pi/app/effects/switcher.py`
+
+Empty playlist stays empty (existing behavior — renders black). The "default all effects on first activation" logic lives in the scenes route (Task 4), not here.
 
 - [ ] **Step 1: Update `update_params` to handle playlist**
 
@@ -153,7 +173,7 @@ In `pi/app/effects/switcher.py`, find the `update_params` method (around line 12
 
 ```python
   def update_params(self, params):
-    """Update switcher params without resetting playlist position when possible."""
+    """Update switcher params. Playlist changes reset position to 0."""
     if 'interval' in params:
       self._interval = params['interval']
     if 'fade_duration' in params:
@@ -161,9 +181,8 @@ In `pi/app/effects/switcher.py`, find the `update_params` method (around line 12
     if 'shuffle' in params:
       self._shuffle = params['shuffle']
     if 'playlist' in params:
-      new_playlist = self._resolve_playlist(params['playlist'])
+      new_playlist = list(params['playlist'] or [])
       if new_playlist != self._playlist:
-        # Playlist changed — reset to start of new list
         self._playlist = new_playlist
         self._current_idx = 0
         self._phase = 'playing'
@@ -173,57 +192,18 @@ In `pi/app/effects/switcher.py`, find the `update_params` method (around line 12
     if '_effect_registry' in params and params['_effect_registry']:
       self._effect_registry = params['_effect_registry']
     self.params.update(params)
-
-  def _resolve_playlist(self, raw):
-    """Turn an empty or None playlist into the default (all non-diagnostic
-    effects except animation_switcher itself). Otherwise keep as-is."""
-    if raw:
-      return list(raw)
-    if not self._effect_registry:
-      return []
-    return [
-      name for name in sorted(self._effect_registry.keys())
-      if name != 'animation_switcher' and not name.startswith('diag_')
-    ]
 ```
 
-- [ ] **Step 2: Use `_resolve_playlist` in `__init__`**
+The existing `__init__` is unchanged. It already does `self._playlist = self.params.get('playlist', [])` which correctly leaves empty lists empty.
 
-Find in `__init__` (around line 27):
-```python
-    self._playlist = self.params.get('playlist', [])
-```
-
-Replace with:
-```python
-    self._playlist = []  # resolved below after _effect_registry is set
-```
-
-Then find the end of `__init__` (before `self._activate_current()`):
-```python
-    if self._shuffle and len(self._playlist) > 1:
-      random.shuffle(self._playlist)
-
-    self._activate_current()
-```
-
-Replace with:
-```python
-    # Resolve playlist now that registry is set
-    self._playlist = self._resolve_playlist(self.params.get('playlist', []))
-    if self._shuffle and len(self._playlist) > 1:
-      random.shuffle(self._playlist)
-
-    self._activate_current()
-```
-
-- [ ] **Step 3: Write tests**
+- [ ] **Step 2: Write tests**
 
 Create `pi/tests/test_switcher.py`:
 
 ```python
 """Tests for Animation Switcher runtime playlist updates."""
 
+import numpy as np
 import pytest
 
 from app.effects.switcher import AnimationSwitcher
@@ -237,7 +217,6 @@ class FakeEffect:
     self.params = params or {}
 
   def render(self, t, state):
-    import numpy as np
     return np.zeros((self.width, self.height, 3), dtype=np.uint8)
 
 
@@ -264,21 +243,6 @@ def _make_switcher(playlist=None):
   )
 
 
-class TestDefaultPlaylist:
-  def test_empty_playlist_uses_all_non_diagnostic(self):
-    s = _make_switcher(playlist=[])
-    # Should include twinkle, fire, plasma — NOT animation_switcher or diag_*
-    assert set(s._playlist) == {'twinkle', 'fire', 'plasma'}
-
-  def test_explicit_playlist_preserved(self):
-    s = _make_switcher(playlist=['twinkle', 'fire'])
-    assert s._playlist == ['twinkle', 'fire']
-
-  def test_default_sorted_alphabetically(self):
-    s = _make_switcher(playlist=[])
-    assert s._playlist == sorted(s._playlist)
-
-
 class TestRuntimePlaylistUpdate:
   def test_update_playlist_changes_rotation(self):
     s = _make_switcher(playlist=['twinkle', 'fire'])
@@ -298,12 +262,25 @@ class TestRuntimePlaylistUpdate:
     assert s._current_idx == 1  # unchanged
     assert s._interval == 30
 
-  def test_update_empty_playlist_reverts_to_default(self):
+  def test_update_empty_playlist_clears(self):
     s = _make_switcher(playlist=['twinkle'])
     s.update_params({'playlist': []})
-    # Empty → fall back to defaults
-    assert 'fire' in s._playlist
-    assert 'plasma' in s._playlist
+    # Empty stays empty — no magic default
+    assert s._playlist == []
+
+  def test_update_same_playlist_does_not_reset_index(self):
+    s = _make_switcher(playlist=['twinkle', 'fire', 'plasma'])
+    s._current_idx = 2
+    s.update_params({'playlist': ['twinkle', 'fire', 'plasma']})
+    assert s._current_idx == 2  # no-op when list matches
+
+
+class TestEmptyPlaylist:
+  def test_empty_playlist_renders_black(self):
+    s = _make_switcher(playlist=[])
+    frame = s.render(0.0, None)
+    assert frame.shape == (10, 172, 3)
+    assert frame.sum() == 0  # all black
 
 
 class TestStatus:
@@ -317,25 +294,95 @@ class TestStatus:
     assert 'time_remaining' in status
 ```
 
-- [ ] **Step 4: Run tests**
+- [ ] **Step 3: Run tests**
 
 Run: `cd /Users/jim/ai/pillar-controller/pi && source .venv/bin/activate && PYTHONPATH=. pytest tests/test_switcher.py -v`
 
-Expected: all 9 tests pass.
+Expected: all 7 tests pass.
 
 Then full suite:
 `PYTHONPATH=. pytest tests/ -x -q --ignore=tests/test_matrix_rain_perf.py --ignore=tests/test_migrations.py`
 
-- [ ] **Step 5: Commit**
+The existing `test_render_empty_playlist` in `tests/test_imported_animations.py` continues to pass since empty = black stays.
+
+- [ ] **Step 4: Commit**
 
 ```bash
 git add pi/app/effects/switcher.py pi/tests/test_switcher.py
-git commit -m "feat: switcher supports runtime playlist updates + default fallback"
+git commit -m "feat: switcher supports runtime playlist updates"
 ```
 
 ---
 
-### Task 4: Frontend HTML — Switcher Controls Container
+### Task 4: Scenes Route — Inject Default Playlist on First Activation
+
+**Files:**
+- Modify: `pi/app/api/routes/scenes.py`
+
+When the user activates `animation_switcher` for the first time (no saved playlist), inject a default: all non-diagnostic, non-switcher effect names sorted alphabetically by catalog label. Save this explicit list via `set_effect_params` so the UI reflects reality on next load.
+
+- [ ] **Step 1: Add default helper at the top of `create_router` body**
+
+In `pi/app/api/routes/scenes.py`, inside `create_router(deps, require_auth, broadcast_state)`, add this helper function before the first `@router` decorator:
+
+```python
+    def _default_switcher_playlist():
+      """All non-diagnostic, non-switcher effects sorted alphabetically by label."""
+      catalog = (
+        deps.effect_catalog.get_catalog()
+        if hasattr(deps, 'effect_catalog') and deps.effect_catalog
+        else _catalog.get_catalog()
+      )
+      entries = [
+        (name, meta.label or name)
+        for name, meta in catalog.items()
+        if name != 'animation_switcher'
+        and meta.group != 'diagnostic'
+        and not name.startswith('diag_')
+      ]
+      entries.sort(key=lambda e: e[1].lower())
+      return [name for name, _ in entries]
+```
+
+- [ ] **Step 2: Modify the activate handler**
+
+Find the activate handler:
+
+```python
+    @router.post("/activate", dependencies=[Depends(require_auth)])
+    async def activate_scene(req: SceneRequest):
+        # If no params provided, restore this effect's last-known params
+        if req.params is None:
+            params_to_apply = deps.state_manager.get_effect_params(req.effect) or None
+        else:
+            params_to_apply = req.params
+```
+
+Add default-playlist injection AFTER the existing param resolution but BEFORE `renderer.activate_scene` is called. Insert:
+
+```python
+        # Animation Switcher: inject default playlist on first activation
+        if req.effect == 'animation_switcher':
+          if params_to_apply is None or 'playlist' not in (params_to_apply or {}):
+            base = dict(params_to_apply or {})
+            base['playlist'] = _default_switcher_playlist()
+            params_to_apply = base
+```
+
+- [ ] **Step 3: Run tests**
+
+Run: `cd /Users/jim/ai/pillar-controller/pi && source .venv/bin/activate && PYTHONPATH=. pytest tests/ -x -q --ignore=tests/test_matrix_rain_perf.py --ignore=tests/test_migrations.py`
+
+- [ ] **Step 4: Commit**
+
+```bash
+git add pi/app/api/routes/scenes.py
+git commit -m "feat: inject default playlist on first animation_switcher activation"
+```
+
+---
+
+### Task 5: Frontend HTML — Switcher Controls Container
 
 **Files:**
 - Modify: `pi/app/ui/static/index.html`
@@ -386,7 +433,7 @@ git commit -m "feat: switcher controls container in effect panel"
 
 ---
 
-### Task 5: CSS Styles for Switcher
+### Task 6: CSS Styles for Switcher
 
 **Files:**
 - Modify: `pi/app/ui/static/css/app.css`
@@ -490,7 +537,7 @@ git commit -m "style: switcher controls checklist styles"
 
 ---
 
-### Task 6: Frontend JS — Build Checkboxes and Wire Up
+### Task 7: Frontend JS — Build Checkboxes and Wire Up
 
 **Files:**
 - Modify: `pi/app/ui/static/js/app.js`
@@ -591,7 +638,12 @@ function scheduleSwitcherSave() {
   clearTimeout(switcherSaveDebounce);
   switcherSaveDebounce = setTimeout(() => {
     if (activeEffectName !== 'animation_switcher') return;
-    const playlist = Array.from(switcherSelectedEffects);
+    // Sort playlist alphabetically by display label so rotation order matches what user sees
+    const playlist = Array.from(switcherSelectedEffects).sort((a, b) => {
+      const la = (effectsCatalog[a]?.label || a).toLowerCase();
+      const lb = (effectsCatalog[b]?.label || b).toLowerCase();
+      return la.localeCompare(lb);
+    });
     const params = { ...currentEffectParams, playlist };
     currentEffectParams = params;
     api('POST', '/api/scenes/activate', { effect: 'animation_switcher', params });
@@ -631,23 +683,53 @@ function stopSwitcherStatusPolling() {
 }
 ```
 
-- [ ] **Step 3: Show/hide switcher controls in showEffectControls**
+- [ ] **Step 3: Show/hide switcher controls in showEffectControls + suppress speed slider for switcher**
 
-Find the `showEffectControls(name, meta)` function. At the top (after the existing `paramsDiv.innerHTML = ''` line), add:
+Find the `showEffectControls(name, meta)` function. The current code auto-injects a Speed slider if `meta.params` lacks one — this is wrong for `animation_switcher` which has no `speed` concept.
+
+Locate this block near the top of `showEffectControls`:
+
+```javascript
+  // Build params list, ensuring speed is always present
+  const params = meta.params ? [...meta.params] : [];
+  const hasSpeed = params.some(p => p.name === 'speed');
+  if (!hasSpeed) {
+    params.unshift({
+      name: 'speed',
+      label: 'Speed',
+      ...
+```
+
+Replace with:
+
+```javascript
+  // Build params list, ensuring speed is always present (except for special effects)
+  const params = meta.params ? [...meta.params] : [];
+  const hasSpeed = params.some(p => p.name === 'speed');
+  if (!hasSpeed && name !== 'animation_switcher') {
+    params.unshift({
+      name: 'speed',
+      label: 'Speed',
+      ...
+```
+
+Then after `paramsDiv.innerHTML = '';` (or at the end of the function, wherever is cleanest), add:
 
 ```javascript
   // Switcher-specific UI
   const switcherWrap = document.getElementById('switcher-controls');
-  if (name === 'animation_switcher') {
-    // Initialize selected set from current params
-    const saved = currentEffectParams.playlist;
-    switcherSelectedEffects = new Set(Array.isArray(saved) ? saved : []);
-    switcherWrap.classList.remove('hidden');
-    renderSwitcherControls();
-    startSwitcherStatusPolling();
-  } else {
-    switcherWrap.classList.add('hidden');
-    stopSwitcherStatusPolling();
+  if (switcherWrap) {
+    if (name === 'animation_switcher') {
+      // Initialize selected set from current params
+      const saved = currentEffectParams.playlist;
+      switcherSelectedEffects = new Set(Array.isArray(saved) ? saved : []);
+      switcherWrap.classList.remove('hidden');
+      renderSwitcherControls();
+      startSwitcherStatusPolling();
+    } else {
+      switcherWrap.classList.add('hidden');
+      stopSwitcherStatusPolling();
+    }
   }
 ```
 
@@ -664,7 +746,7 @@ git commit -m "feat: switcher checkbox UI with SR/Other sections and status poll
 
 ---
 
-### Task 7: Deploy and Verify
+### Task 8: Deploy and Verify
 
 - [ ] **Step 1: Deploy**
 

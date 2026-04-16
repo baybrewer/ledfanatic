@@ -31,7 +31,11 @@ Every sound-reactive effect gets its DISPLAY_NAME prefixed with "SR ":
 | Particle Burst | sound.py | SR Particle Burst |
 | Sound Plasma | sound.py | SR Sound Plasma |
 | Strobe Chaos | sound.py | SR Strobe Chaos |
-| (VU Pulse / Band Colors / Beat Flash / Energy Ring / Spectral Glow) | audio_reactive.py | SR prefix via catalog label override |
+| vu_pulse | audio_reactive.py | SR VU Pulse (explicit map — not just prefix) |
+| band_colors | audio_reactive.py | SR Band Colors |
+| beat_flash | audio_reactive.py | SR Beat Flash |
+| energy_ring | audio_reactive.py | SR Energy Ring |
+| spectral_glow | audio_reactive.py | SR Spectral Glow |
 | SR Feldstein, SR Lava Lamp, SR Matrix Rain, SR Moire, SR Flow Field | sound_variants.py | Already prefixed — no change |
 
 The catalog label ("Spectrum" vs "SR Spectrum") is what UI shows. The effect `name` (internal ID like `spectrum`) stays the same to preserve state.json compatibility.
@@ -114,32 +118,43 @@ When Animation Switcher is the active effect, below the interval/fade sliders, r
 
 ### 4. Checkbox Interaction
 
-Each checkbox toggle debounces 300ms then POSTs to `/api/scenes/activate` with effect=`animation_switcher` and params including the updated `playlist` array. This follows the existing pattern for param updates.
+Each checkbox toggle debounces 300ms then POSTs to `/api/scenes/activate` with effect=`animation_switcher` and params including the updated `playlist` array **sorted alphabetically by effect label**. This makes rotation order match the display order users see.
 
-When the playlist changes, the switcher effect is already running — `Renderer._set_scene` detects the scene is already active and calls `update_params()` which updates the playlist in place. The switcher handles runtime playlist changes via its `_apply_params` method.
+When the playlist changes, the switcher effect is already running — `Renderer._set_scene` detects the scene is already active and calls `update_params()` which updates the playlist in place. The switcher handles runtime playlist changes via its `update_params` method.
 
-**Default playlist:** If `playlist` is empty, the switcher cycles through *everything* selected (empty = all enabled). The UI shows nothing checked initially; clicking checkboxes populates. Actually — to avoid confusion, if no playlist is provided on first activation, the switcher falls back to a sensible default (everything except diagnostics).
+**Empty playlist behavior:** Empty `playlist` means *truly empty* — switcher renders black. This matches existing semantics and tests.
 
-Decision: **empty playlist param → switcher uses all non-diagnostic effects**. User explicitly selects to narrow down.
+**First-time default population:** On the *first* activation of `animation_switcher` (no saved `effect_params["animation_switcher"]["playlist"]` yet), the scenes route injects a default playlist of all non-diagnostic effects (sorted alphabetically by label) before passing to the renderer, and saves this explicit list to per-effect params. Thus the UI always reflects reality — if the saved playlist is empty, it's because the user explicitly cleared it.
+
+The "None" button truly clears the selection (renders black frames); the user can rebuild from checkboxes or use "All" to re-populate.
 
 ### 5. Switcher Backend Changes
 
-The existing switcher already accepts `playlist` in params. The only needed change is:
-
-**In `pi/app/effects/switcher.py`:** When playlist is empty/missing, fall back to all non-diagnostic effects from the effect_registry.
+**In `pi/app/effects/switcher.py`:** Extend `update_params` to handle runtime `playlist` changes. When the playlist changes, reset position to index 0. Empty playlist remains empty (renders black — unchanged from current behavior).
 
 ```python
-def _apply_params(self, params: dict):
-  new_playlist = params.get('playlist', [])
-  if not new_playlist and self._effect_registry:
-    # Default: all effects except self and diagnostics
-    new_playlist = [
-      name for name in sorted(self._effect_registry.keys())
-      if name != 'animation_switcher' and not name.startswith('diag_')
-    ]
-  self._playlist = new_playlist
-  # ... existing interval/fade handling
+def update_params(self, params):
+  if 'interval' in params:
+    self._interval = params['interval']
+  if 'fade_duration' in params:
+    self._fade_duration = params['fade_duration']
+  if 'shuffle' in params:
+    self._shuffle = params['shuffle']
+  if 'playlist' in params:
+    new_playlist = list(params['playlist'] or [])
+    if new_playlist != self._playlist:
+      self._playlist = new_playlist
+      self._current_idx = 0
+      self._phase = 'playing'
+      self._phase_timer = 0.0
+      self._next_effect = None
+      self._activate_current()
+  if '_effect_registry' in params and params['_effect_registry']:
+    self._effect_registry = params['_effect_registry']
+  self.params.update(params)
 ```
+
+**In `pi/app/api/routes/scenes.py`:** When activating `animation_switcher` for the first time (no saved playlist param), inject a default: all non-diagnostic, non-switcher effects, sorted alphabetically by catalog label.
 
 ### 6. Persistence (Automatic via Existing Mechanism)
 
