@@ -2,7 +2,7 @@
 
 ## Goal
 
-Automatically discover LED strip wiring (channel, offset, direction, LED count) and physical positions by streaming live video from an iPhone camera while the Pi sequences through LEDs. Replaces manual strip-by-strip configuration in the Setup screen.
+Automatically discover LED strip wiring (channel, offset, direction, LED count) and physical positions by streaming live video from an iPhone camera while the Pi sequences through LEDs. Replaces manual strip-by-strip configuration in the Setup screen. Once positions are known, enable a raster rendering pipeline where effects render to a 2D canvas and the system samples at each LED's physical position — decoupling effects from strip geometry.
 
 ## Architecture
 
@@ -241,6 +241,62 @@ When auto-matched, electrical fields are merged: `offset` = min of both offsets,
 
 - **No new Python dependencies** — PyAV (`av>=12.0`) already in pyproject.toml `video` extra; Pillow and NumPy already core dependencies
 - `ffmpeg` with SRT support (system, apt) — required as PyAV's backend for SRT protocol. Should already be present if `video` extra is installed.
+
+## Raster Rendering Pipeline
+
+Once the spatial map is populated, the rendering pipeline changes from strip-indexed to raster-sampled. This replaces the current model where effects render directly to a `(strips × leds_per_strip × 3)` logical frame.
+
+### Current Pipeline (strip-indexed)
+```
+Effect.render() → logical frame (10 × N × 3)
+  → brightness/gamma
+  → map_frame_compiled() → channel data (5 × 344 × 3)
+  → serialize → USB → Teensy
+```
+
+Effects must know they're rendering to strip columns. Geometry is baked into the effect.
+
+### New Pipeline (raster-sampled)
+```
+Effect.render() → raster canvas (W × H × 3)
+  → sample at each LED's UV position from spatial map
+  → per-LED RGB values (flat array, one per mapped LED)
+  → brightness/gamma
+  → pack into channel data via output plan
+  → serialize → USB → Teensy
+```
+
+Effects render to a generic 2D canvas with no knowledge of strip geometry. The spatial map provides the bridge.
+
+### Design
+
+**Raster canvas:** Effects render to a rectangular numpy array of configurable resolution (e.g., 320×240, 640×480). Higher resolution = smoother gradients between LEDs but more CPU cost. Default: 320×240 (sufficient for ~1720 LEDs).
+
+**UV sampling:** For each LED with a non-null position in the spatial map:
+1. Look up the LED's `[x_uv, y_uv]` (normalized 0-1)
+2. Map to raster pixel: `px_x = x_uv * (W - 1)`, `px_y = y_uv * (H - 1)`
+3. Sample the raster at that pixel (bilinear interpolation for sub-pixel positions)
+4. Result: RGB color for that LED
+
+**LEDs without spatial positions** (null in the spatial map): fall back to the existing strip-indexed mapping (column = strip logical_order, row = LED index). This means effects work immediately even before auto-mapping — the spatial map is an enhancement, not a requirement.
+
+**Precomputed lookup table:** The UV → pixel mapping is static once the spatial map is loaded. On spatial map load/change, precompute a lookup table: `led_uv_lut[strip_id][led_index] = (px_x, px_y)` or `None`. This avoids per-frame UV lookups.
+
+**Effect API change:** Effects currently implement `render(t, state) → np.ndarray(width, height, 3)`. The new API: `render(t, state) → np.ndarray(canvas_h, canvas_w, 3)`. The canvas dimensions are passed to the effect constructor. Existing effects that render to the old strip-indexed format continue to work via the fallback path — migration is gradual.
+
+### Modified Files (additional)
+
+| File | Change |
+|------|--------|
+| `pi/app/core/renderer.py` | After effect renders raster, sample at UV positions instead of calling `map_frame_compiled` directly. Fallback to strip-indexed path when no spatial map. |
+| `pi/app/core/raster_sampler.py` (new) | Precomputes UV lookup table from spatial map. Provides `sample_raster(canvas, lut) → channel_data`. Bilinear interpolation. |
+| `pi/app/effects/base.py` (if exists) | Update base effect class with canvas dimensions. |
+
+### Backward Compatibility
+
+- Effects that haven't been updated render to the old strip-indexed format. The renderer detects the output shape and routes through the appropriate path (raster-sample vs strip-map).
+- The spatial map is optional. Without it, the renderer uses the existing `map_frame_compiled` pipeline. With it, effects that output a raster canvas get sampled at LED positions.
+- This is a gradual migration: effects can be updated one at a time to render to the raster canvas.
 
 ## Non-Goals
 
