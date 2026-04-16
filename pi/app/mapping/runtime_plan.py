@@ -225,14 +225,14 @@ def compile_channel_plan(installation, controller: ControllerProfile) -> Compile
       precontroller_swizzle=swizzle,
     ))
 
-  active_channels = len(strips)
-  max_leds = max((s.installed_led_count for s in strips), default=0)
+  # Use hardware dimensions — Teensy always expects fixed channel count and size
+  logical_width = max((s.logical_order for s in strips), default=0) + 1 if strips else 0
 
   return CompiledOutputPlan(
     controller=controller,
     strips=tuple(strips),
-    logical_width=active_channels,
-    logical_height=max_leds,
-    channels=active_channels,
-    leds_per_channel=max_leds,
+    logical_width=logical_width,
+    logical_height=controller.electrical_leds_per_output,
+    channels=controller.total_outputs,
+    leds_per_channel=controller.electrical_leds_per_output,
   )
