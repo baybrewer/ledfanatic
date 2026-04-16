@@ -97,13 +97,13 @@ def _build_fire_palette():
       r, g, b = 230 + f * 25, 15 + f * 110, 0
     elif t < 0.60:
       f = (t - 0.40) / 0.20
-      r, g, b = 255, 125 + f * 130, f * 10
-    elif t < 0.78:
-      f = (t - 0.60) / 0.18
-      r, g, b = 255, 255, 10 + f * 70
+      r, g, b = 255, 125 + f * 80, 0       # orange, not yellow
+    elif t < 0.80:
+      f = (t - 0.60) / 0.20
+      r, g, b = 255, 205 + f * 40, f * 15  # amber peak, minimal blue
     else:
-      f = min(1.0, (t - 0.78) / 0.22)
-      r, g, b = 255, 255, 80 + f * 120
+      f = min(1.0, (t - 0.80) / 0.20)
+      r, g, b = 255, 245, 15 + f * 30      # warm white cap, not pure white
     pal.append((clamp(r), clamp(g), clamp(b)))
   return pal
 
