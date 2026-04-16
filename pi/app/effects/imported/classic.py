@@ -15,11 +15,21 @@ from ..engine.buffer import LEDBuffer
 from ..engine.noise import perlin as _perlin, cyl_noise, cyl_fbm, cyl_noise_grid, cyl_fbm_grid, perlin_grid, cyl_noise_xy, cyl_fbm_xy
 from ..engine.color import hsv2rgb, clamp, clampf, qsub8, qadd8, scale8
 from ..engine.palettes import (
-  FELDSTEIN_PALETTES, NUM_FELDSTEIN_PALETTES,
+  FELDSTEIN_PALETTES, NUM_FELDSTEIN_PALETTES, FELDSTEIN_PALETTE_NAMES,
   fire_color, pal_color, fire_color_grid, pal_color_grid,
-  NUM_PALETTES,
+  NUM_PALETTES, PALETTE_NAMES,
 )
 from ...mapping.cylinder import N
+
+
+def _get_pal_idx(params, default=0, names=PALETTE_NAMES, count=NUM_PALETTES):
+  val = params.get('palette', default)
+  if isinstance(val, str):
+    try:
+      return names.index(val) % count
+    except ValueError:
+      return default % count
+  return int(val) % count
 
 
 # ─── Param descriptor (mirrors led_sim_reference.py Param) ─────────
@@ -156,7 +166,7 @@ class FeldsteinEquation(Effect):
     dt_ms = self._calc_dt_ms(t)
     speed = self.params.get("speed", 1.0)
     bar_speed = self.params.get("bar_speed", 1.0)
-    pal_idx = int(self.params.get("palette", 0)) % NUM_PALETTES
+    pal_idx = _get_pal_idx(self.params)
 
     self._elapsed_ms += dt_ms
     time_s = self._elapsed_ms * speed * 0.001
@@ -261,7 +271,7 @@ class Feldstein2(Effect):
     dt_ms = self._calc_dt_ms(t)
     speed = self.params.get("speed", 1.0)
     fade = int(self.params.get("fade", 48))
-    pi = int(self.params.get("palette", 0)) % NUM_FELDSTEIN_PALETTES
+    pi = _get_pal_idx(self.params, names=FELDSTEIN_PALETTE_NAMES, count=NUM_FELDSTEIN_PALETTES)
 
     self._elapsed_ms += dt_ms
     time_val = int(self._elapsed_ms * speed) // 7 + self._zo
@@ -677,7 +687,7 @@ class Fireplace(Effect):
     self._embers = alive
 
     # ── Render heat (vectorized, palette-driven) ────────────────
-    pal_idx = int(self.params.get("palette", 4)) % NUM_PALETTES
+    pal_idx = _get_pal_idx(self.params, default=4)
     pal_rgb = pal_color_grid(pal_idx, self._heat)  # (cols, rows, 3)
     # Sqrt brightness curve — keeps fire vibrant at mid-heat values
     # heat=0 → black, heat=0.25 → 50% bright, heat=1 → full bright

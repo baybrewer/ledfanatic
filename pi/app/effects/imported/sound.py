@@ -17,9 +17,20 @@ from ..base import Effect
 from ..engine.buffer import LEDBuffer
 from ..engine.color import hsv2rgb, clamp, clampf
 from ..engine.palettes import (
-  pal_color, fire_color, NUM_PALETTES,
+  pal_color, fire_color, NUM_PALETTES, PALETTE_NAMES,
   pal_color_grid, fire_color_grid,
 )
+
+
+def _get_pal_idx(params, default=0):
+  """Get palette index from params, handling string names or int values."""
+  val = params.get('palette', default)
+  if isinstance(val, str):
+    try:
+      return PALETTE_NAMES.index(val) % NUM_PALETTES
+    except ValueError:
+      return default % NUM_PALETTES
+  return int(val) % NUM_PALETTES
 from ..engine.noise import (
   cyl_noise, cyl_fbm,
   cyl_noise_xy, cyl_fbm_xy,
@@ -106,7 +117,7 @@ class Spectrum(Effect):
     rows = self.height
     gain = self.params.get("gain", 1.0)
     decay = self.params.get("decay", 0.85)
-    pal_idx = self.params.get("palette", 0)
+    pal_idx = _get_pal_idx(self.params)
 
     self.buf.clear()
 
@@ -199,7 +210,7 @@ class VUMeter(Effect):
     rows = self.height
     gain = self.params.get("gain", 1.5)
     decay = self.params.get("decay", 0.9)
-    pal_idx = self.params.get("palette", 0)
+    pal_idx = _get_pal_idx(self.params)
 
     self.buf.clear()
 
@@ -283,7 +294,7 @@ class BeatPulse(Effect):
     rows = self.height
     decay = self.params.get("decay", 0.92)
     flash = self.params.get("flash", 1.0)
-    pal_idx = self.params.get("palette", 0)
+    pal_idx = _get_pal_idx(self.params)
 
     if audio.beat:
       self._energy = flash * (1 + audio.buildup)
@@ -688,7 +699,7 @@ class SoundRipples(Effect):
     speed = self.params.get("speed", 1.5)
     decay = self.params.get("decay", 0.93)
     sens = self.params.get("sensitivity", 0.15)
-    pal_idx = self.params.get("palette", 0)
+    pal_idx = _get_pal_idx(self.params)
 
     # Fade existing instead of clear — trails look better
     self.buf.fade(0.85)
@@ -815,7 +826,7 @@ class Spectrogram(Effect):
     rows = self.height
     gain_param = self.params.get("gain", 2.0)
     scroll = self.params.get("scroll", 1.0)
-    pal_idx = self.params.get("palette", 0)
+    pal_idx = _get_pal_idx(self.params)
 
     if audio.drop:
       self._drop_flash = 1.0
@@ -908,7 +919,7 @@ class SoundWorm(Effect):
     gain = self.params.get("gain", 1.0)
     speed = self.params.get("speed", 1.0)
     w = int(self.params.get("worm_width", 2))
-    pal_idx = self.params.get("palette", 0)
+    pal_idx = _get_pal_idx(self.params)
 
     self._t += dt_ms * 0.001 * speed
 
@@ -1010,7 +1021,7 @@ class ParticleBurst(Effect):
     rows = self.height
     gravity = self.params.get("gravity", 0.5)
     count = int(self.params.get("count", 30))
-    pal_idx = self.params.get("palette", 0)
+    pal_idx = _get_pal_idx(self.params)
 
     # Fade instead of clear — trails persist
     self.buf.fade(0.82)
@@ -1108,7 +1119,7 @@ class SoundPlasma(Effect):
     rows = self.height
     gain = self.params.get("gain", 1.5)
     base_speed = self.params.get("base_speed", 0.5)
-    pal_idx = self.params.get("palette", 0)
+    pal_idx = _get_pal_idx(self.params)
 
     vol = audio.volume * gain
     buildup = audio.buildup
@@ -1199,7 +1210,7 @@ class StrobeChaos(Effect):
     rows = self.height
     intensity = self.params.get("intensity", 0.8)
     segments = int(self.params.get("segments", 4))
-    pal_idx = self.params.get("palette", 0)
+    pal_idx = _get_pal_idx(self.params)
 
     self.buf.clear()
 

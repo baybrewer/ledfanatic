@@ -14,8 +14,18 @@ from ..base import Effect
 from ..engine.buffer import LEDBuffer
 from ..engine.noise import noise01, cyl_noise, perlin_grid, noise01_grid, cyl_noise_grid, noise01_xy
 from ..engine.color import clampf
-from ..engine.palettes import pal_color, NUM_PALETTES, pal_color_grid
+from ..engine.palettes import pal_color, NUM_PALETTES, PALETTE_NAMES, pal_color_grid
 from ...mapping.cylinder import N
+
+
+def _get_pal_idx(params, default=0):
+  val = params.get('palette', default)
+  if isinstance(val, str):
+    try:
+      return PALETTE_NAMES.index(val) % NUM_PALETTES
+    except ValueError:
+      return default % NUM_PALETTES
+  return int(val) % NUM_PALETTES
 
 
 # ─── Param descriptor (mirrors led_sim_reference.py Param) ─────────
@@ -421,7 +431,7 @@ class MatrixRain(Effect):
     speed = self.params.get("speed", 1.0)
     density = self.params.get("density", 0.4)
     trail = int(self.params.get("trail", 25))
-    pal_idx = self.params.get("palette", 3) % NUM_PALETTES
+    pal_idx = _get_pal_idx(self.params, default=3)
 
     cols = self.width
     rows = self.height

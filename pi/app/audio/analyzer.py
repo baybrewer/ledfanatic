@@ -164,13 +164,20 @@ class AudioAnalyzer:
     # Push to render state (dict assignment is atomic in CPython)
     self._render_state.update_audio(snapshot)
 
+  # Per-bin normalization — higher frequencies have less energy, need more gain
+  _BIN_GAIN = [
+    0.01, 0.01, 0.01, 0.012,           # bass bins 0-3
+    0.015, 0.025, 0.05, 0.08, 0.12, 0.18,  # mid bins 4-9
+    0.3, 0.5, 0.8, 1.2, 1.8, 2.5,      # treble bins 10-15
+  ]
+
   def _compute_spectrum_bins(self, spectrum: np.ndarray, freqs: np.ndarray) -> list[float]:
     bins = []
     for i in range(_SPECTRUM_BINS):
       lo, hi = _BIN_EDGES[i], _BIN_EDGES[i + 1]
       mask = (freqs >= lo) & (freqs < hi)
       if np.any(mask):
-        val = float(np.sqrt(np.mean(spectrum[mask] ** 2))) * 0.01
+        val = float(np.sqrt(np.mean(spectrum[mask] ** 2))) * self._BIN_GAIN[i]
       else:
         val = 0.0
       # Apply per-band sensitivity by bin index (4 bass / 6 mid / 6 treble)
