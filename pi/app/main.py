@@ -200,6 +200,14 @@ def main():
   if state_manager.audio_treble_sensitivity is not None:
     audio_analyzer.treble_sensitivity = state_manager.audio_treble_sensitivity
 
+  # Auto-start audio with USB mic if available
+  usb_devices = [d for d in audio_analyzer.list_devices() if 'usb' in d['name'].lower()]
+  if usb_devices:
+    audio_analyzer.set_device(usb_devices[0]['index'])
+    logger.info(f"Auto-selected USB mic: {usb_devices[0]['name']} (device {usb_devices[0]['index']})")
+  audio_analyzer.start()
+  logger.info("Audio analyzer auto-started")
+
   # Startup scene
   startup = state_manager.current_scene or display_conf.get('startup_scene', 'rainbow_rotate')
   if not renderer.activate_scene(startup, state_manager.current_params, media_manager=media_manager):
