@@ -9,6 +9,7 @@ from app.config.installation import (
   synthesize_default_strips, load_installation, save_installation,
   migrate_v1_to_strips, migrate_v2_to_strips,
 )
+from app.hardware_constants import LEDS_PER_STRIP
 
 
 class TestStripMapping:
@@ -17,8 +18,8 @@ class TestStripMapping:
     assert len(inst.strips) == 10
     for i, s in enumerate(inst.strips):
       assert s.channel == i // 2
-      assert s.offset == (i % 2) * 172
-      assert s.led_count == 172
+      assert s.offset == (i % 2) * LEDS_PER_STRIP
+      assert s.led_count == LEDS_PER_STRIP
       assert s.color_order == 'BGR'
     assert inst.strips[0].direction == 'bottom_to_top'
     assert inst.strips[1].direction == 'top_to_bottom'
@@ -71,7 +72,7 @@ class TestMigration:
     assert inst.strips[0].channel == 0
     assert inst.strips[0].offset == 0
     assert inst.strips[1].channel == 0
-    assert inst.strips[1].offset == 172
+    assert inst.strips[1].offset == 172  # old data had output_slot=1 * LEDS_PER_STRIP at migration time
 
   def test_migrate_v2(self):
     old_data = {
@@ -88,7 +89,7 @@ class TestMigration:
     assert inst.strips[0].channel == 0
     assert inst.strips[0].color_order == 'GRB'
     assert inst.strips[1].channel == 0
-    assert inst.strips[1].offset == 172
+    assert inst.strips[1].offset == LEDS_PER_STRIP
 
 
 class TestPersistence:

@@ -118,12 +118,13 @@ def migrate_v1_to_strips(data: dict) -> StripInstallation:
   for s in data.get('strips', []):
     if not s.get('enabled', True):
       continue
+    old_led_count = s.get('installed_led_count', LEDS_PER_STRIP)
     strips.append(StripMapping(
       id=len(strips),
       channel=s.get('output_channel', 0),
-      offset=s.get('output_slot', 0) * LEDS_PER_STRIP,
+      offset=s.get('output_slot', 0) * old_led_count,
       direction=s.get('direction', 'bottom_to_top'),
-      led_count=s.get('installed_led_count', LEDS_PER_STRIP),
+      led_count=old_led_count,
       color_order=s.get('color_order', CONTROLLER_WIRE_ORDER),
     ))
   return StripInstallation(schema_version=SCHEMA_VERSION, strips=strips)

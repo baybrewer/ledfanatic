@@ -8,6 +8,10 @@ Automatically discover LED strip wiring (channel, offset, direction, LED count) 
 
 The iPhone streams live video to the Pi via SRT. The Pi controls LEDs and analyzes incoming video frames simultaneously — it knows exactly which electrical address is lit at every moment. A hierarchical 4-phase scan discovers strips quickly (~1-2 minutes per camera angle). Since the pillar is a cylinder, the user rotates and re-scans to cover all strips; the system merges results across angles.
 
+**Hardware constants dependency:** All scan ranges, strip boundaries, and channel limits are derived from `pi/app/hardware_constants.py` (which loads from `hardware.yaml`). Key values: `PHYSICAL_LEDS_PER_STRIP`, `ELECTRICAL_LEDS_PER_OUTPUT`, `ACTIVE_OUTPUTS`. The spec never hardcodes LED counts — implementations must read these at runtime.
+
+**Pre-existing bug (out of scope but noted):** `MAX_LEDS_PER_CHANNEL` in `installation.py` is hardcoded to 1100, which is less than the current `ELECTRICAL_LEDS_PER_OUTPUT` (1200). This should be derived from hardware constants. The auto-map implementation should use `ELECTRICAL_LEDS_PER_OUTPUT` directly, not `MAX_LEDS_PER_CHANNEL`.
+
 ## Stream Ingestion
 
 - **Protocol:** SRT (Secure Reliable Transport) — peer-to-peer, no server needed
@@ -34,18 +38,18 @@ For each of the 5 active OctoWS2811 channels:
 1. Light ALL LEDs on the channel full white
 2. Capture frame, subtract baseline
 3. If bright region detected → channel has visible strips from this camera angle
-4. Light first half (LEDs 0-171) → detect region
-5. Light second half (LEDs 172-343) → detect region
+4. Light first half (LEDs 0 to `PHYSICAL_LEDS_PER_STRIP - 1`) → detect region
+5. Light second half (LEDs `PHYSICAL_LEDS_PER_STRIP` to `ELECTRICAL_LEDS_PER_OUTPUT - 1`) → detect region
 6. Result: list of visible `(channel, half)` pairs with approximate bounding boxes
 
 ### Phase 2: Coarse-to-Fine Segmentation (~20 seconds)
 
 For each visible channel-half:
 
-1. **Coarse sweep** — light every 10th LED across the channel-half range using **absolute channel indices**: first half probes `0, 10, 20, ... 170`; second half probes `172, 182, 192, ... 342`. All recorded indices (`start_index`, `end_index`, `offset`) are absolute channel indices throughout the entire pipeline — never half-relative.
+1. **Coarse sweep** — light every 10th LED across the channel-half range using **absolute channel indices**. Ranges derived from hardware constants: first half probes `0, 10, 20, ... PHYSICAL_LEDS_PER_STRIP - 1`; second half probes `PHYSICAL_LEDS_PER_STRIP, PHYSICAL_LEDS_PER_STRIP + 10, ...  ELECTRICAL_LEDS_PER_OUTPUT - 1`. All recorded indices (`start_index`, `end_index`, `offset`) are absolute channel indices throughout the entire pipeline — never half-relative.
 2. **Cluster visible runs** — group contiguous visible LEDs by centroid continuity. A position jump (>N pixels between adjacent samples) marks a **visibility gap**. All gaps are treated equally at this stage — the system does NOT attempt to distinguish occlusion (strip wraps behind cylinder) from electrical boundaries (daisy-chain) from a single camera angle.
 3. **Refine endpoints** — for each visible run, binary search within the 10-LED gaps at the start and end to find exact first/last visible LED
-4. **LED count** — total visible LEDs per run. Runs are recorded as `(channel, start_index, end_index, centroids)`. Daisy-chain boundaries (where strip 1 ends and strip 2 begins on the same channel) are only committed when corroborated: either (a) a second scan angle shows the gap persists even when both sides are visible, or (b) the electrical index crosses the known 172-LED boundary AND positions are spatially discontinuous. Until corroborated, gaps remain "unresolved" and the system presents them to the user for confirmation.
+4. **LED count** — total visible LEDs per run. Runs are recorded as `(channel, start_index, end_index, centroids)`. Daisy-chain boundaries (where strip 1 ends and strip 2 begins on the same channel) are only committed when corroborated: either (a) a second scan angle shows the gap persists even when both sides are visible, or (b) the electrical index crosses the known `PHYSICAL_LEDS_PER_STRIP` boundary AND positions are spatially discontinuous. Until corroborated, gaps remain "unresolved" and the system presents them to the user for confirmation.
 5. **Partial visibility** — if a strip wraps behind the cylinder, only the visible segment is mapped in this pass. Re-scan from another angle fills in the rest.
 
 ### Phase 3: Position Sampling (~30-60 seconds)
@@ -182,7 +186,7 @@ StripGeometry:
 
 **Populating from scan data:**
 - `positions` — ALWAYS a full-length array of `led_count` entries, indexed by **strip-local** index (0 through led_count-1). Discovery uses channel-absolute indices internally; conversion to strip-local: `strip_local = channel_index - offset`. Observed positions are stored as `[x_uv, y_uv]` in image-space UV: `x_uv = x_px / frame_width`, `y_uv = 1.0 - (y_px / frame_height)` (bottom-left origin). Unobserved LEDs are stored as `null`. The `bounds` field is computed as metadata (min/max of all non-null strip positions) but is not used for normalization.
-- `anchors` — always 5 entries at canonical strip positions: LED indices `round(f * (led_count - 1))` for `f` in `[0.0, 0.25, 0.5, 0.75, 1.0]` (so for 172 LEDs: indices 0, 43, 86, 128, 171). If the LED at that index was observed, store its `[x_uv, y_uv]`; if unobserved, store `null`. Partially-visible strips have sparse anchors.
+- `anchors` — always 5 entries at canonical strip positions: LED indices `round(f * (led_count - 1))` for `f` in `[0.0, 0.25, 0.5, 0.75, 1.0]` (e.g., for a 600-LED strip: indices 0, 150, 300, 449, 599). If the LED at that index was observed, store its `[x_uv, y_uv]`; if unobserved, store `null`. Partially-visible strips have sparse anchors.
 - `visibility` — "direct" if all LEDs on the strip have non-null positions, "partial" if any are still null. Existing maps from the geometry wizard may contain "inferred" (strips not directly visible but fitted from anchor data) — auto-map does not emit "inferred" but must tolerate it when reading existing maps for merge.
 - `visible_strips` — all strip IDs with at least one non-null position.
 

@@ -381,9 +381,9 @@ class TestHardwareConstants:
   def test_python_constants_match_yaml(self):
     from app.hardware_constants import STRIPS, LEDS_PER_STRIP, CHANNELS, LEDS_PER_CHANNEL
     assert STRIPS == 10
-    assert LEDS_PER_STRIP == 172
+    assert LEDS_PER_STRIP == 600
     assert CHANNELS == 5
-    assert LEDS_PER_CHANNEL == 344
+    assert LEDS_PER_CHANNEL == 1200
 
   def test_teensy_constants_match(self):
     """Verify Teensy config.h values match hardware.yaml."""

@@ -17,21 +17,21 @@ class TestLogicalToChannel:
     assert idx == 0
 
   def test_s0_top(self):
-    ch, idx = logical_to_channel(0, 171)
+    ch, idx = logical_to_channel(0, N - 1)
     assert ch == 0
-    assert idx == 171
+    assert idx == N - 1
 
   def test_s1_top(self):
-    # S1 is wired top→bottom, so logical top (y=171) = index 172
-    ch, idx = logical_to_channel(1, 171)
+    # S1 is wired top→bottom, so logical top (y=N-1) = index N
+    ch, idx = logical_to_channel(1, N - 1)
     assert ch == 0
-    assert idx == 172
+    assert idx == N
 
   def test_s1_bottom(self):
-    # S1 logical bottom (y=0) = index 343
+    # S1 logical bottom (y=0) = index 2*N-1
     ch, idx = logical_to_channel(1, 0)
     assert ch == 0
-    assert idx == 343
+    assert idx == 2 * N - 1
 
   def test_s2_bottom(self):
     ch, idx = logical_to_channel(2, 0)
@@ -41,12 +41,12 @@ class TestLogicalToChannel:
   def test_s3_bottom(self):
     ch, idx = logical_to_channel(3, 0)
     assert ch == 1
-    assert idx == 343
+    assert idx == 2 * N - 1
 
   def test_s9_bottom(self):
     ch, idx = logical_to_channel(9, 0)
     assert ch == 4
-    assert idx == 343
+    assert idx == 2 * N - 1
 
   def test_all_channels_covered(self):
     """Every logical pixel maps to a unique (channel, index) pair."""
@@ -55,7 +55,7 @@ class TestLogicalToChannel:
       for y in range(N):
         ch, idx = logical_to_channel(x, y)
         assert 0 <= ch < 5
-        assert 0 <= idx < 344
+        assert 0 <= idx < 2 * N
         key = (ch, idx)
         assert key not in seen, f"Duplicate mapping at ({x}, {y}) -> {key}"
         seen.add(key)
@@ -69,35 +69,35 @@ class TestLogicalToChannel:
         assert idx == y
 
   def test_odd_strips_top_to_bottom(self):
-    """Odd strips (1, 3, 5, 7, 9) map y=0 to index 343, y=171 to index 172."""
+    """Odd strips (1, 3, 5, 7, 9) map y=0 to index 2*N-1, y=N-1 to index N."""
     for x in [1, 3, 5, 7, 9]:
       _, idx_bottom = logical_to_channel(x, 0)
-      _, idx_top = logical_to_channel(x, 171)
-      assert idx_bottom == 343
-      assert idx_top == 172
+      _, idx_top = logical_to_channel(x, N - 1)
+      assert idx_bottom == 2 * N - 1
+      assert idx_top == N
 
 
 class TestMapFrameFast:
   def test_output_shape(self):
     frame = np.zeros((10, N, 3), dtype=np.uint8)
     result = map_frame_fast(frame)
-    assert result.shape == (5, 344, 3)
+    assert result.shape == (5, 2 * N, 3)
 
   def test_identity_mapping(self):
     """A known pixel should appear at the correct position."""
     frame = np.zeros((10, N, 3), dtype=np.uint8)
     frame[0, 0] = (255, 0, 0)  # S0 bottom -> CH0 index 0
-    frame[1, 0] = (0, 255, 0)  # S1 bottom -> CH0 index 343
+    frame[1, 0] = (0, 255, 0)  # S1 bottom -> CH0 index 2*N-1
 
     result = map_frame_fast(frame)
     assert tuple(result[0, 0]) == (255, 0, 0)
-    assert tuple(result[0, 343]) == (0, 255, 0)
+    assert tuple(result[0, 2 * N - 1]) == (0, 255, 0)
 
-  def test_s1_top_maps_to_ch0_172(self):
+  def test_s1_top_maps_to_ch0_N(self):
     frame = np.zeros((10, N, 3), dtype=np.uint8)
-    frame[1, 171] = (0, 0, 255)  # S1 top -> CH0 index 172
+    frame[1, N - 1] = (0, 0, 255)  # S1 top -> CH0 index N
     result = map_frame_fast(frame)
-    assert tuple(result[0, 172]) == (0, 0, 255)
+    assert tuple(result[0, N]) == (0, 0, 255)
 
   def test_all_zeros(self):
     frame = np.zeros((10, N, 3), dtype=np.uint8)
@@ -111,13 +111,13 @@ class TestMapFrameFast:
 
 class TestSerializeChannels:
   def test_output_length(self):
-    data = np.zeros((5, 344, 3), dtype=np.uint8)
+    data = np.zeros((5, 2 * N, 3), dtype=np.uint8)
     result = serialize_channels(data)
-    assert len(result) == 5 * 344 * 3
+    assert len(result) == 5 * 2 * N * 3
 
   def test_byte_order(self):
     """Bytes are RGB-ordered; OctoWS2811 firmware handles GRB reorder."""
-    data = np.zeros((5, 344, 3), dtype=np.uint8)
+    data = np.zeros((5, 2 * N, 3), dtype=np.uint8)
     data[0, 0] = (10, 20, 30)
     result = serialize_channels(data)
     assert result[0] == 10
