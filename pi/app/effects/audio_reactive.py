@@ -91,6 +91,8 @@ class EnergyRing(Effect):
   the cylinder based on the 16-bin FFT spectrum resampled to 10 bands —
   loud frequencies produce a thicker ring segment at that column."""
 
+  NATIVE_WIDTH = 10  # render at physical width; col_widths array is 10 entries
+
   def _resample_16_to_10(self, spectrum):
     """Resample 16-bin spectrum to 10 bands via mean pooling."""
     if spectrum is None:
