@@ -32,7 +32,7 @@ class RenderState:
     # Audio modulation (updated by audio worker via snapshot)
     self._audio_lock_free: dict = {
       'level': 0.0, 'bass': 0.0, 'mid': 0.0, 'high': 0.0,
-      'beat': False, 'bpm': 0.0,
+      'beat': False, 'bpm': 0.0, 'spectrum': [0.0] * 16,
     }
 
     # Stats — separated by concern
@@ -71,6 +71,10 @@ class RenderState:
   def audio_bpm(self) -> float:
     return self._audio_lock_free.get('bpm', 0.0)
 
+  @property
+  def audio_spectrum(self) -> list:
+    return self._audio_lock_free.get('spectrum', [0.0] * 16)
+
   def to_dict(self) -> dict:
     return {
       'target_fps': self.target_fps,
@@ -83,7 +87,11 @@ class RenderState:
       'last_frame_time_ms': round(self.last_frame_time_ms, 2),
       'render_cost_ms': round(self.render_cost_ms, 2),
       'audio_level': round(self.audio_level, 3),
+      'audio_bass': round(self.audio_bass, 3),
+      'audio_mid': round(self.audio_mid, 3),
+      'audio_high': round(self.audio_high, 3),
       'audio_beat': self.audio_beat,
+      'audio_spectrum': [round(v, 3) for v in self.audio_spectrum],
     }
 
 
