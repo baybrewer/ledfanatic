@@ -33,7 +33,7 @@ The iPhone streams live video to the Pi via SRT. The Pi controls LEDs and analyz
 
 ### Phase 1: Channel Probe (~10 seconds)
 
-For each of the 5 active OctoWS2811 channels:
+For each active OctoWS2811 channel (0 through `ACTIVE_OUTPUTS - 1`):
 
 1. Light ALL LEDs on the channel full white
 2. Capture frame, subtract baseline
@@ -179,7 +179,7 @@ SpatialMap:
 StripGeometry:
   id: int  # matches StripMapping.id
   anchors: [[x,y]|null, ...]  # 5 canonical strip points (0%, 25%, 50%, 75%, 100% of full strip), null if unobserved
-  positions: [[x,y]|null, ...]  # ALWAYS full strip length (led_count entries), indexed by absolute LED index; null if unobserved
+  positions: [[x,y]|null, ...]  # ALWAYS full strip length (led_count entries), indexed by strip-local index (0..led_count-1); null if unobserved
   fit_method: "auto_map_v1"
   visibility: "direct" | "partial" | "inferred"  # direct=all LEDs observed, partial=some null, inferred=legacy (from geometry.py anchor-based fitting)
 ```
@@ -192,9 +192,9 @@ StripGeometry:
 
 **Critical: Spatial positions are single-viewpoint only.** Coordinates from different camera angles are NOT comparable (different projection). Therefore:
 - **Electrical mapping** (StripMapping: channel, offset, direction, led_count) merges freely across all scan passes regardless of camera angle. This is the primary purpose of multi-angle rescans.
-- **Spatial positions** (SpatialMap: positions, anchors) are only populated from passes sharing the same camera viewpoint. When a new pass uses a different camera angle, its position data updates ONLY the strips not yet in the spatial map (null entries). Already-observed positions from a prior viewpoint are never overwritten by a different viewpoint's coordinates.
-- In practice: the user picks a primary camera angle that sees the most strips. That angle's positions populate the spatial map. Subsequent angles from different viewpoints contribute electrical mapping only (wiring discovery) — their position data fills in null entries for strips not visible from the primary angle, accepting that those positions are in a different projection. For front-projection effects, only strips visible from the primary angle have accurate spatial coordinates; others are approximate.
-- If the user wants a fully consistent spatial map, they should map all visible strips from one fixed camera position.
+- **Spatial positions** (SpatialMap: positions, anchors) are ONLY written from the **first pass** in a draft (which establishes the viewpoint). Subsequent passes from different camera angles contribute electrical mapping only — their position data is discarded, not written to the spatial map. This keeps `spatial_map.json` in a single consistent `front_projection_uv` coordinate space.
+- Strips not visible from the primary angle will have all-null positions and anchors in the spatial map. This is expected — front-projection effects only use strips with valid positions.
+- To get spatial coverage of all strips, the user should position the camera to see as many strips as possible in the first pass.
 
 Feeds into existing `SpatialMap` for front-projection effects.
 
@@ -228,7 +228,7 @@ When auto-matched, electrical fields are merged: `offset` = min of both offsets,
 
 | File | Change |
 |------|--------|
-| `pi/app/config/spatial_map.py` | Schema migration: `StripGeometry.positions` changes from `list[list[float]]` to `list[Optional[list[float]]]` to support null entries for unobserved LEDs. Bump `SCHEMA_VERSION` to 2. Update `_parse_spatial_map()` and `to_dict()` to tolerate nulls. Update any consumers (e.g., `geometry.py` line 198) to skip null entries. |
+| `pi/app/config/spatial_map.py` | Schema migration: both `StripGeometry.positions` and `StripGeometry.anchors` change from `list[list[float]]` to `list[Optional[list[float]]]` to support null entries for unobserved LEDs. Bump `SCHEMA_VERSION` to 2. Update `_parse_spatial_map()` and `to_dict()` to tolerate nulls in both fields. Update consumers (e.g., `geometry.py` line 198) to skip null entries. |
 | `pi/app/main.py` | Register `_scan` effect at startup: `renderer.register_effect('_scan', ScanEffect)` |
 | `pi/app/api/server.py` | Register auto_map router |
 | `pi/app/ui/static/index.html` | Auto Map panel in Setup section |

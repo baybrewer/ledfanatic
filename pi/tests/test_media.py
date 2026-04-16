@@ -6,7 +6,7 @@ import numpy as np
 import pytest
 from PIL import Image
 
-from app.media.manager import MediaManager, MediaItem
+from app.media.manager import MediaManager, MediaItem, HEIGHT
 
 
 class TestMediaItem:
@@ -97,7 +97,7 @@ class TestImportImage:
     assert item.type == "image"
     assert item.frame_count == 1
     assert item.width == 40
-    assert item.height == 172
+    assert item.height == HEIGHT
 
     # Verify item is tracked
     assert item.id in mgr.items
@@ -105,7 +105,7 @@ class TestImportImage:
     # Verify cached frame exists
     frame = mgr.load_frame(item.id, 0)
     assert frame is not None
-    assert frame.shape == (40, 172, 3)
+    assert frame.shape == (40, HEIGHT, 3)
 
 
 class TestMediaDelete:

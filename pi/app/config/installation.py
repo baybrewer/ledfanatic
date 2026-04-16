@@ -21,7 +21,7 @@ from ..hardware_constants import (
 logger = logging.getLogger(__name__)
 
 SCHEMA_VERSION = 3
-MAX_LEDS_PER_CHANNEL = 1100
+MAX_LEDS_PER_CHANNEL = 1200
 
 VALID_COLOR_ORDERS = frozenset(["RGB", "RBG", "GRB", "GBR", "BRG", "BGR"])
 VALID_DIRECTIONS = frozenset(["bottom_to_top", "top_to_bottom"])

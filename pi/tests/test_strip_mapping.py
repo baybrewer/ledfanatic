@@ -52,7 +52,7 @@ class TestStripMapping:
     inst.strips[0].offset = 1000
     inst.strips[0].led_count = 200
     errors = inst.validate()
-    assert any('exceed' in e.lower() or '1100' in e for e in errors)
+    assert any('exceed' in e.lower() or '1200' in e for e in errors)
 
 
 class TestMigration:
@@ -89,7 +89,7 @@ class TestMigration:
     assert inst.strips[0].channel == 0
     assert inst.strips[0].color_order == 'GRB'
     assert inst.strips[1].channel == 0
-    assert inst.strips[1].offset == LEDS_PER_STRIP
+    assert inst.strips[1].offset == 172  # v2 data: led_count=344, half=172
 
 
 class TestPersistence:

@@ -6,10 +6,10 @@
 // Cross-language validation: pi/tests/test_protocol.py::TestHardwareConstants
 
 // --- LED Configuration ---
-#define LEDS_PER_STRIP    344   // 2 × 172 LEDs per serpentine pair
+#define LEDS_PER_STRIP    1200   // 2 × 600 LEDs per serpentine pair
 #define ACTIVE_OUTPUTS    5     // 5 serpentine pairs
 #define TOTAL_OUTPUTS     8     // OctoWS2811 always addresses 8
-#define LEDS_PER_PHYSICAL 172   // LEDs per physical strip
+#define LEDS_PER_PHYSICAL 600   // LEDs per physical strip
 #define PHYSICAL_STRIPS   10    // Total physical strips
 
 // --- Protocol ---
