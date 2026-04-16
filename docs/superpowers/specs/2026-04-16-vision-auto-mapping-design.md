@@ -209,6 +209,7 @@ Feeds into existing `SpatialMap` for front-projection effects.
 
 | File | Change |
 |------|--------|
+| `pi/app/config/spatial_map.py` | Schema migration: `StripGeometry.positions` changes from `list[list[float]]` to `list[Optional[list[float]]]` to support null entries for unobserved LEDs. Bump `SCHEMA_VERSION` to 2. Update `_parse_spatial_map()` and `to_dict()` to tolerate nulls. Update any consumers (e.g., `geometry.py` line 198) to skip null entries. |
 | `pi/app/api/server.py` | Register auto_map router |
 | `pi/app/ui/static/index.html` | Auto Map panel in Setup section |
 | `pi/app/ui/static/js/app.js` | Auto Map UI logic, camera canvas, progress display |
