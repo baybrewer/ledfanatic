@@ -324,6 +324,8 @@ class StripConfig:
     total_leds: int
     segments: list[SegmentConfig] = field(default_factory=list)
     scanlines: list[ScanlineConfig] = field(default_factory=list)
+    pixel_overrides: dict[int, tuple[int, int]] = field(default_factory=dict)
+    # pixel_overrides: {led_index: (x, y)} — applied after scanline expansion
 
 
 @dataclass
@@ -331,6 +333,9 @@ class PixelMapConfig:
     origin: str = 'bottom_left'
     teensy_outputs: int = 8
     teensy_max_leds_per_output: int = 1200
+    teensy_wire_order: str = 'BGR'
+    teensy_signal_family: str = 'ws281x_800khz'
+    teensy_octo_pins: list[int] = field(default_factory=lambda: [2, 14, 7, 8, 6, 20, 21, 5])
     strips: list[StripConfig] = field(default_factory=list)
 
 
@@ -376,6 +381,9 @@ def load_pixel_map(config_dir: Path) -> PixelMapConfig:
             )
             for sl in s.get('scanlines', [])
         ]
+        pixel_overrides = {
+            int(k): tuple(v) for k, v in s.get('pixel_overrides', {}).items()
+        }
         strips.append(StripConfig(
             id=s['id'],
             output=s.get('output', 0),
@@ -383,12 +391,16 @@ def load_pixel_map(config_dir: Path) -> PixelMapConfig:
             total_leds=s.get('total_leds', 0),
             segments=segments,
             scanlines=scanlines,
+            pixel_overrides=pixel_overrides,
         ))
 
     return PixelMapConfig(
         origin=data.get('origin', 'bottom_left'),
         teensy_outputs=teensy.get('outputs', 8),
         teensy_max_leds_per_output=teensy.get('max_leds_per_output', 1200),
+        teensy_wire_order=teensy.get('controller_wire_order', 'BGR'),
+        teensy_signal_family=teensy.get('signal_family', 'ws281x_800khz'),
+        teensy_octo_pins=teensy.get('octo_pins', [2, 14, 7, 8, 6, 20, 21, 5]),
         strips=strips,
     )
 
@@ -407,6 +419,9 @@ def save_pixel_map(config: PixelMapConfig, config_dir: Path):
         'teensy': {
             'outputs': config.teensy_outputs,
             'max_leds_per_output': config.teensy_max_leds_per_output,
+            'controller_wire_order': config.teensy_wire_order,
+            'signal_family': config.teensy_signal_family,
+            'octo_pins': config.teensy_octo_pins,
         },
         'strips': [
             {
@@ -422,6 +437,10 @@ def save_pixel_map(config: PixelMapConfig, config_dir: Path):
                     {'start': list(sl.start), 'end': list(sl.end)}
                     for sl in s.scanlines
                 ],
+                **(
+                    {'pixel_overrides': {str(k): list(v) for k, v in s.pixel_overrides.items()}}
+                    if s.pixel_overrides else {}
+                ),
             }
             for s in config.strips
         ],
@@ -534,6 +553,14 @@ def compile_pixel_map(config: PixelMapConfig) -> CompiledPixelMap:
             for pos in sl.positions():
                 all_positions.append((pos[0], pos[1], strip.id, led_idx))
                 led_idx += 1
+        # Apply single-pixel overrides (replace scanline-derived positions)
+        for led_idx_override, (ox, oy) in strip.pixel_overrides.items():
+            # Remove the scanline-derived entry for this LED and replace
+            all_positions = [
+                p for p in all_positions
+                if not (p[2] == strip.id and p[3] == led_idx_override)
+            ]
+            all_positions.append((ox, oy, strip.id, led_idx_override))
 
     if not all_positions:
         return CompiledPixelMap(
@@ -1391,6 +1418,7 @@ void handleConfig(const uint8_t* payload, size_t len) {
         newTotal += newLeds[i];
     }
     // Apply config
+    configReceived = true;
     activeOutputs = newActive;
     memcpy(ledsPerOutput, newLeds, sizeof(ledsPerOutput));
     totalLeds = newTotal;
@@ -1412,15 +1440,33 @@ void handleConfig(const uint8_t* payload, size_t len) {
 }
 ```
 
-4. Update `handleFrame` — post-CONFIG format has no 3-byte header, just raw pixel bytes:
+4. Update `handleFrame` — support both legacy (3-byte header) and post-CONFIG (raw) formats:
 ```cpp
+bool configReceived = false;  // set true by handleConfig
+
 void handleFrame(const uint8_t* payload, size_t len) {
-    // Post-CONFIG: payload is raw pixel data, no header
-    if (len != frameSize) {
+    const uint8_t* pixelData;
+    size_t pixelLen;
+
+    if (configReceived) {
+        // Post-CONFIG: payload is raw pixel data, no header
+        pixelData = payload;
+        pixelLen = len;
+    } else {
+        // Legacy format: channels(1) + leds_per_ch(2) + pixel data
+        if (len < 3) {
+            stats.badFrame++;
+            return;
+        }
+        pixelData = payload + 3;
+        pixelLen = len - 3;
+    }
+
+    if (pixelLen != frameSize) {
         stats.badFrame++;
         return;
     }
-    memcpy(pendingFrame, payload, len);
+    memcpy(pendingFrame, pixelData, pixelLen);
     pendingFrameReady = true;
     stats.framesReceived++;
 }
@@ -1568,18 +1614,22 @@ class OriginRequest(BaseModel):
 def create_router(deps, require_auth) -> APIRouter:
     router = APIRouter(prefix="/api/pixel-map", tags=["pixel-map"])
 
-    def _recompile_and_apply():
-        """Validate, compile, hot-apply, and save pixel map."""
+    async def _recompile_and_apply():
+        """Validate, compile, push CONFIG to Teensy (await ACK), then apply and save."""
         errors = validate_pixel_map(deps.pixel_map_config)
         if errors:
             raise HTTPException(422, detail=errors)
         compiled = compile_pixel_map(deps.pixel_map_config)
+
+        # Push CONFIG to Teensy FIRST — must ACK before we change Pi's frame format
+        config_ok = await deps.transport.send_config(compiled.output_config)
+        if not config_ok:
+            raise HTTPException(502, "Teensy rejected CONFIG or timed out — pixel map NOT applied")
+
+        # Only after Teensy ACK: apply to renderer and save
         deps.compiled_pixel_map = compiled
         deps.renderer.apply_pixel_map(compiled)
         save_pixel_map(deps.pixel_map_config, deps.config_dir)
-        # Push config to Teensy (fire-and-forget)
-        import asyncio
-        asyncio.create_task(deps.transport.send_config(compiled.output_config))
 
     @router.get("/")
     async def get_pixel_map():
@@ -1626,7 +1676,7 @@ def create_router(deps, require_auth) -> APIRouter:
         if any(s.id == req.id for s in deps.pixel_map_config.strips):
             raise HTTPException(409, f"Strip {req.id} already exists")
         deps.pixel_map_config.strips.append(strip)
-        _recompile_and_apply()
+        await _recompile_and_apply()
         return await get_pixel_map()
 
     @router.post("/strips/{strip_id}")
@@ -1646,7 +1696,7 @@ def create_router(deps, require_auth) -> APIRouter:
                     segments=[SegmentConfig(seg.range_start, seg.range_end, seg.color_order) for seg in req.segments],
                     scanlines=[ScanlineConfig(tuple(sl.start), tuple(sl.end)) for sl in req.scanlines],
                 )
-                _recompile_and_apply()
+                await _recompile_and_apply()
                 return await get_pixel_map()
         raise HTTPException(404, f"Strip {strip_id} not found")
 
@@ -1657,7 +1707,7 @@ def create_router(deps, require_auth) -> APIRouter:
         deps.pixel_map_config.strips = [s for s in deps.pixel_map_config.strips if s.id != strip_id]
         if len(deps.pixel_map_config.strips) == before:
             raise HTTPException(404, f"Strip {strip_id} not found")
-        _recompile_and_apply()
+        await _recompile_and_apply()
         return await get_pixel_map()
 
     @router.post("/origin")
@@ -1666,7 +1716,7 @@ def create_router(deps, require_auth) -> APIRouter:
         if req.origin not in ('bottom_left', 'top_left'):
             raise HTTPException(422, "origin must be 'bottom_left' or 'top_left'")
         deps.pixel_map_config.origin = req.origin
-        _recompile_and_apply()
+        await _recompile_and_apply()
         return await get_pixel_map()
 
     @router.post("/pixel/{strip_id}/{led_index}")
@@ -1682,13 +1732,8 @@ def create_router(deps, require_auth) -> APIRouter:
             raise HTTPException(404, f"Strip {strip_id} not found")
         if led_index < 0 or led_index >= strip.total_leds:
             raise HTTPException(422, f"LED index {led_index} out of range [0, {strip.total_leds - 1}]")
-        # This modifies the scanlines to include a single-pixel override.
-        # Implementation: store overrides separately in the pixel map config
-        # and apply them after scanline expansion during compilation.
-        if not hasattr(strip, 'pixel_overrides'):
-            strip.pixel_overrides = {}
         strip.pixel_overrides[led_index] = (x, y)
-        _recompile_and_apply()
+        await _recompile_and_apply()
         return await get_pixel_map()
 
     @router.post("/validate")
