@@ -1,16 +1,16 @@
 """
 Cylinder mapping engine.
 
-Converts a logical 10x172 RGB canvas into 5x344 electrical channel data
+Converts a logical 10xN RGB canvas into 5x2N electrical channel data
 for the serpentine-wired LED pillar.
 
 Logical model:
   - width = 10 columns (strips S0-S9)
-  - height = 172 rows
-  - row 0 = bottom, row 171 = top
+  - height = N rows (LEDS_PER_STRIP from hardware.yaml)
+  - row 0 = bottom, row N-1 = top
 
 Electrical model:
-  - 5 channels, each 344 LEDs
+  - 5 channels, each 2*N LEDs
   - CH0: S0 (bottom→top) + S1 (top→bottom)
   - CH1: S2 (bottom→top) + S3 (top→bottom)
   - etc.
@@ -36,8 +36,8 @@ def logical_to_channel(x: int, y: int) -> tuple[int, int]:
   Convert logical pixel (x, y) to (channel, index).
 
   x: logical strip column 0..9
-  y: logical row 0..171 (0 = bottom)
-  Returns: (channel 0..4, index 0..343)
+  y: logical row 0..N-1 (0 = bottom)
+  Returns: (channel 0..4, index 0..2N-1)
   """
   channel = x // 2
   if x % 2 == 0:
@@ -53,7 +53,7 @@ def build_lookup_table() -> np.ndarray:
   """
   Build a precomputed lookup table for fast mapping.
 
-  Returns array of shape (10, 172, 2) where [x, y] = (channel, index).
+  Returns array of shape (STRIPS, N, 2) where [x, y] = (channel, index).
   """
   lut = np.zeros((STRIPS, N, 2), dtype=np.int32)
   for x in range(STRIPS):
@@ -76,7 +76,7 @@ for _x in range(STRIPS):
 
 def map_frame(logical_frame: np.ndarray) -> np.ndarray:
   """
-  Map a logical frame (10, 172, 3) RGB to channel data (5, 344, 3).
+  Map a logical frame (STRIPS, N, 3) RGB to channel data (CHANNELS, 2*N, 3).
 
   Uses precomputed lookup for speed.
   """
@@ -112,7 +112,7 @@ def map_frame_fast(logical_frame: np.ndarray) -> np.ndarray:
     # Even strip: bottom→top maps directly to indices 0..171
     channel_data[pair_idx, :N, :] = logical_frame[even_strip, :, :]
 
-    # Odd strip: top→bottom maps to indices 172..343 (reversed)
+    # Odd strip: top→bottom maps to indices N..2N-1 (reversed)
     channel_data[pair_idx, N:, :] = logical_frame[odd_strip, ::-1, :]
 
   return channel_data
@@ -140,8 +140,8 @@ def downsample_width(supersampled: np.ndarray, output_width: int = 10) -> np.nda
   """
   Downsample a supersampled canvas to the physical output width.
 
-  supersampled: shape (internal_width, 172, 3)
-  Returns: shape (10, 172, 3)
+  supersampled: shape (internal_width, N, 3)
+  Returns: shape (output_width, N, 3)
   """
   internal_width = supersampled.shape[0]
   if internal_width == output_width:

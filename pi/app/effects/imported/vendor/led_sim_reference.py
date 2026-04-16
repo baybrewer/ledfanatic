@@ -32,9 +32,10 @@ except ImportError:
     HAS_AUDIO = False
 
 # ─── Matrix layout ────────────────────────────────────────────────
+from ....hardware_constants import LEDS_PER_STRIP as _HW_ROWS
 COLS = 10
-ROWS = 172
-TOTAL_LEDS = COLS * ROWS  # 1720
+ROWS = _HW_ROWS
+TOTAL_LEDS = COLS * ROWS
 
 # ─── Display ──────────────────────────────────────────────────────
 LED_R = 2

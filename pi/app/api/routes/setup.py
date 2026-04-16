@@ -14,6 +14,7 @@ from ...config.installation import (
   StripMapping, save_installation,
   VALID_COLOR_ORDERS, VALID_DIRECTIONS, MAX_LEDS_PER_CHANNEL,
 )
+from ...hardware_constants import LEDS_PER_STRIP
 from ...mapping.runtime_plan import compile_strip_plan
 
 logger = logging.getLogger(__name__)
@@ -79,7 +80,7 @@ def create_router(deps, require_auth, broadcast_state) -> APIRouter:
             channel=req.channel if req.channel is not None else 0,
             offset=req.offset if req.offset is not None else 0,
             direction=req.direction if req.direction is not None else 'bottom_to_top',
-            led_count=req.led_count if req.led_count is not None else 172,
+            led_count=req.led_count if req.led_count is not None else LEDS_PER_STRIP,
             color_order=req.color_order if req.color_order is not None else 'BGR',
         )
         deps.installation.strips.append(strip)

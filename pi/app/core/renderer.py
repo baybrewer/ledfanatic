@@ -119,9 +119,9 @@ class Renderer:
     self._fps_samples: list[float] = []
     self._fps_window = 60
     self._last_frame_start: float = 0.0
-    # Last logical (10×172×3 uint8) frame — snapshot after brightness+gamma,
+    # Last logical frame — snapshot after brightness+gamma,
     # read by live-preview WebSocket. Ring buffer of one frame.
-    self._last_logical_frame = np.zeros((10, 172, 3), dtype=np.uint8)
+    self._last_logical_frame = np.zeros((STRIPS, LEDS_PER_STRIP, 3), dtype=np.uint8)
 
   def register_effect(self, name: str, effect_class):
     self.effect_registry[name] = effect_class
@@ -166,9 +166,10 @@ class Renderer:
     if scene_name == 'animation_switcher':
       merged['_effect_registry'] = self.effect_registry
     effect_width = getattr(effect_cls, 'NATIVE_WIDTH', None) or self.internal_width
+    effect_height = self._output_plan.logical_height if self._output_plan else N
     self.current_effect = effect_cls(
       width=effect_width,
-      height=N,
+      height=effect_height,
       params=merged,
     )
     self.state.current_scene = scene_name
@@ -186,9 +187,10 @@ class Renderer:
       item_id = scene_name[6:]
       if media_manager and item_id in media_manager.items:
         from ..effects.media_playback import MediaPlayback
+        media_height = self._output_plan.logical_height if self._output_plan else N
         self.current_effect = MediaPlayback(
           width=self.internal_width,
-          height=N,
+          height=media_height,
           params={'item_id': item_id, **(params or {})},
           media_manager=media_manager,
         )
@@ -245,12 +247,15 @@ class Renderer:
     ch = plan.channels if plan else CHANNELS
     lpc = plan.leds_per_channel if plan else LEDS_PER_CHANNEL
 
+    lh = plan.logical_height if plan else LEDS_PER_STRIP
+    lw = plan.logical_width if plan else STRIPS
+
     if self.state.blackout:
       channel_data = np.zeros((ch, lpc, 3), dtype=np.uint8)
-      self._last_logical_frame = np.zeros((10, 172, 3), dtype=np.uint8)
+      self._last_logical_frame = np.zeros((lw, lh, 3), dtype=np.uint8)
     elif self.current_effect is None:
       channel_data = np.zeros((ch, lpc, 3), dtype=np.uint8)
-      self._last_logical_frame = np.zeros((10, 172, 3), dtype=np.uint8)
+      self._last_logical_frame = np.zeros((lw, lh, 3), dtype=np.uint8)
     else:
       t = time.monotonic()
       internal_frame = self.current_effect.render(t, self.state)

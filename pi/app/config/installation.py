@@ -33,7 +33,7 @@ class StripMapping:
   channel: int = 0
   offset: int = 0
   direction: str = "bottom_to_top"
-  led_count: int = 172
+  led_count: int = LEDS_PER_STRIP
   color_order: str = "BGR"
   brightness: float = 1.0
 

@@ -8,6 +8,7 @@ from typing import Optional
 import numpy as np
 
 from .base import Effect
+from ..hardware_constants import LEDS_PER_STRIP
 
 logger = logging.getLogger(__name__)
 
@@ -19,7 +20,7 @@ class AnimationSwitcher(Effect):
   CATEGORY = "special"
   DESCRIPTION = "Automatically cycles through selected animations with smooth cross-fade transitions"
 
-  def __init__(self, width=10, height=172, params=None):
+  def __init__(self, width=10, height=LEDS_PER_STRIP, params=None):
     super().__init__(width, height, params)
     self._interval = self.params.get('interval', 15)
     self._fade_duration = self.params.get('fade_duration', 2.0)

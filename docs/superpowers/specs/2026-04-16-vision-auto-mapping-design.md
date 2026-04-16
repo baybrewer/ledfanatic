@@ -61,7 +61,7 @@ For each discovered strip:
 
 1. Build candidate `StripMapping` entries from discovered data
 2. Build `SpatialMap` positions from samples + interpolation
-3. If strips were already mapped from a previous camera angle, merge: more-complete data (more LEDs visible, higher confidence) wins
+3. Merge with existing draft candidates: electrical fields (channel, offset, led_count, direction) reconcile by electrical overlap; spatial positions merge per-LED non-destructively within the same viewpoint (see Merge Behavior section for full rules)
 4. Present results to user in UI for review before applying
 
 ## Vision / Blob Detection
@@ -101,7 +101,7 @@ All under `/api/setup/auto-map/`. All endpoints require Bearer auth (camera feed
 | `/stop` | POST | Yes | Abort current scan pass. Body: `{"draft_id": "...", "pass_id": "..."}`. Rejects if IDs don't match. Restores previous scene. Draft and its accumulated candidates are preserved — user can start another pass or apply/discard. |
 | `/status` | GET | Yes | Returns `{"draft_id": "...", "pass_id": "...", "phase": 1-4, "progress": 0.0-1.0, "strips_found": N, "stream_connected": bool, "passes_completed": N}`. Clients check `draft_id`/`pass_id` to avoid acting on stale data. |
 | `/results` | GET | Yes | Returns `{"draft_id": "...", "candidates": [...]}`. Candidates are the merged result across ALL passes in this draft. Each: `{candidate_id, channel, offset, led_count, direction, confidence, status, visible_count, source_passes: [pass_ids]}` where status is `"confirmed"`, `"unresolved"`, or `"rejected"`. `confidence` is candidate-level (0.0-1.0) based on average blob brightness and detection consistency. |
-| `/resolve` | POST | Yes | Resolve ambiguous candidates. Body: `{"draft_id": "...", "resolutions": [{"candidate_id": 0, "action": "accept"}, {"candidate_id": 1, "action": "reject"}, {"candidate_id": 2, "action": "merge", "merge_with": 3}]}`. Actions: `accept` (confirm as strip), `reject` (discard), `merge` (combine two candidates from different angles). Returns updated results. |
+| `/resolve` | POST | Yes | Resolve ambiguous candidates. Body: `{"draft_id": "...", "resolutions": [{"candidate_id": 0, "action": "accept"}, {"candidate_id": 1, "action": "reject"}, {"candidate_id": 2, "action": "merge", "merge_with": 3}]}`. Actions: `accept` (confirm as strip), `reject` (discard), `merge` (combine any two user-selected candidates into one strip, regardless of angle — validates that they're on the same channel). Returns updated results. |
 | `/apply` | POST | Yes | Merge confirmed results into existing config. Body: `{"draft_id": "..."}`. Fails if any candidates are still `"unresolved"`. **Merge semantics:** confirmed candidates are matched to existing strips in installation.yaml by `(channel, offset)`. Matched strips are updated (led_count, direction, etc.). Unmatched candidates are added as new strips with the next available ID. Existing strips NOT present in the draft are preserved unchanged (stable IDs). SpatialMap entries follow the same merge: update matched, add new, preserve untouched. Transaction: (1) load existing config, (2) merge, (3) validate + compile output plan in memory, (4) stage both files to temps, (5) swap both. If any step fails before swap, no files modified. Clears draft on success. Returns the full strip list. |
 | `/discard` | POST | Yes | Discard the draft and all accumulated candidates. Body: `{"draft_id": "..."}`. Restores previous scene if a pass was active. |
 | `/ws` | WebSocket | Yes | Live camera frame (downscaled) + blob overlay + JSON progress. Auth via `?token=` query param (WebSocket can't send headers). |
@@ -181,7 +181,7 @@ StripGeometry:
 ```
 
 **Populating from scan data:**
-- `positions` — ALWAYS a full-length array of `led_count` entries, indexed by absolute LED index (0 through led_count-1). Observed positions are stored as `[x_uv, y_uv]` in image-space UV: `x_uv = x_px / frame_width`, `y_uv = 1.0 - (y_px / frame_height)` (bottom-left origin). Unobserved LEDs are stored as `null`. The `bounds` field is computed as metadata (min/max of all non-null strip positions) but is not used for normalization.
+- `positions` — ALWAYS a full-length array of `led_count` entries, indexed by **strip-local** index (0 through led_count-1). Discovery uses channel-absolute indices internally; conversion to strip-local: `strip_local = channel_index - offset`. Observed positions are stored as `[x_uv, y_uv]` in image-space UV: `x_uv = x_px / frame_width`, `y_uv = 1.0 - (y_px / frame_height)` (bottom-left origin). Unobserved LEDs are stored as `null`. The `bounds` field is computed as metadata (min/max of all non-null strip positions) but is not used for normalization.
 - `anchors` — always 5 entries at canonical strip positions: LED indices `round(f * (led_count - 1))` for `f` in `[0.0, 0.25, 0.5, 0.75, 1.0]` (so for 172 LEDs: indices 0, 43, 86, 128, 171). If the LED at that index was observed, store its `[x_uv, y_uv]`; if unobserved, store `null`. Partially-visible strips have sparse anchors.
 - `visibility` — "direct" if all LEDs on the strip have non-null positions, "partial" if any are still null. Existing maps from the geometry wizard may contain "inferred" (strips not directly visible but fitted from anchor data) — auto-map does not emit "inferred" but must tolerate it when reading existing maps for merge.
 - `visible_strips` — all strip IDs with at least one non-null position.
@@ -196,15 +196,16 @@ Feeds into existing `SpatialMap` for front-projection effects.
 
 ### Merge Behavior on Re-scan
 
-**Auto-reconciliation:** A new candidate is auto-matched to an existing candidate when:
-1. Same channel AND overlapping electrical index range, AND
-2. Geometric consistency (centroid positions for overlapping indices within tolerance)
+**Auto-reconciliation** uses electrical overlap only (not geometry — coordinates from different camera angles are not comparable):
 
-When auto-matched, the existing candidate's positions are updated per the non-destructive per-LED merge rule. The merged candidate's `offset` = min of both offsets, `led_count` = max end index - min start index + 1, `direction` and `confidence` from the candidate with more visible LEDs.
+1. Same channel AND overlapping electrical index range → auto-match
+2. Geometric consistency is checked only when both candidates come from the same viewpoint (same pass or same camera angle). Cross-angle passes skip the geometry check entirely.
 
-**Disjoint segments:** When two candidates are on the same channel but have non-overlapping index ranges (e.g., pass 1 sees LEDs 0-80, pass 2 sees LEDs 90-171), auto-reconciliation cannot determine if they're the same strip or two different strips. These are left as separate `"unresolved"` candidates. The user resolves via `/resolve` with `"action": "merge"` — which combines them into one strip with `offset` = min start, `led_count` = combined range, positions merged per-LED-index.
+When auto-matched, electrical fields are merged: `offset` = min of both offsets, `led_count` = max end index - min start index + 1, `direction` and `confidence` from the candidate with more visible LEDs. Spatial positions follow the viewpoint rule: same-viewpoint positions merge per-LED non-destructively; cross-viewpoint positions only fill null entries (see "Spatial positions are single-viewpoint only" above).
 
-**Ambiguous matches** (overlapping range but inconsistent geometry) are also flagged as `"unresolved"`.
+**Disjoint segments:** Two candidates on the same channel but with non-overlapping index ranges (e.g., pass 1 sees LEDs 0-80, pass 2 sees LEDs 90-171) cannot be auto-reconciled. These are left as `"unresolved"`. The user resolves via `/resolve` with `"action": "merge"` — which combines them into one strip with `offset` = min start, `led_count` = combined range, positions merged per-LED-index.
+
+**Other unresolved cases:** Candidates that can't be auto-matched (e.g., same channel, overlapping range, but wildly different LED counts suggesting a wiring change) are flagged as `"unresolved"`.
 
 - Auto-matched strips → updated with per-LED merge, not duplicated
 - Strips not visible in the current pass → left untouched

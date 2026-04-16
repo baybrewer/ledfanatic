@@ -16,12 +16,14 @@ from typing import Optional
 import numpy as np
 from PIL import Image
 
+from ..hardware_constants import LEDS_PER_STRIP
+
 logger = logging.getLogger(__name__)
 
 MEDIA_DIR = Path("/opt/pillar/media")
 CACHE_DIR = Path("/opt/pillar/cache")
 VIRTUAL_WIDTH = 40
-HEIGHT = 172
+HEIGHT = LEDS_PER_STRIP
 MEDIA_SCHEMA_VERSION = 1
 
 

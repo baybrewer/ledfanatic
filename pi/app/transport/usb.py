@@ -20,6 +20,7 @@ from ..models.protocol import (
   parse_caps_payload, parse_stats_payload,
   cobs_encode, cobs_decode, PROTOCOL_VERSION,
 )
+from ..hardware_constants import LEDS_PER_CHANNEL
 
 logger = logging.getLogger(__name__)
 
@@ -150,7 +151,7 @@ class TeensyTransport:
     return None
 
   async def send_frame(self, channel_data: bytes, channels: int = 5,
-                       leds_per_channel: int = 344) -> bool:
+                       leds_per_channel: int = LEDS_PER_CHANNEL) -> bool:
     if not self.connected or not self.serial:
       return False
 
