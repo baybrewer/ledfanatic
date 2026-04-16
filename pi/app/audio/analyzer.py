@@ -173,12 +173,13 @@ class AudioAnalyzer:
         val = float(np.sqrt(np.mean(spectrum[mask] ** 2))) * 0.01
       else:
         val = 0.0
-      if hi <= 250:
+      # Apply per-band sensitivity by bin index (4 bass / 6 mid / 6 treble)
+      if i < 4:
         val *= self.bass_sensitivity
-      elif lo >= 4000:
-        val *= self.treble_sensitivity
-      else:
+      elif i < 10:
         val *= self.mid_sensitivity
+      else:
+        val *= self.treble_sensitivity
       bins.append(min(1.0, val))
     return bins
 
