@@ -1026,40 +1026,44 @@ input:focus-visible {
   color: var(--accent);
 }
 
-/* Setup live preview — fixed right-side simulator that mirrors the live LED output */
-#setup-live-preview {
-  position: fixed;
-  top: 80px;
-  right: 12px;
-  width: 72px;
-  z-index: 100;
-  background: var(--surface2);
-  border: 1px solid var(--border);
-  border-radius: 8px;
-  padding: 8px;
-  pointer-events: none;
+/* Setup screen — mirrors effects-layout: main content on left, live preview on right */
+.setup-layout {
+  display: flex;
+  gap: 16px;
 }
 
-.setup-live-header {
-  font-size: 10px;
-  color: var(--text-dim);
-  text-align: center;
-  margin-bottom: 4px;
-  text-transform: uppercase;
-  letter-spacing: 0.05em;
+.setup-main {
+  flex: 1;
+  min-width: 0;
 }
 
-#setup-live-canvas {
-  display: block;
-  width: 60px;
-  height: 600px;
+.setup-preview {
+  width: 100px;
+  flex-shrink: 0;
+}
+
+.setup-preview .sim-canvas-wrap {
+  position: sticky;
+  top: 12px;
+}
+
+.setup-preview canvas {
+  width: 100%;
+  height: auto;
+  max-height: calc(100dvh - 200px);
+  image-rendering: pixelated;
   background: #000;
   border-radius: 4px;
-  image-rendering: pixelated;
 }
 
-@media (max-width: 900px) {
-  #setup-live-preview {
-    display: none;
+@media (max-width: 700px) {
+  .setup-layout {
+    flex-direction: column;
+  }
+  .setup-preview {
+    width: 100%;
+  }
+  .setup-preview canvas {
+    height: 200px;
   }
 }
