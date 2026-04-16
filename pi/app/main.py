@@ -167,7 +167,7 @@ def main():
     description='Automatically cycles through selected animations with cross-fade',
     imported=True,
     params=(
-      {'name': 'interval', 'label': 'Switch Time (s)', 'min': 5, 'max': 60, 'step': 1, 'default': 15, 'type': 'slider'},
+      {'name': 'interval', 'label': 'Switch Time (s)', 'min': 5, 'max': 120, 'step': 1, 'default': 15, 'type': 'slider'},
       {'name': 'fade_duration', 'label': 'Fade Duration (s)', 'min': 0.5, 'max': 5.0, 'step': 0.5, 'default': 2.0, 'type': 'slider'},
     ),
   ))

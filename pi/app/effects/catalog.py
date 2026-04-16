@@ -79,6 +79,16 @@ class EffectCatalogService:
     'cylinder_rotate', 'solid_color',
   }
 
+  # Explicit display labels for audio_reactive effects — all SR-prefixed,
+  # with proper acronym casing (VU not Vu).
+  _AUDIO_LABELS = {
+    'vu_pulse': 'SR VU Pulse',
+    'band_colors': 'SR Band Colors',
+    'beat_flash': 'SR Beat Flash',
+    'energy_ring': 'SR Energy Ring',
+    'spectral_glow': 'SR Spectral Glow',
+  }
+
   # UI slider params for generative effects (same format as imported PARAMS)
   _EFFECT_PARAMS = {
     'solid_color': (
@@ -155,7 +165,7 @@ class EffectCatalogService:
       params = self._EFFECT_PARAMS.get(name, ())
       self._catalog[name] = EffectMeta(
         name=name,
-        label=_name_to_label(name),
+        label=self._AUDIO_LABELS.get(name, f"SR {_name_to_label(name)}"),
         group='audio',
         description=_get_description(name, cls),
         params=params,
