@@ -1240,10 +1240,58 @@ async def send_config(self, output_config: list[int], timeout: float = 3.0) -> b
 
 Also add to `protocol.py`:
 ```python
-# New packet types for CONFIG response
-# Add to PacketType enum:
+# CONFIG already exists as 0x03 in the PacketType enum — use it as-is.
+# Add new response types to the PacketType enum:
 CONFIG_ACK = 0x04
 CONFIG_NAK = 0x05
+```
+
+**Note:** The existing `PacketType.CONFIG = 0x03` is already correct. Do NOT use 0x10 (that's FRAME). The spec's mention of 0x10 for CONFIG was an error — the plan uses the existing 0x03.
+
+Also add a `_wait_for_response` method to `TeensyTransport`:
+```python
+async def _wait_for_response(self, expected_types: list, timeout: float = 3.0) -> Optional:
+    """Wait for a specific packet type response from Teensy.
+
+    Reads from the serial RX buffer, decodes COBS frames, and returns
+    the first packet matching one of expected_types. Returns None on timeout.
+    """
+    import time
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        async with self._lock:
+            try:
+                data = await asyncio.wait_for(
+                    asyncio.to_thread(self.serial.read, 256),
+                    timeout=min(0.5, deadline - time.monotonic()),
+                )
+            except (asyncio.TimeoutError, serial.SerialException):
+                data = b''
+        if data:
+            self._rx_buffer.extend(data)
+            # Try to decode COBS frames from buffer
+            packet = self._try_decode_packet()
+            if packet and packet.packet_type in [t.value for t in expected_types]:
+                return packet
+        await asyncio.sleep(0.05)
+    return None
+```
+
+Track last CONFIG result for status endpoint:
+```python
+# In TeensyTransport.__init__:
+self._last_config_ack: Optional[bool] = None  # True=ACK, False=NAK, None=never sent
+```
+
+Set it in `send_config`:
+```python
+async def send_config(self, output_config: list[int], timeout: float = 3.0) -> bool:
+    # ... (existing code) ...
+    if response.packet_type == PacketType.CONFIG_NAK:
+        self._last_config_ack = False
+        # ...
+    self._last_config_ack = True
+    # ...
 ```
 
 - [ ] **Step 3: Run tests**
@@ -1614,22 +1662,27 @@ class OriginRequest(BaseModel):
 def create_router(deps, require_auth) -> APIRouter:
     router = APIRouter(prefix="/api/pixel-map", tags=["pixel-map"])
 
-    async def _recompile_and_apply():
-        """Validate, compile, push CONFIG to Teensy (await ACK), then apply and save."""
-        errors = validate_pixel_map(deps.pixel_map_config)
+    async def _recompile_and_apply(staged_config: PixelMapConfig):
+        """Validate staged config, compile, push CONFIG (await ACK), then commit.
+
+        Takes a STAGED copy of the config — deps is only mutated on success.
+        On failure (validation, compile, or Teensy NAK), deps is untouched.
+        """
+        errors = validate_pixel_map(staged_config)
         if errors:
             raise HTTPException(422, detail=errors)
-        compiled = compile_pixel_map(deps.pixel_map_config)
+        compiled = compile_pixel_map(staged_config)
 
         # Push CONFIG to Teensy FIRST — must ACK before we change Pi's frame format
         config_ok = await deps.transport.send_config(compiled.output_config)
         if not config_ok:
             raise HTTPException(502, "Teensy rejected CONFIG or timed out — pixel map NOT applied")
 
-        # Only after Teensy ACK: apply to renderer and save
+        # Only after Teensy ACK: commit to deps, apply to renderer, and save
+        deps.pixel_map_config = staged_config
         deps.compiled_pixel_map = compiled
         deps.renderer.apply_pixel_map(compiled)
-        save_pixel_map(deps.pixel_map_config, deps.config_dir)
+        save_pixel_map(staged_config, deps.config_dir)
 
     @router.get("/")
     async def get_pixel_map():
@@ -1675,39 +1728,43 @@ def create_router(deps, require_auth) -> APIRouter:
         # Check for duplicate ID
         if any(s.id == req.id for s in deps.pixel_map_config.strips):
             raise HTTPException(409, f"Strip {req.id} already exists")
-        deps.pixel_map_config.strips.append(strip)
-        await _recompile_and_apply()
+        # Stage on copy
+        import copy
+        staged = copy.deepcopy(deps.pixel_map_config)
+        staged.strips.append(strip)
+        await _recompile_and_apply(staged)
         return await get_pixel_map()
 
     @router.post("/strips/{strip_id}")
     async def update_strip(strip_id: int, req: StripRequest, auth=Depends(require_auth)):
         """Update an existing strip."""
-        # Check for ID collision if ID is changing
         if req.id != strip_id:
             if any(s.id == req.id for s in deps.pixel_map_config.strips):
                 raise HTTPException(409, f"Strip {req.id} already exists")
-        for i, s in enumerate(deps.pixel_map_config.strips):
+        import copy
+        staged = copy.deepcopy(deps.pixel_map_config)
+        for i, s in enumerate(staged.strips):
             if s.id == strip_id:
-                deps.pixel_map_config.strips[i] = StripConfig(
-                    id=req.id,
-                    output=req.output,
-                    output_offset=req.output_offset,
+                staged.strips[i] = StripConfig(
+                    id=req.id, output=req.output, output_offset=req.output_offset,
                     total_leds=req.total_leds,
                     segments=[SegmentConfig(seg.range_start, seg.range_end, seg.color_order) for seg in req.segments],
                     scanlines=[ScanlineConfig(tuple(sl.start), tuple(sl.end)) for sl in req.scanlines],
                 )
-                await _recompile_and_apply()
+                await _recompile_and_apply(staged)
                 return await get_pixel_map()
         raise HTTPException(404, f"Strip {strip_id} not found")
 
     @router.delete("/strips/{strip_id}")
     async def delete_strip(strip_id: int, auth=Depends(require_auth)):
         """Delete a strip."""
-        before = len(deps.pixel_map_config.strips)
-        deps.pixel_map_config.strips = [s for s in deps.pixel_map_config.strips if s.id != strip_id]
-        if len(deps.pixel_map_config.strips) == before:
+        import copy
+        staged = copy.deepcopy(deps.pixel_map_config)
+        before = len(staged.strips)
+        staged.strips = [s for s in staged.strips if s.id != strip_id]
+        if len(staged.strips) == before:
             raise HTTPException(404, f"Strip {strip_id} not found")
-        await _recompile_and_apply()
+        await _recompile_and_apply(staged)
         return await get_pixel_map()
 
     @router.post("/origin")
@@ -1715,8 +1772,10 @@ def create_router(deps, require_auth) -> APIRouter:
         """Set grid origin (bottom_left or top_left)."""
         if req.origin not in ('bottom_left', 'top_left'):
             raise HTTPException(422, "origin must be 'bottom_left' or 'top_left'")
-        deps.pixel_map_config.origin = req.origin
-        await _recompile_and_apply()
+        import copy
+        staged = copy.deepcopy(deps.pixel_map_config)
+        staged.origin = req.origin
+        await _recompile_and_apply(staged)
         return await get_pixel_map()
 
     @router.post("/pixel/{strip_id}/{led_index}")
@@ -1732,8 +1791,11 @@ def create_router(deps, require_auth) -> APIRouter:
             raise HTTPException(404, f"Strip {strip_id} not found")
         if led_index < 0 or led_index >= strip.total_leds:
             raise HTTPException(422, f"LED index {led_index} out of range [0, {strip.total_leds - 1}]")
-        strip.pixel_overrides[led_index] = (x, y)
-        await _recompile_and_apply()
+        import copy
+        staged = copy.deepcopy(deps.pixel_map_config)
+        staged_strip = next((s for s in staged.strips if s.id == strip_id), None)
+        staged_strip.pixel_overrides[led_index] = (x, y)
+        await _recompile_and_apply(staged)
         return await get_pixel_map()
 
     @router.post("/validate")
