@@ -269,10 +269,11 @@ class BeatPulse(Effect):
   PALETTE_SUPPORT = True
 
   PARAMS = [
+    _Param("Gain", "gain", 0.2, 5.0, 0.1, 1.0),
     _Param("Decay", "decay", 0.8, 0.99, 0.01, 0.92),
     _Param("Flash", "flash", 0.3, 2.0, 0.1, 1.0),
   ]
-  _SCALAR_PARAMS = {"decay": 0.92, "flash": 1.0}
+  _SCALAR_PARAMS = {"gain": 1.0, "decay": 0.92, "flash": 1.0}
   NATIVE_WIDTH = 10
 
   def __init__(self, width=10, height=N, params=None):
@@ -296,8 +297,9 @@ class BeatPulse(Effect):
     flash = self.params.get("flash", 1.0)
     pal_idx = _get_pal_idx(self.params)
 
+    gain = self.params.get("gain", 1.0)
     if audio.beat:
-      self._energy = flash * (1 + audio.buildup)
+      self._energy = flash * gain * (1 + audio.buildup)
       self._hue = (self._hue + 0.08) % 1.0
 
     # DROP: rapid strobe burst for 2 seconds
@@ -986,11 +988,12 @@ class ParticleBurst(Effect):
   PALETTE_SUPPORT = True
 
   PARAMS = [
+    _Param("Gain", "gain", 0.2, 5.0, 0.1, 1.0),
     _Param("Gravity", "gravity", 0.0, 2.0, 0.1, 0.5),
     _Param("Speed", "speed", 0.3, 3.0, 0.1, 1.0),
     _Param("Count", "count", 5, 60, 5, 30),
   ]
-  _SCALAR_PARAMS = {"gravity": 0.5, "speed": 1.0, "count": 30}
+  _SCALAR_PARAMS = {"gain": 1.0, "gravity": 0.5, "speed": 1.0, "count": 30}
   NATIVE_WIDTH = 10
 
   def __init__(self, width=10, height=N, params=None):
@@ -1026,11 +1029,12 @@ class ParticleBurst(Effect):
     # Fade instead of clear — trails persist
     self.buf.fade(0.82)
 
+    gain = self.params.get("gain", 1.0)
     # Normal beat: single burst
     if audio.beat and not audio.drop:
       cx = random.uniform(1, cols - 2)
       cy = random.uniform(rows * 0.3, rows * 0.7)
-      adjusted_count = int(count * (1 + audio.buildup))
+      adjusted_count = int(count * gain * (1 + audio.buildup))
       self._spawn_burst(cx, cy, adjusted_count, random.random())
 
     # DROP: FIREWORKS — 5-8 simultaneous rainbow explosions
@@ -1185,10 +1189,11 @@ class StrobeChaos(Effect):
   PALETTE_SUPPORT = True
 
   PARAMS = [
+    _Param("Gain", "gain", 0.2, 5.0, 0.1, 1.0),
     _Param("Intensity", "intensity", 0.1, 1.0, 0.05, 0.8),
     _Param("Segments", "segments", 1, 10, 1, 4),
   ]
-  _SCALAR_PARAMS = {"intensity": 0.8, "segments": 4}
+  _SCALAR_PARAMS = {"gain": 1.0, "intensity": 0.8, "segments": 4}
   NATIVE_WIDTH = 10
 
   def __init__(self, width=10, height=N, params=None):
@@ -1235,8 +1240,9 @@ class StrobeChaos(Effect):
         self.buf.data[:] = [int(c[0] * 0.08), int(c[1] * 0.08), int(c[2] * 0.08)]
       return self.buf.get_frame()
 
+    gain = self.params.get("gain", 1.0)
     if audio.beat:
-      self._flash = intensity * (1 + audio.buildup)
+      self._flash = min(1.0, intensity * gain * (1 + audio.buildup))
       self._hue = random.random()
     self._flash *= 0.88
 
