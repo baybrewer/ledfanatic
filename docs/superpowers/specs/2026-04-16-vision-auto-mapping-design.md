@@ -97,12 +97,12 @@ All under `/api/setup/auto-map/`. All endpoints require Bearer auth (camera feed
 
 | Endpoint | Method | Auth | Purpose |
 |----------|--------|------|---------|
-| `/start` | POST | Yes | Begin a scan pass. Body: `{"channels": [0,1,2,3,4], "draft_id": "..." (optional)}`. If `draft_id` is omitted, creates a new draft mapping session and returns `{"draft_id": "...", "pass_id": "...", "srt_url": "srt://<ip>:9000"}`. If `draft_id` is provided, adds a new scan pass to the existing draft (for re-scanning from another angle) — candidates from previous passes are preserved and merged with new results. Only one scan pass may run at a time; starting a new pass aborts any active pass (but keeps the draft and its accumulated candidates). |
+| `/start` | POST | Yes | Begin a scan pass. Body: `{"channels": [0,1,2,3,4], "new_draft": false}`. If `new_draft` is true (or no draft exists), creates a fresh draft mapping session, discarding any previous draft. If false (default) and a draft exists, adds a new scan pass to it — candidates from previous passes are preserved and merged with new results. Only one draft exists at a time; only one scan pass may run at a time. Starting a new pass aborts any active pass but keeps the draft. Returns `{"draft_id": "...", "pass_id": "...", "srt_url": "srt://<ip>:9000"}`. |
 | `/stop` | POST | Yes | Abort current scan pass. Body: `{"draft_id": "...", "pass_id": "..."}`. Rejects if IDs don't match. Restores previous scene. Draft and its accumulated candidates are preserved — user can start another pass or apply/discard. |
 | `/status` | GET | Yes | Returns `{"draft_id": "...", "pass_id": "...", "phase": 1-4, "progress": 0.0-1.0, "strips_found": N, "stream_connected": bool, "passes_completed": N}`. Clients check `draft_id`/`pass_id` to avoid acting on stale data. |
 | `/results` | GET | Yes | Returns `{"draft_id": "...", "candidates": [...]}`. Candidates are the merged result across ALL passes in this draft. Each: `{candidate_id, channel, offset, led_count, direction, confidence, status, visible_count, source_passes: [pass_ids]}` where status is `"confirmed"`, `"unresolved"`, or `"rejected"`. `confidence` is candidate-level (0.0-1.0) based on average blob brightness and detection consistency. |
 | `/resolve` | POST | Yes | Resolve ambiguous candidates. Body: `{"draft_id": "...", "resolutions": [{"candidate_id": 0, "action": "accept"}, {"candidate_id": 1, "action": "reject"}, {"candidate_id": 2, "action": "merge", "merge_with": 3}]}`. Actions: `accept` (confirm as strip), `reject` (discard), `merge` (combine two candidates from different angles). Returns updated results. |
-| `/apply` | POST | Yes | Commit confirmed results. Body: `{"draft_id": "..."}`. Fails if any candidates are still `"unresolved"` — all must be resolved first. Transaction sequence: (1) validate confirmed strips, (2) compile output plan in memory, (3) stage both files to temp paths via atomic writers, (4) only if both temp writes succeed, swap installation.yaml then spatial_map.json, (5) hot-apply compiled plan. If any step fails before the swap, no files are modified. If the second swap fails after the first succeeded, log an error and return the partial state. Clears the draft on success. Returns the new strip list. |
+| `/apply` | POST | Yes | Merge confirmed results into existing config. Body: `{"draft_id": "..."}`. Fails if any candidates are still `"unresolved"`. **Merge semantics:** confirmed candidates are matched to existing strips in installation.yaml by `(channel, offset)`. Matched strips are updated (led_count, direction, etc.). Unmatched candidates are added as new strips with the next available ID. Existing strips NOT present in the draft are preserved unchanged (stable IDs). SpatialMap entries follow the same merge: update matched, add new, preserve untouched. Transaction: (1) load existing config, (2) merge, (3) validate + compile output plan in memory, (4) stage both files to temps, (5) swap both. If any step fails before swap, no files modified. Clears draft on success. Returns the full strip list. |
 | `/discard` | POST | Yes | Discard the draft and all accumulated candidates. Body: `{"draft_id": "..."}`. Restores previous scene if a pass was active. |
 | `/ws` | WebSocket | Yes | Live camera frame (downscaled) + blob overlay + JSON progress. Auth via `?token=` query param (WebSocket can't send headers). |
 
@@ -191,13 +191,19 @@ Feeds into existing `SpatialMap` for front-projection effects.
 
 ### Merge Behavior on Re-scan
 
-**Reconciliation key:** A newly discovered run is matched to an existing strip by `(channel, overlapping electrical index range)`. If a new run on channel 2, indices 0-170 overlaps with an existing strip on channel 2, offset 0, led_count 172, they're the same strip. If geometric consistency also holds (centroid positions for overlapping indices are within a tolerance), the match is confirmed and the existing entry is updated with the more complete data.
+**Auto-reconciliation:** A new candidate is auto-matched to an existing candidate when:
+1. Same channel AND overlapping electrical index range, AND
+2. Geometric consistency (centroid positions for overlapping indices within tolerance)
 
-**Ambiguous matches** (e.g., overlapping index range but inconsistent geometry) are flagged in the UI as "needs confirmation" — the user decides whether to accept or discard.
+When auto-matched, the existing candidate's positions are updated per the non-destructive per-LED merge rule. The merged candidate's `offset` = min of both offsets, `led_count` = max end index - min start index + 1, `direction` and `confidence` from the candidate with more visible LEDs.
 
-- Matched strips → updated with more-complete data (more visible LEDs, higher confidence), not duplicated
-- Strips not visible in the current scan → left untouched
-- "Reset Mapping" option available to clear and start fresh
+**Disjoint segments:** When two candidates are on the same channel but have non-overlapping index ranges (e.g., pass 1 sees LEDs 0-80, pass 2 sees LEDs 90-171), auto-reconciliation cannot determine if they're the same strip or two different strips. These are left as separate `"unresolved"` candidates. The user resolves via `/resolve` with `"action": "merge"` — which combines them into one strip with `offset` = min start, `led_count` = combined range, positions merged per-LED-index.
+
+**Ambiguous matches** (overlapping range but inconsistent geometry) are also flagged as `"unresolved"`.
+
+- Auto-matched strips → updated with per-LED merge, not duplicated
+- Strips not visible in the current pass → left untouched
+- "Reset Mapping" option available via `/start` with `new_draft: true`
 
 ## New Files
 
