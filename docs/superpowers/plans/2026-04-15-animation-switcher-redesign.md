@@ -172,6 +172,18 @@ Empty playlist stays empty (existing behavior — renders black). The "default a
 In `pi/app/effects/switcher.py`, find the `update_params` method (around line 123). Replace the entire method with:
 
 ```python
+  def _sanitize_playlist(self, raw):
+    """Drop any entries not present in the current effect registry.
+
+    Prevents stale/renamed/removed effect names from producing silent black
+    frames or confusing status output.
+    """
+    if not raw:
+      return []
+    if not self._effect_registry:
+      return list(raw)
+    return [name for name in raw if name in self._effect_registry]
+
   def update_params(self, params):
     """Update switcher params. Playlist changes reset position to 0."""
     if 'interval' in params:
@@ -180,21 +192,51 @@ In `pi/app/effects/switcher.py`, find the `update_params` method (around line 12
       self._fade_duration = params['fade_duration']
     if 'shuffle' in params:
       self._shuffle = params['shuffle']
+    if '_effect_registry' in params and params['_effect_registry']:
+      self._effect_registry = params['_effect_registry']
     if 'playlist' in params:
-      new_playlist = list(params['playlist'] or [])
+      new_playlist = self._sanitize_playlist(list(params['playlist'] or []))
       if new_playlist != self._playlist:
         self._playlist = new_playlist
         self._current_idx = 0
         self._phase = 'playing'
         self._phase_timer = 0.0
+        self._current_effect = None
         self._next_effect = None
         self._activate_current()
-    if '_effect_registry' in params and params['_effect_registry']:
-      self._effect_registry = params['_effect_registry']
     self.params.update(params)
 ```
 
-The existing `__init__` is unchanged. It already does `self._playlist = self.params.get('playlist', [])` which correctly leaves empty lists empty.
+Also update `__init__` to sanitize on first activation. Find:
+
+```python
+    self._playlist = self.params.get('playlist', [])
+```
+
+Replace with:
+
+```python
+    self._playlist = []  # assigned after _effect_registry is set
+```
+
+Then find (still in `__init__`, before `self._activate_current()`):
+
+```python
+    if self._shuffle and len(self._playlist) > 1:
+      random.shuffle(self._playlist)
+
+    self._activate_current()
+```
+
+Replace with:
+
+```python
+    self._playlist = self._sanitize_playlist(self.params.get('playlist', []))
+    if self._shuffle and len(self._playlist) > 1:
+      random.shuffle(self._playlist)
+
+    self._activate_current()
+```
 
 - [ ] **Step 2: Write tests**
 
@@ -283,6 +325,22 @@ class TestEmptyPlaylist:
     assert frame.sum() == 0  # all black
 
 
+class TestSanitization:
+  def test_init_strips_unknown_effect_names(self):
+    s = _make_switcher(playlist=['twinkle', 'nonexistent', 'fire'])
+    assert s._playlist == ['twinkle', 'fire']
+
+  def test_update_strips_unknown_effect_names(self):
+    s = _make_switcher(playlist=['twinkle'])
+    s.update_params({'playlist': ['fire', 'does_not_exist', 'plasma']})
+    assert s._playlist == ['fire', 'plasma']
+
+  def test_all_unknown_becomes_empty(self):
+    s = _make_switcher(playlist=['twinkle'])
+    s.update_params({'playlist': ['unknown_a', 'unknown_b']})
+    assert s._playlist == []
+
+
 class TestStatus:
   def test_get_switcher_status_shape(self):
     s = _make_switcher(playlist=['twinkle', 'fire'])
@@ -298,7 +356,7 @@ class TestStatus:
 
 Run: `cd /Users/jim/ai/pillar-controller/pi && source .venv/bin/activate && PYTHONPATH=. pytest tests/test_switcher.py -v`
 
-Expected: all 7 tests pass.
+Expected: all 10 tests pass.
 
 Then full suite:
 `PYTHONPATH=. pytest tests/ -x -q --ignore=tests/test_matrix_rain_perf.py --ignore=tests/test_migrations.py`
@@ -369,14 +427,179 @@ Add default-playlist injection AFTER the existing param resolution but BEFORE `r
             params_to_apply = base
 ```
 
-- [ ] **Step 3: Run tests**
+- [ ] **Step 3: Add route-level tests**
 
-Run: `cd /Users/jim/ai/pillar-controller/pi && source .venv/bin/activate && PYTHONPATH=. pytest tests/ -x -q --ignore=tests/test_matrix_rain_perf.py --ignore=tests/test_migrations.py`
+Append to `pi/tests/test_switcher.py`:
 
-- [ ] **Step 4: Commit**
+```python
+# --- Scenes route default-injection tests ---
+
+from fastapi.testclient import TestClient
+from app.api.server import create_app
+
+
+class StubRenderer:
+  def __init__(self):
+    self.current_effect = None
+    self.effect_registry = {}
+    self.activated = []
+
+  def activate_scene(self, name, params=None, media_manager=None):
+    self.activated.append((name, dict(params or {})))
+    self.current_effect = type('E', (), {'params': dict(params or {})})()
+    return True
+
+  def apply_output_plan(self, plan):
+    pass
+
+
+class StubRenderState:
+  current_scene = None
+  target_fps = 60
+  blackout = False
+  gamma = 2.2
+  actual_fps = 0.0
+  def to_dict(self):
+    return {}
+
+
+class StubTransport:
+  async def send_frame(self, b): return True
+  async def send_blackout(self, v): pass
+
+
+class StubStateManager:
+  def __init__(self):
+    self._effect_params = {}
+    self.current_scene = None
+    self.current_params = {}
+
+  def get_effect_params(self, name):
+    return dict(self._effect_params.get(name, {}))
+
+  def set_effect_params(self, name, params):
+    self._effect_params[name] = dict(params)
+
+  def get_full_state(self): return {}
+  def list_scenes(self): return {}
+
+
+# Minimal integration-style test: call the route handler directly
+import pytest as _pt
+
+
+@_pt.mark.asyncio
+async def test_first_activation_injects_default_playlist():
+  """First activation of animation_switcher without params should populate a default playlist."""
+  from app.api.routes.scenes import create_router
+  from app.effects.catalog import EffectCatalogService, EffectMeta
+
+  catalog = EffectCatalogService()
+  catalog._catalog['twinkle'] = EffectMeta(name='twinkle', label='Twinkle', group='generative', description='')
+  catalog._catalog['fire'] = EffectMeta(name='fire', label='Fire', group='generative', description='')
+  catalog._catalog['animation_switcher'] = EffectMeta(
+    name='animation_switcher', label='Animation Switcher', group='special', description=''
+  )
+
+  class Deps:
+    renderer = StubRenderer()
+    render_state = StubRenderState()
+    state_manager = StubStateManager()
+    effect_catalog = catalog
+    transport = StubTransport()
+
+  deps = Deps()
+  async def broadcast(): pass
+  def require_auth(): return None
+
+  router = create_router(deps, require_auth, broadcast)
+  # Find the activate handler
+  for route in router.routes:
+    if route.path == '/api/scenes/activate':
+      handler = route.endpoint
+      break
+
+  from app.api.schemas import SceneRequest
+  req = SceneRequest(effect='animation_switcher', params=None)
+  result = await handler(req)
+
+  assert result['status'] == 'ok'
+  injected = result['params'].get('playlist', [])
+  assert 'twinkle' in injected
+  assert 'fire' in injected
+  assert 'animation_switcher' not in injected
+  # Persistence check
+  saved = deps.state_manager.get_effect_params('animation_switcher')
+  assert saved.get('playlist') == injected
+
+
+@_pt.mark.asyncio
+async def test_explicit_empty_playlist_saves_empty():
+  """If caller explicitly sends playlist=[], it should NOT be re-injected with defaults."""
+  from app.api.routes.scenes import create_router
+  from app.effects.catalog import EffectCatalogService, EffectMeta
+
+  catalog = EffectCatalogService()
+  catalog._catalog['twinkle'] = EffectMeta(name='twinkle', label='Twinkle', group='generative', description='')
+  catalog._catalog['animation_switcher'] = EffectMeta(
+    name='animation_switcher', label='Animation Switcher', group='special', description=''
+  )
+
+  class Deps:
+    renderer = StubRenderer()
+    render_state = StubRenderState()
+    state_manager = StubStateManager()
+    effect_catalog = catalog
+    transport = StubTransport()
+
+  deps = Deps()
+  async def broadcast(): pass
+  def require_auth(): return None
+
+  router = create_router(deps, require_auth, broadcast)
+  for route in router.routes:
+    if route.path == '/api/scenes/activate':
+      handler = route.endpoint
+      break
+
+  from app.api.schemas import SceneRequest
+  req = SceneRequest(effect='animation_switcher', params={'playlist': [], 'interval': 10})
+  result = await handler(req)
+
+  assert result['params']['playlist'] == []
+  saved = deps.state_manager.get_effect_params('animation_switcher')
+  assert saved.get('playlist') == []
+```
+
+If `pytest-asyncio` isn't installed, skip these tests with a `@pytest.mark.skipif(not _has_asyncio(), ...)` guard or convert to synchronous using `asyncio.run`. To keep it simple, use `asyncio.run`:
+
+Replace the two test function headers:
+```python
+@_pt.mark.asyncio
+async def test_first_activation_injects_default_playlist():
+```
+with:
+```python
+def test_first_activation_injects_default_playlist():
+  import asyncio
+  asyncio.run(_first_activation_injects_default_playlist())
+
+async def _first_activation_injects_default_playlist():
+```
+(and similarly for the second test). Adjust indentation accordingly.
+
+- [ ] **Step 4: Run tests**
+
+Run: `cd /Users/jim/ai/pillar-controller/pi && source .venv/bin/activate && PYTHONPATH=. pytest tests/test_switcher.py -v`
+
+Expected: all 12 tests pass (10 unit + 2 route).
+
+Full suite: `PYTHONPATH=. pytest tests/ -x -q --ignore=tests/test_matrix_rain_perf.py --ignore=tests/test_migrations.py`
+
+- [ ] **Step 5: Commit**
 
 ```bash
-git add pi/app/api/routes/scenes.py
+git add pi/app/api/routes/scenes.py pi/tests/test_switcher.py
 git commit -m "feat: inject default playlist on first animation_switcher activation"
 ```
 
@@ -566,11 +789,22 @@ function classifyEffectForSwitcher(name, meta) {
   return 'other';
 }
 
+// Deterministic, shared comparator used for both display and persistence ordering
+const SWITCHER_COLLATOR = new Intl.Collator(undefined, { sensitivity: 'base' });
+
+function compareByLabel(aName, bName) {
+  const la = (effectsCatalog[aName]?.label || aName);
+  const lb = (effectsCatalog[bName]?.label || bName);
+  const cmp = SWITCHER_COLLATOR.compare(la, lb);
+  if (cmp !== 0) return cmp;
+  return aName.localeCompare(bName);  // stable tiebreaker on internal name
+}
+
 function renderSwitcherControls() {
   const wrap = document.getElementById('switcher-controls');
   if (!wrap || !effectsCatalog) return;
 
-  // Partition and sort alphabetically by label
+  // Partition and sort alphabetically by label (same comparator used for saving)
   const srEntries = [];
   const otherEntries = [];
   for (const [name, meta] of Object.entries(effectsCatalog)) {
@@ -578,9 +812,9 @@ function renderSwitcherControls() {
     if (section === 'sr') srEntries.push([name, meta]);
     else if (section === 'other') otherEntries.push([name, meta]);
   }
-  const byLabel = (a, b) => (a[1].label || a[0]).localeCompare(b[1].label || b[0]);
-  srEntries.sort(byLabel);
-  otherEntries.sort(byLabel);
+  const byName = (a, b) => compareByLabel(a[0], b[0]);
+  srEntries.sort(byName);
+  otherEntries.sort(byName);
 
   const build = (container, entries) => {
     container.innerHTML = '';
@@ -638,12 +872,8 @@ function scheduleSwitcherSave() {
   clearTimeout(switcherSaveDebounce);
   switcherSaveDebounce = setTimeout(() => {
     if (activeEffectName !== 'animation_switcher') return;
-    // Sort playlist alphabetically by display label so rotation order matches what user sees
-    const playlist = Array.from(switcherSelectedEffects).sort((a, b) => {
-      const la = (effectsCatalog[a]?.label || a).toLowerCase();
-      const lb = (effectsCatalog[b]?.label || b).toLowerCase();
-      return la.localeCompare(lb);
-    });
+    // Use the same deterministic comparator used for display order
+    const playlist = Array.from(switcherSelectedEffects).sort(compareByLabel);
     const params = { ...currentEffectParams, playlist };
     currentEffectParams = params;
     api('POST', '/api/scenes/activate', { effect: 'animation_switcher', params });
@@ -660,13 +890,8 @@ async function pollSwitcherStatus() {
   const currentLabel = (effectsCatalog && effectsCatalog[current])
     ? effectsCatalog[current].label : current;
   const remaining = Math.round(status.time_remaining || 0);
-  if (status.phase === 'fading') {
-    const nextLabel = (effectsCatalog && effectsCatalog[status.next])
-      ? effectsCatalog[status.next].label : status.next;
-    el.textContent = `Crossfading ${currentLabel} → ${nextLabel}`;
-  } else {
-    el.textContent = `Now playing: ${currentLabel} — switching in ${remaining}s`;
-  }
+  // Single-line format matching spec: "Now playing: X — switching in Ns"
+  el.textContent = `Now playing: ${currentLabel || '(none)'} — switching in ${remaining}s`;
 }
 
 function startSwitcherStatusPolling() {

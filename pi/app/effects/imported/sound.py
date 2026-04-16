@@ -87,7 +87,7 @@ class Spectrum(Effect):
   with peak hold and rainbow cascade on drop."""
 
   CATEGORY = "sound"
-  DISPLAY_NAME = "Spectrum"
+  DISPLAY_NAME = "SR Spectrum"
   DESCRIPTION = "FFT spectrum analyzer with peak hold and drop cascade"
   PALETTE_SUPPORT = True
 
@@ -181,7 +181,7 @@ class VUMeter(Effect):
   """Full-width VU meter with breakdown breathing and drop flash."""
 
   CATEGORY = "sound"
-  DISPLAY_NAME = "VU Meter"
+  DISPLAY_NAME = "SR VU Meter"
   DESCRIPTION = "Full-width volume meter with breakdown pulse and drop flash"
   PALETTE_SUPPORT = True
 
@@ -264,7 +264,7 @@ class BeatPulse(Effect):
   """Full-matrix beat-driven pulse with drop strobe and breakdown dim."""
 
   CATEGORY = "sound"
-  DISPLAY_NAME = "Beat Pulse"
+  DISPLAY_NAME = "SR Beat Pulse"
   DESCRIPTION = "Beat-synced pulse with drop strobe burst and breakdown dim"
   PALETTE_SUPPORT = True
 
@@ -351,7 +351,7 @@ class BassFire(Effect):
   heat convection, embers, and audio-driven fuel injection."""
 
   CATEGORY = "sound"
-  DISPLAY_NAME = "Bass Fire"
+  DISPLAY_NAME = "SR Bass Fire"
   DESCRIPTION = "Audio-reactive fire with beat flares and phrase explosions"
   PALETTE_SUPPORT = False
 
@@ -662,7 +662,7 @@ class SoundRipples(Effect):
   Uses persistent buffer (fade) for trails."""
 
   CATEGORY = "sound"
-  DISPLAY_NAME = "Sound Ripples"
+  DISPLAY_NAME = "SR Sound Ripples"
   DESCRIPTION = "Beat-tracked expanding ripples with frequency-mapped origins"
   PALETTE_SUPPORT = True
 
@@ -799,7 +799,7 @@ class Spectrogram(Effect):
   scrolling upward over time."""
 
   CATEGORY = "sound"
-  DISPLAY_NAME = "Spectrogram"
+  DISPLAY_NAME = "SR Spectrogram"
   DESCRIPTION = "Scrolling FFT spectrogram with drop flash lines"
   PALETTE_SUPPORT = True
 
@@ -891,7 +891,7 @@ class SoundWorm(Effect):
   multiple rainbow worms."""
 
   CATEGORY = "sound"
-  DISPLAY_NAME = "Sound Worm"
+  DISPLAY_NAME = "SR Sound Worm"
   DESCRIPTION = "Audio-driven sine worm with drop split and rainbow trails"
   PALETTE_SUPPORT = True
 
@@ -983,7 +983,7 @@ class ParticleBurst(Effect):
   Uses persistent buffer (fade) for trails."""
 
   CATEGORY = "sound"
-  DISPLAY_NAME = "Particle Burst"
+  DISPLAY_NAME = "SR Particle Burst"
   DESCRIPTION = "Beat-triggered particle explosions with drop fireworks"
   PALETTE_SUPPORT = True
 
@@ -1095,7 +1095,7 @@ class SoundPlasma(Effect):
   Drop boosts speed dramatically; breakdown dims and slows."""
 
   CATEGORY = "sound"
-  DISPLAY_NAME = "Sound Plasma"
+  DISPLAY_NAME = "SR Sound Plasma"
   DESCRIPTION = "Audio-reactive plasma with volume-driven speed and drop boost"
   PALETTE_SUPPORT = True
 
@@ -1184,7 +1184,7 @@ class StrobeChaos(Effect):
   rapid rainbow strobe and breakdown flicker."""
 
   CATEGORY = "sound"
-  DISPLAY_NAME = "Strobe Chaos"
+  DISPLAY_NAME = "SR Strobe Chaos"
   DESCRIPTION = "Beat-triggered segment strobe with drop rainbow burst"
   PALETTE_SUPPORT = True
 
