@@ -810,45 +810,74 @@ input:focus-visible {
   margin-top: 8px;
 }
 
-/* Channel config table */
-#channel-table {
+/* Strip mapping table */
+#strip-table {
   width: 100%;
   border-collapse: collapse;
   margin-top: 12px;
 }
 
-#channel-table th {
+#strip-table th {
   text-align: left;
-  padding: 8px;
-  font-size: 12px;
+  padding: 6px 4px;
+  font-size: 11px;
   color: var(--text-dim);
   border-bottom: 1px solid var(--border);
 }
 
-#channel-table td {
-  padding: 6px 8px;
+#strip-table td {
+  padding: 4px;
   border-bottom: 1px solid var(--border);
 }
 
-#channel-table tr.unused td {
-  opacity: 0.4;
-}
-
-#channel-table select,
-#channel-table input[type="number"] {
+#strip-table select,
+#strip-table input[type="number"] {
   width: 100%;
-  padding: 8px;
+  padding: 6px;
   background: var(--surface2);
   border: 1px solid var(--border);
   border-radius: 6px;
   color: var(--text);
+  font-size: 13px;
+}
+
+#strip-table input[type="number"] {
+  width: 70px;
+}
+
+#strip-table .strip-id {
+  font-weight: bold;
+  text-align: center;
   font-size: 14px;
 }
 
-#channel-table .ch-label {
-  font-weight: bold;
-  font-size: 16px;
-  text-align: center;
+#strip-table .strip-actions {
+  display: flex;
+  gap: 4px;
+}
+
+#strip-table .strip-actions button {
+  padding: 4px 8px;
+  font-size: 11px;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  background: var(--surface2);
+  color: var(--text);
+  cursor: pointer;
+}
+
+#strip-table .strip-actions .test-btn {
+  color: var(--accent);
+  border-color: var(--accent);
+}
+
+#strip-table .strip-actions .del-btn {
+  color: var(--danger);
+  border-color: var(--danger);
+}
+
+#add-strip-btn {
+  margin-top: 12px;
 }
 
 .status-msg {

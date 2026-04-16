@@ -285,22 +285,27 @@
                 <span class="help-icon">?</span> How to use this page
               </button>
               <div class="help-content" hidden>
-                <p>Configure your OctoWS2811 output channels.</p>
-                <p>Each channel can drive up to 1100 LEDs. Set the color order to match your LED strips (usually BGR for WS2812B). Set LED count to 0 for unused channels. Changes apply immediately.</p>
+                <p>Map LED strips to OctoWS2811 output channels.</p>
+                <p>Each strip is placed on a channel at an LED offset. Set direction to match wiring (bottom-to-top or top-to-bottom). Color order must match your LED chipset (usually BGR for WS2812B). Use the Test button to light up a strip for identification. Changes apply immediately.</p>
               </div>
             </div>
-            <h3>Channel Configuration</h3>
-            <div id="channel-status" class="status-msg"></div>
-            <table id="channel-table">
+            <h3>Strip Mapping</h3>
+            <div id="strip-status" class="status-msg"></div>
+            <table id="strip-table">
               <thead>
                 <tr>
+                  <th>#</th>
                   <th>Ch</th>
-                  <th>Color Order</th>
-                  <th>LED Count</th>
+                  <th>Offset</th>
+                  <th>Dir</th>
+                  <th>LEDs</th>
+                  <th>Color</th>
+                  <th></th>
                 </tr>
               </thead>
-              <tbody id="channel-rows"></tbody>
+              <tbody id="strip-rows"></tbody>
             </table>
+            <button id="add-strip-btn" class="action-btn secondary">Add Strip</button>
           </div>
 
           <!-- Admin section -->

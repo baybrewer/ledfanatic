@@ -719,7 +719,7 @@ function initSystem() {
         section.classList.remove('hidden');
         section.classList.add('active');
       }
-      if (btn.dataset.section === 'system-setup') loadChannelConfig();
+      if (btn.dataset.section === 'system-setup') loadStripConfig();
     });
   });
 
@@ -728,75 +728,110 @@ function initSystem() {
 
 // --- Setup ---
 
-async function loadChannelConfig() {
-  const data = await api('GET', '/api/setup/channels');
-  if (!data || !data.channels) return;
+async function loadStripConfig() {
+  const data = await api('GET', '/api/setup/strips');
+  if (!data || !data.strips) return;
+  renderStripTable(data.strips);
+}
 
-  const tbody = document.getElementById('channel-rows');
+function renderStripTable(strips) {
+  const tbody = document.getElementById('strip-rows');
   tbody.innerHTML = '';
 
   const colorOrders = ['RGB','RBG','GRB','GBR','BRG','BGR'];
+  const directions = [
+    { value: 'bottom_to_top', label: '\u2191 Up' },
+    { value: 'top_to_bottom', label: '\u2193 Down' },
+  ];
 
-  for (const ch of data.channels) {
+  for (const s of strips) {
     const tr = document.createElement('tr');
-    if (ch.led_count === 0) tr.className = 'unused';
-    tr.dataset.channel = ch.channel;
+    tr.dataset.stripId = s.id;
 
     const colorOpts = colorOrders.map(o =>
-      `<option value="${o}" ${o === ch.color_order ? 'selected' : ''}>${o}</option>`
+      `<option value="${o}" ${o === s.color_order ? 'selected' : ''}>${o}</option>`
+    ).join('');
+
+    const dirOpts = directions.map(d =>
+      `<option value="${d.value}" ${d.value === s.direction ? 'selected' : ''}>${d.label}</option>`
     ).join('');
 
     tr.innerHTML = `
-      <td class="ch-label">${ch.channel}</td>
-      <td><select data-channel="${ch.channel}" data-field="color_order">${colorOpts}</select></td>
-      <td><input type="number" data-channel="${ch.channel}" data-field="led_count" value="${ch.led_count}" min="0" max="1100" step="1"></td>
+      <td class="strip-id">${s.id}</td>
+      <td><input type="number" data-strip="${s.id}" data-field="channel" value="${s.channel}" min="0" max="7" step="1"></td>
+      <td><input type="number" data-strip="${s.id}" data-field="offset" value="${s.offset}" min="0" max="1100" step="1"></td>
+      <td><select data-strip="${s.id}" data-field="direction">${dirOpts}</select></td>
+      <td><input type="number" data-strip="${s.id}" data-field="led_count" value="${s.led_count}" min="1" max="1100" step="1"></td>
+      <td><select data-strip="${s.id}" data-field="color_order">${colorOpts}</select></td>
+      <td class="strip-actions">
+        <button class="test-btn" data-strip="${s.id}">Test</button>
+        <button class="del-btn" data-strip="${s.id}">\u2715</button>
+      </td>
     `;
     tbody.appendChild(tr);
   }
 
-  // Attach change handlers
-  tbody.querySelectorAll('select, input').forEach(el => {
+  tbody.querySelectorAll('select, input[type="number"]').forEach(el => {
     let debounce = null;
     el.addEventListener('input', () => {
       clearTimeout(debounce);
-      debounce = setTimeout(() => updateChannel(el), 200);
+      debounce = setTimeout(() => updateStrip(el), 300);
     });
     el.addEventListener('change', () => {
       clearTimeout(debounce);
-      updateChannel(el);
+      updateStrip(el);
+    });
+  });
+
+  tbody.querySelectorAll('.test-btn').forEach(btn => {
+    btn.addEventListener('click', () => {
+      api('POST', `/api/setup/strips/${btn.dataset.strip}/test`);
+      showStripStatus(`Testing strip ${btn.dataset.strip}...`);
+    });
+  });
+
+  tbody.querySelectorAll('.del-btn').forEach(btn => {
+    btn.addEventListener('click', async () => {
+      const result = await api('DELETE', `/api/setup/strips/${btn.dataset.strip}`);
+      if (result && result.strips) {
+        renderStripTable(result.strips);
+        showStripStatus('Strip removed');
+      }
     });
   });
 }
 
-async function updateChannel(el) {
-  const ch = parseInt(el.dataset.channel);
+async function updateStrip(el) {
+  const stripId = parseInt(el.dataset.strip);
   const field = el.dataset.field;
-  const value = field === 'led_count' ? parseInt(el.value) : el.value;
+  const value = (el.type === 'number') ? parseInt(el.value) : el.value;
 
   const body = {};
   body[field] = value;
 
-  const status = document.getElementById('channel-status');
-  const result = await api('POST', `/api/setup/channels/${ch}`, body);
+  const result = await api('POST', `/api/setup/strips/${stripId}`, body);
   if (result && result.status === 'ok') {
-    status.textContent = `Channel ${ch} updated`;
-    status.className = 'status-msg';
-    // Update unused styling
-    const row = el.closest('tr');
-    if (row) {
-      const ledInput = row.querySelector('[data-field="led_count"]');
-      const count = ledInput ? parseInt(ledInput.value) : 0;
-      row.classList.toggle('unused', count === 0);
-    }
-    setTimeout(() => { status.textContent = ''; }, 2000);
+    showStripStatus(`Strip ${stripId} updated`);
   } else {
-    status.textContent = 'Error saving channel config';
-    status.className = 'status-msg error';
+    showStripStatus('Error updating strip', true);
   }
 }
 
+function showStripStatus(msg, isError = false) {
+  const el = document.getElementById('strip-status');
+  el.textContent = msg;
+  el.className = isError ? 'status-msg error' : 'status-msg';
+  setTimeout(() => { el.textContent = ''; }, 3000);
+}
+
 function initSetup() {
-  // Channel config loaded on demand when setup section becomes visible
+  document.getElementById('add-strip-btn').addEventListener('click', async () => {
+    const result = await api('POST', '/api/setup/strips', {});
+    if (result && result.strips) {
+      renderStripTable(result.strips);
+      showStripStatus('Strip added');
+    }
+  });
 }
 
 // --- Brightness ---
