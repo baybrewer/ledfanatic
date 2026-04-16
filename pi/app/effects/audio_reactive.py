@@ -87,25 +87,65 @@ class BeatFlash(Effect):
 
 
 class EnergyRing(Effect):
-  """Rotating energy ring driven by audio."""
+  """Horizontal ring that sweeps vertically. Ring thickness varies around
+  the cylinder based on the 16-bin FFT spectrum resampled to 10 bands —
+  loud frequencies produce a thicker ring segment at that column."""
+
+  def _resample_16_to_10(self, spectrum):
+    """Resample 16-bin spectrum to 10 bands via mean pooling."""
+    if spectrum is None:
+      return np.zeros(10, dtype=np.float32)
+    src = np.asarray(spectrum, dtype=np.float32)
+    if len(src) != 16:
+      return np.zeros(10, dtype=np.float32)
+    out = np.zeros(10, dtype=np.float32)
+    ratio = 16 / 10  # 1.6
+    for i in range(10):
+      lo = i * ratio
+      hi = (i + 1) * ratio
+      lo_i = int(lo)
+      hi_i = min(int(hi) + 1, 16)
+      out[i] = float(np.mean(src[lo_i:hi_i])) if hi_i > lo_i else 0.0
+    return out
 
   def render(self, t: float, state) -> np.ndarray:
     elapsed = self.elapsed(t)
     speed = self.params.get('speed', 2.0)
+    gain = self.params.get('gain', 1.0)
     frame = np.zeros((self.width, self.height, 3), dtype=np.uint8)
 
-    # Ring position driven by audio + time
-    ring_y = int((elapsed * speed * 10 + state.audio_level * 50) % self.height)
-    ring_width = max(2, int(state.audio_level * 20))
+    # Ring sweep position (no longer audio-modulated — avoids stutter)
+    ring_y = int(elapsed * speed * 10) % self.height
 
-    for y in range(self.height):
-      dist = min(abs(y - ring_y), self.height - abs(y - ring_y))
-      if dist < ring_width:
-        fade = 1.0 - dist / ring_width
-        for x in range(self.width):
-          hue = (x / self.width + elapsed * 0.1) % 1.0
-          r, g, b = hsv_to_rgb(hue, 1.0, fade)
-          frame[x, y] = (r, g, b)
+    # Per-column thickness from 10-band spectrum
+    spectrum = getattr(state, 'audio_spectrum', None)
+    bands_10 = self._resample_16_to_10(spectrum)
+    col_widths = np.maximum(1, (bands_10 * 30 * gain).astype(np.int32))
+
+    # Toroidal distance from ring_y for every row
+    y_coords = np.arange(self.height, dtype=np.int32)
+    d1 = np.abs(y_coords - ring_y)
+    d2 = self.height - d1
+    dists = np.minimum(d1, d2)
+
+    # Per-column hue (drifts over time)
+    hue_col = (np.arange(self.width, dtype=np.float64) / self.width + elapsed * 0.1) % 1.0
+
+    # For each column, compute fade where dist < width
+    for x in range(self.width):
+      w = int(col_widths[x])
+      if w <= 0:
+        continue
+      within = dists < w
+      if not np.any(within):
+        continue
+      fades = 1.0 - dists[within].astype(np.float64) / w
+      ys = y_coords[within]
+      # One RGB per column, modulated by fade per pixel
+      base_rgb = _hsv_array_to_rgb(np.array([hue_col[x]]), 1.0, 1.0)[0]  # (3,) uint8
+      for i, y in enumerate(ys):
+        f = fades[i]
+        frame[x, y] = (int(base_rgb[0] * f), int(base_rgb[1] * f), int(base_rgb[2] * f))
 
     return frame
 
