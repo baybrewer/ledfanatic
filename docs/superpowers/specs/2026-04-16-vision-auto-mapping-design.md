@@ -115,8 +115,9 @@ The scan uses a dedicated `ScanEffect` (a standard effect class with `render()`)
 **Scene ownership:** On scan start, the mapper snapshots:
 - `renderer.state.current_scene` (scene name string, e.g. `"rainbow"` or `"media:clip1"`)
 - The saved params for that scene from `state_manager.get_effect_params(scene_name)`
+- `renderer.state.blackout` (bool)
 
-On scan end (complete or abort), it restores via `renderer.activate_scene(saved_name, saved_params, media_manager=deps.media_manager)`. This handles both generative and media scenes (the `media_manager` kwarg is required for `media:` prefixed scenes per `renderer.py:178-198`). If no scene was active (`current_scene` is None), it sets blackout.
+The scan forces `renderer.state.blackout = False` so probe LEDs are actually visible. On scan end (complete or abort), it restores all three: `renderer.activate_scene(saved_name, saved_params, media_manager=deps.media_manager)` then `renderer.state.blackout = saved_blackout`. This handles both generative and media scenes (the `media_manager` kwarg is required for `media:` prefixed scenes per `renderer.py:178-198`). If no scene was active (`current_scene` is None), it sets blackout back to `saved_blackout`.
 
 **Concurrency guard:** Only one scan session at a time. The `/start` endpoint checks for an active session and aborts it before starting a new one. The scan task runs as a background `asyncio.Task` — cancellation via `/stop` triggers cleanup.
 
@@ -164,23 +165,24 @@ SpatialMap:
   profile_id: "auto_map"
   coordinate_space: "front_projection_uv"
   camera_resolution: [W, H]  # from stream
-  visible_strips: [0, 1, 3, 5, ...]  # strips visible from this angle
+  visible_strips: [0, 1, 3, 5, ...]  # union of all strips mapped across all accepted scans
   bounds: {x_min, x_max, y_min, y_max}
   strips: [StripGeometry, ...]
 
 StripGeometry:
   id: int  # matches StripMapping.id
   anchors: [[x,y], ...]  # 5 evenly-spaced anchor points (0%, 25%, 50%, 75%, 100%)
-  positions: [[x,y], ...]  # all LED positions (sampled + interpolated), normalized [0,1]
+  positions: [[x,y], ...]  # ALWAYS full strip length (led_count entries), indexed by absolute LED index
   fit_method: "auto_map_v1"
   visibility: "direct" | "partial"  # partial if some LEDs wrap behind cylinder
 ```
 
 **Populating from scan data:**
-- `anchors` — pick 5 evenly-spaced samples from the Phase 3 position data (LED indices at 0%, 25%, 50%, 75%, 100% of visible range)
-- `positions` — all sampled positions + linearly interpolated positions for LEDs between samples, normalized to image-space UV: `x_uv = x_px / frame_width`, `y_uv = 1.0 - (y_px / frame_height)` (bottom-left origin). This uses the camera resolution as the stable coordinate frame, NOT a per-scan bounding box — ensuring coordinates remain comparable across scan angles. The `bounds` field is computed as metadata (min/max of all strip positions) but is not used for normalization.
-- `visibility` — "direct" if all LEDs on the strip were visible, "partial" if gaps exist
-- Multi-angle merge: when re-scanning, a strip with more visible LEDs or higher average confidence replaces the existing entry
+- `positions` — ALWAYS a full-length array of `led_count` entries, indexed by absolute LED index (0 through led_count-1). Observed positions are stored as `[x_uv, y_uv]` in image-space UV: `x_uv = x_px / frame_width`, `y_uv = 1.0 - (y_px / frame_height)` (bottom-left origin). Unobserved LEDs (not visible from any scan angle yet) are stored as `null`. This uses the camera resolution as the stable coordinate frame, NOT a per-scan bounding box — ensuring coordinates remain comparable across scan angles. The `bounds` field is computed as metadata (min/max of all non-null strip positions) but is not used for normalization.
+- `anchors` — pick 5 evenly-spaced samples from the observed (non-null) positions (at 0%, 25%, 50%, 75%, 100% of the observed range)
+- `visibility` — "direct" if all LEDs on the strip have non-null positions, "partial" if any are still null
+- `visible_strips` — the union of all strip IDs that have at least one non-null position, accumulated across all accepted scans
+- Multi-angle merge: when re-scanning, newly observed positions fill in null entries; already-observed positions are updated only if the new observation has higher confidence
 
 Feeds into existing `SpatialMap` for front-projection effects.
 
