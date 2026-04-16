@@ -501,10 +501,16 @@ const BAND_COLORS = [
 function renderSpectrum() {
   const canvas = document.getElementById('spectrum-canvas');
   if (!canvas) return;
+
+  // Skip rendering when canvas is hidden (display:none → zero rect)
+  const rect = canvas.getBoundingClientRect();
+  if (rect.width < 10) {
+    spectrumAnimId = requestAnimationFrame(renderSpectrum);
+    return;
+  }
+
   const ctx = canvas.getContext('2d');
   const dpr = window.devicePixelRatio || 1;
-
-  const rect = canvas.getBoundingClientRect();
   canvas.width = rect.width * dpr;
   canvas.height = rect.height * dpr;
   ctx.scale(dpr, dpr);
