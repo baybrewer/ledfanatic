@@ -148,7 +148,7 @@ class Twinkle(Effect):
   def render(self, t: float, state) -> np.ndarray:
     elapsed = self.elapsed(t)
     speed = self.params.get('speed', 1.0)
-    density = self.params.get('density', 0.05)
+    density = self.params.get('density', 0.005)
     darkness = self.params.get('darkness', 0.0)
     pal_idx = _get_palette_idx(self.params)
 
