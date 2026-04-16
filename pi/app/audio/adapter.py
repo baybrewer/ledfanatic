@@ -73,6 +73,7 @@ class AudioCompatAdapter:
     high = repo_snapshot.get('high', 0.0)
     beat = repo_snapshot.get('beat', False)
     bpm = repo_snapshot.get('bpm', 0.0) or 120.0
+    spectrum = repo_snapshot.get('spectrum', None)
 
     # Track beats
     if beat:
@@ -151,8 +152,11 @@ class AudioCompatAdapter:
     # breakdown: True only during actual BREAKDOWN state (after buildup, before drop)
     is_breakdown = (self._drop_state == 'BREAKDOWN')
 
-    # Bands: expand 3-band to 10-band via interpolation
-    bands = self._expand_bands(bass, mid, high)
+    # Bands: resample 16-bin spectrum to 10 bands, or fall back to 3-band expansion
+    if spectrum is not None and len(spectrum) == 16:
+      bands = self._resample_spectrum(spectrum)
+    else:
+      bands = self._expand_bands(bass, mid, high)
 
     return AudioSnapshot(
       volume=level,
@@ -176,6 +180,22 @@ class AudioCompatAdapter:
       time_s=t,
       _time=t,
     )
+
+  def _resample_spectrum(self, spectrum) -> np.ndarray:
+    """Resample 16-bin spectrum → 10-band array for Spectrum effect.
+
+    Each output band averages a 1.6-wide window of source bins.
+    """
+    src = np.asarray(spectrum, dtype=np.float32)
+    out = np.zeros(NUM_BANDS, dtype=np.float32)
+    ratio = len(src) / NUM_BANDS  # 1.6
+    for i in range(NUM_BANDS):
+      lo = i * ratio
+      hi = (i + 1) * ratio
+      lo_i = int(lo)
+      hi_i = min(int(hi) + 1, len(src))
+      out[i] = float(np.mean(src[lo_i:hi_i])) if hi_i > lo_i else 0.0
+    return out
 
   def _expand_bands(self, bass: float, mid: float, high: float) -> np.ndarray:
     """Expand 3 bands to 10 via cosine interpolation."""
