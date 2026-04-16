@@ -250,7 +250,144 @@ class SRLavaLamp(Effect):
     return max(0.0, dt)
 
 
+# ═══════════════════════════════════════════════════════════════════
+#  SR MATRIX RAIN
+# ═══════════════════════════════════════════════════════════════════
+
+class SRMatrixRain(Effect):
+  """Sound-reactive Matrix Rain: bass multiplies drop speed, beat spikes
+  spawn density, buildup lengthens trails."""
+
+  CATEGORY = "sound"
+  DISPLAY_NAME = "SR Matrix Rain"
+  DESCRIPTION = "Audio-reactive digital rain — bass speed, beat burst, buildup trails"
+  PALETTE_SUPPORT = True
+  NATIVE_WIDTH = 10
+
+  PARAMS = [
+    _Param("Gain", "gain", 0.2, 5.0, 0.1, 1.0),
+    _Param("Speed", "speed", 0.2, 4.0, 0.1, 1.0),
+    _Param("Density", "density", 0.1, 1.0, 0.05, 0.4),
+    _Param("Trail", "trail", 5, 60, 1, 25),
+  ]
+  _SCALAR_PARAMS = {"gain": 1.0, "speed": 1.0, "density": 0.4, "trail": 25, "palette": 3}
+
+  _MAX_DROPS = 200
+
+  def __init__(self, width=10, height=N, params=None):
+    super().__init__(width, height, params)
+    if "palette" not in self.params:
+      self.params["palette"] = 3
+    self._audio_adapter = AudioCompatAdapter()
+    self.buf = LEDBuffer(width, height)
+    self._last_t = None
+
+    cap = self._MAX_DROPS
+    self._drop_x = np.zeros(cap, dtype=np.int32)
+    self._drop_y = np.zeros(cap, dtype=np.float64)
+    self._drop_speed = np.zeros(cap, dtype=np.float64)
+    self._drop_bright = np.zeros(cap, dtype=np.float64)
+    self._active_mask = np.zeros(cap, dtype=np.bool_)
+
+  def render(self, t, state):
+    dt_ms = self._calc_dt_ms(t)
+    dt = dt_ms * 0.001
+    raw = state._audio_lock_free
+    audio = self._audio_adapter.adapt(raw, t)
+
+    gain = self.params.get("gain", 1.0)
+    base_speed = self.params.get("speed", 1.0)
+    base_density = self.params.get("density", 0.4)
+    base_trail = int(self.params.get("trail", 25))
+    pal_idx = _get_pal_idx(self.params, default=3)
+
+    # Audio modulations
+    speed = base_speed * (1.0 + audio.bass * gain * 2.0)
+    trail = int(min(60, base_trail * (1.0 + audio.buildup * gain)))
+    density = base_density * (3.0 if audio.beat else 1.0)
+
+    cols = self.width
+    rows = self.height
+
+    self.buf.clear()
+
+    # Spawn new drops
+    for x in range(cols):
+      if random.random() < density * dt * 3:
+        slot = self._find_free_slot()
+        if slot < 0:
+          continue
+        r = random.random()
+        if r < 0.5:
+          spd = random.uniform(6, 20)
+        elif r < 0.85:
+          spd = random.uniform(20, 50)
+        else:
+          spd = random.uniform(50, 90)
+        self._drop_x[slot] = x
+        self._drop_y[slot] = -1.0
+        self._drop_speed[slot] = spd * speed
+        self._drop_bright[slot] = random.uniform(0.5, 1.0)
+        self._active_mask[slot] = True
+
+    # Update positions
+    active = self._active_mask
+    self._drop_y[active] += self._drop_speed[active] * dt
+
+    # Cull dead drops
+    heads = self._drop_y.astype(np.int32)
+    dead = active & ((heads - trail) >= rows)
+    self._active_mask[dead] = False
+
+    # Draw trails
+    fade_lut = np.arange(trail, dtype=np.float64)
+    fade_factors = (1.0 - fade_lut / trail) ** 1.5
+    pal_colors = pal_color_grid(pal_idx, fade_factors).astype(np.float64)
+
+    active_indices = np.where(self._active_mask)[0]
+    n_active = len(active_indices)
+    if n_active > 0:
+      a_heads = self._drop_y[active_indices].astype(np.int32)
+      a_brights = self._drop_bright[active_indices]
+      a_xs = self._drop_x[active_indices]
+      trail_offsets = np.arange(trail, dtype=np.int32)
+
+      py_grid = a_heads[:, np.newaxis] - trail_offsets[np.newaxis, :]
+      valid = (py_grid >= 0) & (py_grid < rows)
+      bright_grid = fade_factors[np.newaxis, :] * a_brights[:, np.newaxis]
+      rgb_grid = (pal_colors[np.newaxis, :, :] * bright_grid[:, :, np.newaxis]).astype(np.int32)
+
+      drop_idx, trail_idx = np.where(valid)
+      xs = a_xs[drop_idx]
+      ys = py_grid[drop_idx, trail_idx]
+      rgbs = rgb_grid[drop_idx, trail_idx]
+
+      buf16 = self.buf.data.astype(np.uint16)
+      np.add.at(buf16, (xs, ys, 0), rgbs[:, 0].astype(np.uint16))
+      np.add.at(buf16, (xs, ys, 1), rgbs[:, 1].astype(np.uint16))
+      np.add.at(buf16, (xs, ys, 2), rgbs[:, 2].astype(np.uint16))
+      np.clip(buf16, 0, 255, out=buf16)
+      self.buf.data[:] = buf16.astype(np.uint8)
+
+    return self.buf.get_frame()
+
+  def _find_free_slot(self):
+    inactive = np.where(~self._active_mask)[0]
+    if len(inactive) == 0:
+      return -1
+    return int(inactive[0])
+
+  def _calc_dt_ms(self, t):
+    if self._last_t is None:
+      self._last_t = t
+      return 16.67
+    dt = (t - self._last_t) * 1000.0
+    self._last_t = t
+    return max(0.0, dt)
+
+
 SOUND_VARIANTS_EFFECTS = {
   'sr_feldstein': SRFeldstein,
   'sr_lava_lamp': SRLavaLamp,
+  'sr_matrix_rain': SRMatrixRain,
 }
