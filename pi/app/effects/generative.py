@@ -7,8 +7,19 @@ import numpy as np
 from typing import Optional
 
 from .base import Effect, hsv_to_rgb, hex_to_rgb, palette_sample, lerp_color
-from .engine.palettes import pal_color_grid, NUM_PALETTES
+from .engine.palettes import pal_color_grid, NUM_PALETTES, PALETTE_NAMES
 from ..mapping.cylinder import N
+
+
+def _get_palette_idx(params: dict, default: int = 0) -> int:
+  """Get palette index from params, handling string names or int values."""
+  val = params.get('palette', default)
+  if isinstance(val, str):
+    try:
+      return PALETTE_NAMES.index(val) % NUM_PALETTES
+    except ValueError:
+      return default % NUM_PALETTES
+  return int(val) % NUM_PALETTES
 
 
 def _hsv_array_to_rgb(h: np.ndarray, s: float, v: float) -> np.ndarray:
@@ -54,12 +65,12 @@ class SolidColor(Effect):
         color = hex_to_rgb(color_hex)
       else:
         hue = self.params.get('hue', 0.0)
-        pal_idx = self.params.get('palette', 0) % NUM_PALETTES
+        pal_idx = _get_palette_idx(self.params)
         color = tuple(pal_color_grid(pal_idx, np.array([hue]))[0])
       frame[:, :] = color
     else:
       # Fade-cycle mode — smoothly cycle through palette
-      pal_idx = self.params.get('palette', 0) % NUM_PALETTES
+      pal_idx = _get_palette_idx(self.params)
       pos = (elapsed * speed * 0.05) % 1.0
       color = pal_color_grid(pal_idx, np.array([pos]))[0]
       frame[:, :] = color
@@ -73,7 +84,7 @@ class VerticalGradient(Effect):
   def render(self, t: float, state) -> np.ndarray:
     elapsed = self.elapsed(t)
     speed = self.params.get('speed', 0.05)
-    pal_idx = self.params.get('palette', 0) % NUM_PALETTES
+    pal_idx = _get_palette_idx(self.params)
 
     ys = np.arange(self.height, dtype=np.float64) / self.height
     pos = (ys + elapsed * speed) % 1.0  # (height,)
@@ -90,7 +101,7 @@ class RainbowRotate(Effect):
     elapsed = self.elapsed(t)
     speed = self.params.get('speed', 1.0)
     scale = self.params.get('scale', 1.0)
-    pal_idx = self.params.get('palette', 0) % NUM_PALETTES
+    pal_idx = _get_palette_idx(self.params)
 
     xs = np.arange(self.width, dtype=np.float64) / self.width * scale
     ys = np.arange(self.height, dtype=np.float64) / self.height * 0.3
@@ -107,7 +118,7 @@ class Plasma(Effect):
     elapsed = self.elapsed(t)
     speed = self.params.get('speed', 1.0)
     scale = self.params.get('scale', 2.0)
-    pal_idx = self.params.get('palette', 0) % NUM_PALETTES
+    pal_idx = _get_palette_idx(self.params)
 
     tt = elapsed * speed
 
@@ -139,7 +150,7 @@ class Twinkle(Effect):
     speed = self.params.get('speed', 1.0)
     density = self.params.get('density', 0.05)
     darkness = self.params.get('darkness', 0.0)
-    pal_idx = self.params.get('palette', 0) % NUM_PALETTES
+    pal_idx = _get_palette_idx(self.params)
 
     # Each star twinkles at its own rate — no global phase shift
     brightness = (np.sin(self._stars * 3.0 + self._stars * elapsed * speed * 0.5) + 1.0) / 2.0
@@ -173,7 +184,7 @@ class Spark(Effect):
     speed = self.params.get('speed', 2.0)
     rate = self.params.get('rate', 10)
     brightness = self.params.get('brightness', 1.0)
-    pal_idx = self.params.get('palette', 0) % NUM_PALETTES
+    pal_idx = _get_palette_idx(self.params)
     frame = np.zeros((self.width, self.height, 3), dtype=np.uint8)
 
     # Spawn new sparks
@@ -221,7 +232,7 @@ class NoiseWash(Effect):
     elapsed = self.elapsed(t)
     speed = self.params.get('speed', 0.5)
     scale = self.params.get('scale', 3.0)
-    pal_idx = self.params.get('palette', 0) % NUM_PALETTES
+    pal_idx = _get_palette_idx(self.params)
 
     nx = np.arange(self.width, dtype=np.float64) / self.width * scale
     ny = np.arange(self.height, dtype=np.float64) / self.height * scale
@@ -241,7 +252,7 @@ class ColorWipe(Effect):
   def render(self, t: float, state) -> np.ndarray:
     elapsed = self.elapsed(t)
     speed = self.params.get('speed', 0.5)
-    pal_idx = self.params.get('palette', 0) % NUM_PALETTES
+    pal_idx = _get_palette_idx(self.params)
     frame = np.zeros((self.width, self.height, 3), dtype=np.uint8)
 
     # Two colors from the palette — current and next
@@ -273,7 +284,7 @@ class Scanline(Effect):
     elapsed = self.elapsed(t)
     speed = self.params.get('speed', 0.5)
     width_param = self.params.get('width', 8)
-    pal_idx = self.params.get('palette', 0) % NUM_PALETTES
+    pal_idx = _get_palette_idx(self.params)
     frame = np.zeros((self.width, self.height, 3), dtype=np.uint8)
 
     # Ping-pong position
@@ -322,7 +333,7 @@ class Fire(Effect):
   def render(self, t: float, state) -> np.ndarray:
     cooling = self.params.get('cooling', 55)
     sparking = self.params.get('sparking', 120)
-    pal_idx = self.params.get('palette', 4) % NUM_PALETTES  # default Lava
+    pal_idx = _get_palette_idx(self.params, default=4)  # default Lava
 
     # Cool down
     cool_amount = self._rng.integers(
@@ -363,7 +374,7 @@ class SineBands(Effect):
     elapsed = self.elapsed(t)
     freq = self.params.get('frequency', 3.0)
     speed = self.params.get('speed', 1.0)
-    pal_idx = self.params.get('palette', 0) % NUM_PALETTES
+    pal_idx = _get_palette_idx(self.params)
 
     ys = np.arange(self.height, dtype=np.float64)
     hue_1d = (np.sin(ys / self.height * freq * math.pi * 2 + elapsed * speed) + 1.0) / 2.0
@@ -385,7 +396,7 @@ class CylinderRotate(Effect):
   def render(self, t: float, state) -> np.ndarray:
     elapsed = self.elapsed(t)
     speed = self.params.get('speed', 1.0)
-    pal_idx = self.params.get('palette', 0) % NUM_PALETTES
+    pal_idx = _get_palette_idx(self.params)
 
     xs = np.arange(self.width, dtype=np.float64) / self.width
     ys = np.arange(self.height, dtype=np.float64)
