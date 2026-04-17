@@ -3,22 +3,48 @@
  *
  * Transport + output engine for OctoWS2811-driven LED pillar.
  * Receives framed pixel data over USB Serial from Raspberry Pi.
+ *
+ * Supports dynamic geometry via CONFIG packets. Falls back to
+ * legacy 5x344 defaults (or EEPROM-saved config) if no CONFIG
+ * is received.
  */
 
 #include <Arduino.h>
 #include <OctoWS2811.h>
+#include <EEPROM.h>
 #include "config.h"
 #include "protocol.h"
 
-// --- OctoWS2811 setup ---
-DMAMEM int displayMemory[LEDS_PER_STRIP * 6];
-int drawingMemory[LEDS_PER_STRIP * 6];
+// --- EEPROM layout ---
+#define EEPROM_CONFIG_ADDR 0
+#define EEPROM_MAGIC 0x504D  // "PM" for pixel map
+
+// --- OctoWS2811 setup (max-sized DMA buffers) ---
+// OctoWS2811 uses int arrays where each int holds 4 bytes (one RGB component
+// per output pin interleaved). Size = ledsPerStrip * 6 ints = ledsPerStrip * 24 bytes.
+// We allocate for worst case: MAX_LEDS_PER_OUTPUT per strip.
+DMAMEM int displayMemory[MAX_LEDS_PER_OUTPUT * 6];
+int drawingMemory[MAX_LEDS_PER_OUTPUT * 6];
 const int octoConfig = WS2811_BGR | WS2811_800kHz;
-OctoWS2811 leds(LEDS_PER_STRIP, displayMemory, drawingMemory, octoConfig);
+OctoWS2811 leds(DEFAULT_LEDS_PER_STRIP, displayMemory, drawingMemory, octoConfig);
+
+// --- Runtime geometry (updated by CONFIG or EEPROM) ---
+static bool configReceived = false;
+static uint8_t activeOutputs = DEFAULT_ACTIVE_OUTPUTS;
+static uint16_t ledsPerOutput[TOTAL_OUTPUTS] = {
+  DEFAULT_LEDS_PER_STRIP, DEFAULT_LEDS_PER_STRIP,
+  DEFAULT_LEDS_PER_STRIP, DEFAULT_LEDS_PER_STRIP,
+  DEFAULT_LEDS_PER_STRIP, 0, 0, 0
+};
+static uint16_t maxLedsPerStrip = DEFAULT_LEDS_PER_STRIP;  // max across all outputs
+static uint32_t totalLeds = DEFAULT_ACTIVE_OUTPUTS * DEFAULT_LEDS_PER_STRIP;
+static uint32_t frameSize = DEFAULT_ACTIVE_OUTPUTS * DEFAULT_LEDS_PER_STRIP * 3;
+
+// --- Pending frame buffer (max-sized) ---
+static uint8_t pendingFrame[MAX_LEDS_PER_OUTPUT * TOTAL_OUTPUTS * 3];
 
 // --- State ---
 static COBSDecoder decoder;
-static uint8_t pendingFrame[ACTIVE_OUTPUTS * LEDS_PER_STRIP * 3];
 static bool pendingFrameReady = false;
 static uint8_t masterBrightness = 255;
 static bool blackout = false;
@@ -52,17 +78,112 @@ void handleTestPattern(const uint8_t* payload, size_t len);
 void handleBrightness(const uint8_t* payload, size_t len);
 void sendCaps();
 void sendStats();
+void sendAck();
+void sendNak();
 void sendPacket(uint8_t type, const uint8_t* payload, size_t len);
 void applyPendingFrame();
+void recalcGeometry();
+void reconfigureOcto();
+void saveConfigToEEPROM();
+bool loadConfigFromEEPROM();
 void runTestPattern();
 void runWatchdog();
 void setPixel(int strip, int pixel, uint8_t r, uint8_t g, uint8_t b);
 void clearAll();
 
 // -------------------------------------------------------------------
+// Recalculate derived geometry values from ledsPerOutput[]
+void recalcGeometry() {
+  maxLedsPerStrip = 0;
+  totalLeds = 0;
+  activeOutputs = 0;
+  for (int i = 0; i < TOTAL_OUTPUTS; i++) {
+    if (ledsPerOutput[i] > 0) {
+      activeOutputs++;
+    }
+    totalLeds += ledsPerOutput[i];
+    if (ledsPerOutput[i] > maxLedsPerStrip) {
+      maxLedsPerStrip = ledsPerOutput[i];
+    }
+  }
+  // frameSize = sum of all per-output LED counts * 3 bytes
+  frameSize = totalLeds * 3;
+}
+
+// Reinitialize OctoWS2811 with current maxLedsPerStrip
+void reconfigureOcto() {
+  leds.begin(maxLedsPerStrip, displayMemory, drawingMemory, octoConfig);
+  clearAll();
+  leds.show();
+}
+
+// -------------------------------------------------------------------
+// EEPROM persistence
+void saveConfigToEEPROM() {
+  uint16_t addr = EEPROM_CONFIG_ADDR;
+
+  // Magic (2 bytes)
+  uint16_t magic = EEPROM_MAGIC;
+  EEPROM.put(addr, magic);
+  addr += sizeof(magic);
+
+  // activeOutputs (1 byte)
+  EEPROM.put(addr, activeOutputs);
+  addr += sizeof(activeOutputs);
+
+  // ledsPerOutput (16 bytes: 8 x uint16_t)
+  for (int i = 0; i < TOTAL_OUTPUTS; i++) {
+    EEPROM.put(addr, ledsPerOutput[i]);
+    addr += sizeof(uint16_t);
+  }
+}
+
+bool loadConfigFromEEPROM() {
+  uint16_t addr = EEPROM_CONFIG_ADDR;
+
+  // Check magic
+  uint16_t magic;
+  EEPROM.get(addr, magic);
+  if (magic != EEPROM_MAGIC) return false;
+  addr += sizeof(magic);
+
+  // Read activeOutputs
+  uint8_t storedActive;
+  EEPROM.get(addr, storedActive);
+  addr += sizeof(storedActive);
+
+  // Read ledsPerOutput
+  uint16_t storedLeds[TOTAL_OUTPUTS];
+  for (int i = 0; i < TOTAL_OUTPUTS; i++) {
+    EEPROM.get(addr, storedLeds[i]);
+    addr += sizeof(uint16_t);
+  }
+
+  // Validate
+  if (storedActive == 0 || storedActive > TOTAL_OUTPUTS) return false;
+  for (int i = 0; i < TOTAL_OUTPUTS; i++) {
+    if (storedLeds[i] > MAX_LEDS_PER_OUTPUT) return false;
+  }
+
+  // Apply
+  for (int i = 0; i < TOTAL_OUTPUTS; i++) {
+    ledsPerOutput[i] = storedLeds[i];
+  }
+  recalcGeometry();
+  configReceived = true;
+  return true;
+}
+
+// -------------------------------------------------------------------
 void setup() {
   Serial.begin(115200);  // Baud ignored on Teensy USB
-  leds.begin();
+
+  // Try loading saved config from EEPROM before first leds.begin()
+  if (loadConfigFromEEPROM()) {
+    reconfigureOcto();
+  } else {
+    leds.begin();
+  }
   leds.show();
 
   lastFrameTime = millis();
@@ -191,29 +312,29 @@ void handleHello(const uint8_t* payload, size_t len) {
 }
 
 void handleFrame(const uint8_t* payload, size_t len) {
-  // Frame payload: channels(1) + leds_per_ch(2) + pixel data
-  if (len < 3) {
+  const uint8_t* pixelData;
+  size_t pixelLen;
+
+  if (configReceived) {
+    // Post-CONFIG: raw pixel data, no header
+    pixelData = payload;
+    pixelLen = len;
+  } else {
+    // Legacy: channels(1) + leds_per_ch(2) + pixel data
+    if (len < 3) {
+      stats.badFrame++;
+      return;
+    }
+    pixelData = payload + 3;
+    pixelLen = len - 3;
+  }
+
+  if (pixelLen != frameSize) {
     stats.badFrame++;
     return;
   }
 
-  uint8_t channels = payload[0];
-  uint16_t ledsPerCh = payload[1] | (payload[2] << 8);
-
-  size_t expectedPixels = (size_t)channels * ledsPerCh * 3;
-  if (len - 3 < expectedPixels) {
-    stats.badFrame++;
-    return;
-  }
-
-  if (channels > ACTIVE_OUTPUTS || ledsPerCh > LEDS_PER_STRIP) {
-    stats.badFrame++;
-    return;
-  }
-
-  // Zero out then copy pixel data to pending frame
-  memset(pendingFrame, 0, sizeof(pendingFrame));
-  memcpy(pendingFrame, payload + 3, expectedPixels);
+  memcpy(pendingFrame, pixelData, pixelLen);
 
   if (pendingFrameReady) {
     stats.droppedPending++;
@@ -224,9 +345,49 @@ void handleFrame(const uint8_t* payload, size_t len) {
 }
 
 void handleConfig(const uint8_t* payload, size_t len) {
-  // Color order is compile-time (WS2811_BGR in OctoWS2811 config) — no-op
-  (void)payload;
-  (void)len;
+  // CONFIG payload: active_outputs(u8) + leds_per_output(u16 x 8) = 17 bytes
+  const size_t CONFIG_SIZE = 1 + TOTAL_OUTPUTS * 2;
+  if (len < CONFIG_SIZE) {
+    sendNak();
+    return;
+  }
+
+  uint8_t newActive = payload[0];
+  uint16_t newLeds[TOTAL_OUTPUTS];
+  for (int i = 0; i < TOTAL_OUTPUTS; i++) {
+    newLeds[i] = payload[1 + i * 2] | (payload[2 + i * 2] << 8);
+  }
+
+  // Validate
+  if (newActive == 0 || newActive > TOTAL_OUTPUTS) {
+    sendNak();
+    return;
+  }
+  for (int i = 0; i < TOTAL_OUTPUTS; i++) {
+    if (newLeds[i] > MAX_LEDS_PER_OUTPUT) {
+      sendNak();
+      return;
+    }
+  }
+
+  // Apply new config
+  for (int i = 0; i < TOTAL_OUTPUTS; i++) {
+    ledsPerOutput[i] = newLeds[i];
+  }
+  recalcGeometry();
+  configReceived = true;
+
+  // Reconfigure OctoWS2811 with new strip length
+  reconfigureOcto();
+
+  // Persist to EEPROM
+  saveConfigToEEPROM();
+
+  // Clear any pending state
+  pendingFrameReady = false;
+  activeTestPattern = -1;
+
+  sendAck();
 }
 
 void handleTestPattern(const uint8_t* payload, size_t len) {
@@ -257,12 +418,12 @@ void sendCaps() {
   // Protocol version
   payload[16] = PROTOCOL_VERSION;
 
-  // Active outputs
-  payload[17] = ACTIVE_OUTPUTS;
+  // Active outputs (report current runtime value)
+  payload[17] = activeOutputs;
 
-  // LEDs per strip
-  payload[18] = LEDS_PER_STRIP & 0xFF;
-  payload[19] = (LEDS_PER_STRIP >> 8) & 0xFF;
+  // LEDs per strip (report maxLedsPerStrip for OctoWS2811 context)
+  payload[18] = maxLedsPerStrip & 0xFF;
+  payload[19] = (maxLedsPerStrip >> 8) & 0xFF;
 
   // Color order (compile-time: WS2811_BGR)
   strncpy((char*)payload + 20, "BGR", 4);
@@ -282,6 +443,14 @@ void sendStats() {
   sendPacket(PKT_STATS, payload, sizeof(payload));
 }
 
+void sendAck() {
+  sendPacket(PKT_CONFIG_ACK, nullptr, 0);
+}
+
+void sendNak() {
+  sendPacket(PKT_CONFIG_NAK, nullptr, 0);
+}
+
 void sendPacket(uint8_t type, const uint8_t* payload, size_t len) {
   uint8_t raw[HEADER_SIZE + 128 + CRC_SIZE];
   size_t rawLen = build_packet(type, payload, len, raw, sizeof(raw));
@@ -297,14 +466,17 @@ void sendPacket(uint8_t type, const uint8_t* payload, size_t len) {
 
 // -------------------------------------------------------------------
 void applyPendingFrame() {
-  // Copy pending frame data to OctoWS2811 drawing buffer
-  for (int ch = 0; ch < ACTIVE_OUTPUTS; ch++) {
-    int baseOffset = ch * LEDS_PER_STRIP * 3;
-    for (int px = 0; px < LEDS_PER_STRIP; px++) {
-      int idx = baseOffset + px * 3;
-      uint8_t r = pendingFrame[idx];
-      uint8_t g = pendingFrame[idx + 1];
-      uint8_t b = pendingFrame[idx + 2];
+  // Copy pending frame data to OctoWS2811 drawing buffer.
+  // pendingFrame is packed as contiguous blocks: for each output pin,
+  // ledsPerOutput[pin] * 3 bytes of RGB data.
+  size_t srcOffset = 0;
+  for (int ch = 0; ch < TOTAL_OUTPUTS; ch++) {
+    uint16_t count = ledsPerOutput[ch];
+    for (uint16_t px = 0; px < count; px++) {
+      uint8_t r = pendingFrame[srcOffset];
+      uint8_t g = pendingFrame[srcOffset + 1];
+      uint8_t b = pendingFrame[srcOffset + 2];
+      srcOffset += 3;
 
       // Apply master brightness
       if (masterBrightness < 255) {
@@ -320,30 +492,27 @@ void applyPendingFrame() {
         b = (uint16_t)b * fadeLevel / 255;
       }
 
-      int stripPixel = ch * LEDS_PER_STRIP + px;
+      int stripPixel = ch * maxLedsPerStrip + px;
       leds.setPixel(stripPixel, r, g, b);
     }
-  }
-
-  // Clear unused channels
-  for (int ch = ACTIVE_OUTPUTS; ch < TOTAL_OUTPUTS; ch++) {
-    for (int px = 0; px < LEDS_PER_STRIP; px++) {
-      leds.setPixel(ch * LEDS_PER_STRIP + px, 0);
+    // Clear remaining pixels on this output (beyond count, up to maxLedsPerStrip)
+    for (uint16_t px = count; px < maxLedsPerStrip; px++) {
+      leds.setPixel(ch * maxLedsPerStrip + px, 0);
     }
   }
 }
 
 // -------------------------------------------------------------------
 void clearAll() {
-  for (int i = 0; i < TOTAL_OUTPUTS * LEDS_PER_STRIP; i++) {
+  for (int i = 0; i < TOTAL_OUTPUTS * (int)maxLedsPerStrip; i++) {
     leds.setPixel(i, 0);
   }
 }
 
 void setPixel(int strip, int pixel, uint8_t r, uint8_t g, uint8_t b) {
   if (strip < 0 || strip >= TOTAL_OUTPUTS) return;
-  if (pixel < 0 || pixel >= LEDS_PER_STRIP) return;
-  int idx = strip * LEDS_PER_STRIP + pixel;
+  if (pixel < 0 || pixel >= (int)ledsPerOutput[strip]) return;
+  int idx = strip * (int)maxLedsPerStrip + pixel;
   leds.setPixel(idx, r, g, b);
 }
 
@@ -387,8 +556,8 @@ void runTestPattern() {
 
     case TEST_ALL_WHITE: {
       uint8_t v = masterBrightness / 4;  // Safe brightness
-      for (int ch = 0; ch < ACTIVE_OUTPUTS; ch++) {
-        for (int px = 0; px < LEDS_PER_STRIP; px++) {
+      for (int ch = 0; ch < (int)activeOutputs; ch++) {
+        for (int px = 0; px < (int)ledsPerOutput[ch]; px++) {
           setPixel(ch, px, v, v, v);
         }
       }
@@ -401,8 +570,8 @@ void runTestPattern() {
       uint8_t r = (phase == 0) ? 128 : 0;
       uint8_t g = (phase == 1) ? 128 : 0;
       uint8_t b = (phase == 2) ? 128 : 0;
-      for (int ch = 0; ch < ACTIVE_OUTPUTS; ch++) {
-        for (int px = 0; px < LEDS_PER_STRIP; px++) {
+      for (int ch = 0; ch < (int)activeOutputs; ch++) {
+        for (int px = 0; px < (int)ledsPerOutput[ch]; px++) {
           setPixel(ch, px, r, g, b);
         }
       }
@@ -411,8 +580,8 @@ void runTestPattern() {
 
     case TEST_CHANNEL_CHASE: {
       // One pixel chase per channel
-      int pos = (t / 10) % LEDS_PER_STRIP;
-      for (int ch = 0; ch < ACTIVE_OUTPUTS; ch++) {
+      for (int ch = 0; ch < (int)activeOutputs; ch++) {
+        int pos = (t / 10) % (int)ledsPerOutput[ch];
         uint8_t hue = (ch * 51) % 256;  // Different color per channel
         // Simple hue to RGB
         uint8_t r, g, b;
@@ -426,18 +595,24 @@ void runTestPattern() {
 
     case TEST_PIXEL_CHASE: {
       // Single pixel chasing across all channels
-      int totalPixels = ACTIVE_OUTPUTS * LEDS_PER_STRIP;
+      int totalPixels = (int)totalLeds;
       int pos = (t / 5) % totalPixels;
-      int ch = pos / LEDS_PER_STRIP;
-      int px = pos % LEDS_PER_STRIP;
-      setPixel(ch, px, 255, 255, 255);
+      // Find which channel and pixel offset
+      int remaining = pos;
+      for (int ch = 0; ch < (int)activeOutputs; ch++) {
+        if (remaining < (int)ledsPerOutput[ch]) {
+          setPixel(ch, remaining, 255, 255, 255);
+          break;
+        }
+        remaining -= (int)ledsPerOutput[ch];
+      }
       break;
     }
 
     case TEST_BOTTOM_TO_TOP: {
       // White sweep from bottom to top on each channel
-      int pos = (t / 15) % LEDS_PER_STRIP;
-      for (int ch = 0; ch < ACTIVE_OUTPUTS; ch++) {
+      for (int ch = 0; ch < (int)activeOutputs; ch++) {
+        int pos = (t / 15) % (int)ledsPerOutput[ch];
         setPixel(ch, pos, 255, 255, 255);
         // Trail
         for (int trail = 1; trail <= 5; trail++) {
@@ -453,8 +628,8 @@ void runTestPattern() {
 
     case TEST_CHANNEL_IDENTIFY: {
       // Light each channel one at a time, cycling
-      int activeChannel = (t / 2000) % ACTIVE_OUTPUTS;
-      for (int px = 0; px < LEDS_PER_STRIP; px++) {
+      int activeChannel = (t / 2000) % (int)activeOutputs;
+      for (int px = 0; px < (int)ledsPerOutput[activeChannel]; px++) {
         setPixel(activeChannel, px, 0, 128, 0);
       }
       // Show channel number with colored pixels at bottom
@@ -468,8 +643,8 @@ void runTestPattern() {
       // Gentle breathing pulse
       float phase = sin(t / 500.0) * 0.5 + 0.5;
       uint8_t v = (uint8_t)(phase * 64);
-      for (int ch = 0; ch < ACTIVE_OUTPUTS; ch++) {
-        for (int px = 0; px < LEDS_PER_STRIP; px++) {
+      for (int ch = 0; ch < (int)activeOutputs; ch++) {
+        for (int px = 0; px < (int)ledsPerOutput[ch]; px++) {
           setPixel(ch, px, 0, v, v / 2);
         }
       }
@@ -478,17 +653,18 @@ void runTestPattern() {
 
     case TEST_STRIP_IDENTIFY: {
       // Each physical strip pair gets a distinct color
-      // Even strip (first 172) = bright, odd strip (next 172) = dimmer version
+      // Even strip (first half) = bright, odd strip (second half) = dimmer
       uint8_t colors[][3] = {
         {255, 0, 0}, {0, 255, 0}, {0, 0, 255}, {255, 255, 0}, {255, 0, 255}
       };
-      for (int ch = 0; ch < ACTIVE_OUTPUTS; ch++) {
+      for (int ch = 0; ch < (int)activeOutputs && ch < 5; ch++) {
+        uint16_t half = ledsPerOutput[ch] / 2;
         // First half = "even" strip
-        for (int px = 0; px < LEDS_PER_PHYSICAL; px++) {
+        for (int px = 0; px < (int)half; px++) {
           setPixel(ch, px, colors[ch][0], colors[ch][1], colors[ch][2]);
         }
         // Second half = "odd" strip (dimmer)
-        for (int px = LEDS_PER_PHYSICAL; px < LEDS_PER_STRIP; px++) {
+        for (int px = (int)half; px < (int)ledsPerOutput[ch]; px++) {
           setPixel(ch, px, colors[ch][0] / 4, colors[ch][1] / 4, colors[ch][2] / 4);
         }
       }
@@ -496,18 +672,22 @@ void runTestPattern() {
     }
 
     case TEST_SEAM_MARKER: {
-      // Mark the seam channels (CH0 strip 0 and CH4 strip 9)
+      // Mark the seam channels (first output first half, last output second half)
       float pulse = sin(t / 300.0) * 0.5 + 0.5;
       uint8_t v = (uint8_t)(pulse * 200);
 
-      // CH0, first physical strip (S0) = red
-      for (int px = 0; px < LEDS_PER_PHYSICAL; px++) {
+      int lastCh = (int)activeOutputs - 1;
+      uint16_t halfFirst = ledsPerOutput[0] / 2;
+      uint16_t halfLast = ledsPerOutput[lastCh] / 2;
+
+      // CH0, first half = red
+      for (int px = 0; px < (int)halfFirst; px++) {
         setPixel(0, px, v, 0, 0);
       }
 
-      // CH4, second physical strip (S9) = blue
-      for (int px = LEDS_PER_PHYSICAL; px < LEDS_PER_STRIP; px++) {
-        setPixel(4, px, 0, 0, v);
+      // Last channel, second half = blue
+      for (int px = (int)halfLast; px < (int)ledsPerOutput[lastCh]; px++) {
+        setPixel(lastCh, px, 0, 0, v);
       }
       break;
     }

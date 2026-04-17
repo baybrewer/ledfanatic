@@ -1,16 +1,16 @@
 #pragma once
 
-// LED geometry values must match pi/config/hardware.yaml.
-// To regenerate after changing hardware.yaml:
-//   python3 pi/scripts/generate_teensy_config.py
-// Cross-language validation: pi/tests/test_protocol.py::TestHardwareConstants
+// LED geometry — defaults match legacy 5x344 layout.
+// Dynamic geometry is received via CONFIG packet from Pi at startup.
 
-// --- LED Configuration ---
-#define LEDS_PER_STRIP    344   // 2 × 172 LEDs per serpentine pair
-#define ACTIVE_OUTPUTS    5     // 5 serpentine pairs
-#define TOTAL_OUTPUTS     8     // OctoWS2811 always addresses 8
-#define LEDS_PER_PHYSICAL 172   // LEDs per physical strip
-#define PHYSICAL_STRIPS   10    // Total physical strips
+// --- LED Configuration (defaults) ---
+#define DEFAULT_LEDS_PER_STRIP  344  // 2 × 172 LEDs per serpentine pair
+#define DEFAULT_ACTIVE_OUTPUTS  5    // 5 serpentine pairs
+#define TOTAL_OUTPUTS           8    // OctoWS2811 always addresses 8
+#define MAX_LEDS_PER_OUTPUT     1200 // max LEDs on any single output
+#define MAX_TOTAL_LEDS          (TOTAL_OUTPUTS * MAX_LEDS_PER_OUTPUT)
+#define LEDS_PER_PHYSICAL       172  // LEDs per physical strip (for test patterns)
+#define PHYSICAL_STRIPS         10   // Total physical strips (for test patterns)
 
 // --- Protocol ---
 #define PROTOCOL_VERSION  1
@@ -20,12 +20,14 @@
 #define MAGIC_3  'L'
 #define HEADER_SIZE       24
 #define CRC_SIZE          4
-#define MAX_PAYLOAD_SIZE  (ACTIVE_OUTPUTS * LEDS_PER_STRIP * 3 + 8)  // channels meta + pixel data
+#define MAX_PAYLOAD_SIZE  (TOTAL_OUTPUTS * MAX_LEDS_PER_OUTPUT * 3 + 8)  // worst-case frame
 
 // --- Packet types ---
 #define PKT_HELLO              0x01
 #define PKT_CAPS               0x02
 #define PKT_CONFIG             0x03
+#define PKT_CONFIG_ACK         0x04
+#define PKT_CONFIG_NAK         0x05
 #define PKT_FRAME              0x10
 #define PKT_PING               0x20
 #define PKT_PONG               0x21
@@ -64,5 +66,5 @@
 #define DEFAULT_COLOR_ORDER  COLOR_ORDER_BGR
 
 // --- Firmware info ---
-#define FIRMWARE_VERSION "1.0.0"
+#define FIRMWARE_VERSION "1.1.0"
 #define FIRMWARE_NAME    "pillar-teensy"

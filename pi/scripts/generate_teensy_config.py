@@ -45,11 +45,11 @@ def main():
 
     content = config_h_path.read_text()
 
-    # Replace geometry defines
+    # Replace geometry defines (defaults — runtime config is dynamic via CONFIG packet)
     import re
     replacements = {
-        'LEDS_PER_STRIP': str(leds_per_channel),
-        'ACTIVE_OUTPUTS': str(channel_count),
+        'DEFAULT_LEDS_PER_STRIP': str(leds_per_channel),
+        'DEFAULT_ACTIVE_OUTPUTS': str(channel_count),
         'LEDS_PER_PHYSICAL': str(leds_per_strip),
         'PHYSICAL_STRIPS': str(strips),
     }
@@ -63,10 +63,10 @@ def main():
 
     config_h_path.write_text(content)
     print(f"Updated {config_h_path}")
-    print(f"  LEDS_PER_STRIP    = {leds_per_channel}")
-    print(f"  ACTIVE_OUTPUTS    = {channel_count}")
-    print(f"  LEDS_PER_PHYSICAL = {leds_per_strip}")
-    print(f"  PHYSICAL_STRIPS   = {strips}")
+    print(f"  DEFAULT_LEDS_PER_STRIP = {leds_per_channel}")
+    print(f"  DEFAULT_ACTIVE_OUTPUTS = {channel_count}")
+    print(f"  LEDS_PER_PHYSICAL      = {leds_per_strip}")
+    print(f"  PHYSICAL_STRIPS        = {strips}")
 
 
 if __name__ == "__main__":
