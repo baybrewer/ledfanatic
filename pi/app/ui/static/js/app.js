@@ -868,7 +868,7 @@ function initSystem() {
         section.classList.remove('hidden');
         section.classList.add('active');
       }
-      if (btn.dataset.section === 'system-setup') { loadStripConfig(); loadStats(); startSetupLivePreview(); }
+      if (btn.dataset.section === 'system-setup') { loadPixelMap(); loadTeensyStatus(); loadStats(); startSetupLivePreview(); }
       else stopSetupLivePreview();
     });
   });
@@ -876,111 +876,7 @@ function initSystem() {
   initSetup();
 }
 
-// --- Setup ---
-
-async function loadStripConfig() {
-  const data = await api('GET', '/api/setup/strips');
-  if (!data || !data.strips) return;
-  renderStripTable(data.strips);
-}
-
-let _lastStrips = [];
-
-function renderStripTable(strips) {
-  _lastStrips = strips;
-  const tbody = document.getElementById('strip-rows');
-  tbody.innerHTML = '';
-
-  const colorOrders = ['RGB','RBG','GRB','GBR','BRG','BGR'];
-  const directions = [
-    { value: 'bottom_to_top', label: '\u2191 Up' },
-    { value: 'top_to_bottom', label: '\u2193 Down' },
-  ];
-
-  for (const s of strips) {
-    const tr = document.createElement('tr');
-    tr.dataset.stripId = s.id;
-
-    const colorOpts = colorOrders.map(o =>
-      `<option value="${o}" ${o === s.color_order ? 'selected' : ''}>${o}</option>`
-    ).join('');
-
-    const dirOpts = directions.map(d =>
-      `<option value="${d.value}" ${d.value === s.direction ? 'selected' : ''}>${d.label}</option>`
-    ).join('');
-
-    tr.innerHTML = `
-      <td class="strip-id">${s.id}</td>
-      <td><input type="number" class="ch-input" data-strip="${s.id}" data-field="channel" value="${s.channel}" min="0" max="7" step="1"></td>
-      <td><input type="number" class="ofs-input" data-strip="${s.id}" data-field="offset" value="${s.offset}" min="0" max="1100" step="1"></td>
-      <td><select data-strip="${s.id}" data-field="direction">${dirOpts}</select></td>
-      <td><input type="number" data-strip="${s.id}" data-field="led_count" value="${s.led_count}" min="1" max="1100" step="1"></td>
-      <td><select data-strip="${s.id}" data-field="color_order">${colorOpts}</select></td>
-      <td><input type="range" data-strip="${s.id}" data-field="brightness" value="${s.brightness != null ? s.brightness : 1}" min="0" max="1" step="0.05" class="dim-slider" title="${Math.round((s.brightness != null ? s.brightness : 1) * 100)}%"></td>
-      <td class="strip-actions">
-        <button class="test-btn" data-strip="${s.id}">T</button>
-        <button class="del-btn" data-strip="${s.id}">\u2715</button>
-      </td>
-    `;
-    tbody.appendChild(tr);
-  }
-
-  tbody.querySelectorAll('select, input[type="number"], input[type="range"]').forEach(el => {
-    let debounce = null;
-    el.addEventListener('input', () => {
-      if (el.type === 'range') el.title = Math.round(parseFloat(el.value) * 100) + '%';
-      clearTimeout(debounce);
-      debounce = setTimeout(() => updateStrip(el), 300);
-    });
-    el.addEventListener('change', () => {
-      clearTimeout(debounce);
-      updateStrip(el);
-    });
-  });
-
-  tbody.querySelectorAll('.test-btn').forEach(btn => {
-    btn.addEventListener('click', () => {
-      api('POST', `/api/setup/strips/${btn.dataset.strip}/test`);
-      showStripStatus(`Testing strip ${btn.dataset.strip}...`);
-    });
-  });
-
-  tbody.querySelectorAll('.del-btn').forEach(btn => {
-    btn.addEventListener('click', async () => {
-      const result = await api('DELETE', `/api/setup/strips/${btn.dataset.strip}`);
-      if (result && result.strips) {
-        renderStripTable(result.strips);
-        showStripStatus('Strip removed');
-      }
-    });
-  });
-
-  renderMappingDiagram(strips);
-}
-
-async function updateStrip(el) {
-  const stripId = parseInt(el.dataset.strip);
-  const field = el.dataset.field;
-  let value;
-  if (el.type === 'number') value = parseInt(el.value);
-  else if (el.type === 'range') value = parseFloat(el.value);
-  else value = el.value;
-
-  const body = {};
-  body[field] = value;
-
-  const result = await api('POST', `/api/setup/strips/${stripId}`, body);
-  if (result && result.status === 'ok') {
-    showStripStatus(`Strip ${stripId} updated`);
-    // Update local cache and redraw diagram
-    if (result.strips) {
-      _lastStrips = result.strips;
-      renderMappingDiagram(result.strips);
-    }
-  } else {
-    showStripStatus('Error updating strip', true);
-  }
-}
+// --- Pixel Map Setup ---
 
 // Strip-to-channel mapping colors (one per strip, cycling)
 const STRIP_COLORS = [
@@ -989,128 +885,488 @@ const STRIP_COLORS = [
   '#6c5ce7','#00cec9','#fdcb6e','#d63031','#74b9ff','#a29bfe',
 ];
 
-function renderMappingDiagram(strips) {
-  const canvas = document.getElementById('mapping-diagram');
+const COLOR_ORDERS = ['RGB','RBG','GRB','GBR','BRG','BGR'];
+
+let _pixelMapData = null;
+
+function showPmStatus(msg, isError = false) {
+  const el = document.getElementById('pm-status');
+  if (!el) return;
+  el.textContent = msg;
+  el.className = isError ? 'status-msg error' : 'status-msg';
+  setTimeout(() => { el.textContent = ''; }, 4000);
+}
+
+async function loadPixelMap() {
+  const data = await api('GET', '/api/pixel-map/');
+  if (!data) return;
+  _pixelMapData = data;
+
+  // Set origin selector
+  const originSelect = document.getElementById('pm-origin-select');
+  if (originSelect && data.origin) {
+    originSelect.value = data.origin;
+  }
+
+  // Grid info
+  const gridInfo = document.getElementById('pm-grid-info');
+  if (gridInfo && data.grid) {
+    gridInfo.textContent = `${data.grid.width} x ${data.grid.height} — ${data.grid.total_mapped_leds} mapped LEDs`;
+  }
+
+  renderGridPreview(data);
+  renderStripList(data);
+}
+
+function renderGridPreview(pixelMap) {
+  const canvas = document.getElementById('grid-preview');
   if (!canvas) return;
   const ctx = canvas.getContext('2d');
-  const dpr = window.devicePixelRatio || 1;
-  const rect = canvas.getBoundingClientRect();
 
-  // Determine which channels are used and max LED extent
-  const channelSet = new Set(strips.map(s => s.channel));
-  const channels = [...channelSet].sort((a, b) => a - b);
-  if (channels.length === 0) {
-    canvas.width = rect.width * dpr;
-    canvas.height = 100 * dpr;
-    ctx.scale(dpr, dpr);
+  const gridW = pixelMap.grid ? pixelMap.grid.width : 0;
+  const gridH = pixelMap.grid ? pixelMap.grid.height : 0;
+
+  if (gridW === 0 || gridH === 0) {
+    canvas.width = 400;
+    canvas.height = 60;
     ctx.fillStyle = '#666';
     ctx.font = '14px system-ui, sans-serif';
-    ctx.fillText('No strips configured', 20, 50);
+    ctx.fillText('No grid data', 20, 35);
     return;
   }
 
-  let maxLed = 0;
-  for (const s of strips) {
-    maxLed = Math.max(maxLed, s.offset + s.led_count);
+  // Build a grid of strip IDs: grid[x][y] = strip_id or -1
+  const grid = Array.from({ length: gridW }, () => new Int8Array(gridH).fill(-1));
+
+  for (const strip of (pixelMap.strips || [])) {
+    for (const scanline of (strip.scanlines || [])) {
+      const [sx, sy] = scanline.start;
+      const [ex, ey] = scanline.end;
+      const dx = ex - sx;
+      const dy = ey - sy;
+      const steps = Math.abs(dx) + Math.abs(dy);
+      const stepX = steps === 0 ? 0 : (dx > 0 ? 1 : dx < 0 ? -1 : 0);
+      const stepY = steps === 0 ? 0 : (dy > 0 ? 1 : dy < 0 ? -1 : 0);
+      let cx = sx, cy = sy;
+      for (let i = 0; i <= steps; i++) {
+        if (cx >= 0 && cx < gridW && cy >= 0 && cy < gridH) {
+          grid[cx][cy] = strip.id;
+        }
+        cx += stepX;
+        cy += stepY;
+      }
+    }
   }
-  maxLed = Math.max(maxLed, 344); // minimum scale
 
-  const rowH = 40;
-  const labelW = 50;
-  const padTop = 30;
-  const padBottom = 30;
-  const padRight = 20;
-  const h = padTop + channels.length * (rowH + 8) + padBottom;
+  // Draw cells scaled to fit container
+  const dpr = window.devicePixelRatio || 1;
+  const rect = canvas.getBoundingClientRect();
+  const containerW = rect.width || 400;
 
-  canvas.width = rect.width * dpr;
-  canvas.height = h * dpr;
-  canvas.style.height = h + 'px';
+  // Cell size: scale to fit container width, minimum 3px
+  const cellSize = Math.max(3, Math.floor(containerW / gridW));
+  const canvasW = gridW * cellSize;
+  const canvasH = gridH * cellSize;
+
+  canvas.width = canvasW * dpr;
+  canvas.height = canvasH * dpr;
+  canvas.style.width = canvasW + 'px';
+  canvas.style.height = canvasH + 'px';
   ctx.scale(dpr, dpr);
 
-  const w = rect.width;
-  const barW = w - labelW - padRight;
+  // Origin: bottom-left means y=0 is bottom of canvas
+  const isBottomLeft = (pixelMap.origin || 'bottom-left') === 'bottom-left';
 
-  // Clear
-  ctx.clearRect(0, 0, w, h);
+  for (let gx = 0; gx < gridW; gx++) {
+    for (let gy = 0; gy < gridH; gy++) {
+      const stripId = grid[gx][gy];
+      const px = gx * cellSize;
+      // If bottom-left origin, flip Y so y=0 draws at canvas bottom
+      const py = isBottomLeft ? (gridH - 1 - gy) * cellSize : gy * cellSize;
 
-  // Header labels
-  ctx.font = '10px system-ui, sans-serif';
-  ctx.fillStyle = '#888';
-  // LED number scale
-  const ticks = [0, Math.round(maxLed / 4), Math.round(maxLed / 2), Math.round(maxLed * 3 / 4), maxLed];
-  for (const tick of ticks) {
-    const x = labelW + (tick / maxLed) * barW;
-    ctx.fillText(tick, x - 6, padTop - 6);
-    ctx.strokeStyle = '#333';
-    ctx.beginPath();
-    ctx.moveTo(x, padTop - 2);
-    ctx.lineTo(x, h - padBottom);
-    ctx.stroke();
-  }
-
-  // Draw each channel row
-  for (let ci = 0; ci < channels.length; ci++) {
-    const ch = channels[ci];
-    const y = padTop + ci * (rowH + 8);
-
-    // Channel label
-    ctx.font = 'bold 13px system-ui, sans-serif';
-    ctx.fillStyle = '#aaa';
-    ctx.fillText(`CH ${ch}`, 4, y + rowH / 2 + 4);
-
-    // Channel background bar
-    ctx.fillStyle = '#1a1a2e';
-    ctx.fillRect(labelW, y, barW, rowH);
-    ctx.strokeStyle = '#333';
-    ctx.strokeRect(labelW, y, barW, rowH);
-
-    // Draw strips on this channel
-    const chStrips = strips.filter(s => s.channel === ch);
-    for (const s of chStrips) {
-      const x1 = labelW + (s.offset / maxLed) * barW;
-      const sw = (s.led_count / maxLed) * barW;
-      const color = STRIP_COLORS[s.id % STRIP_COLORS.length];
-
-      // Strip block
-      ctx.fillStyle = color + 'cc';
-      ctx.fillRect(x1 + 1, y + 2, Math.max(sw - 2, 4), rowH - 4);
-
-      // Direction arrow
-      ctx.fillStyle = '#fff';
-      ctx.font = '14px system-ui, sans-serif';
-      const arrow = s.direction === 'bottom_to_top' ? '\u2191' : '\u2193';
-      const arrowX = x1 + sw / 2 - 5;
-      ctx.fillText(arrow, arrowX, y + 15);
-
-      // Strip label: "S0" and LED range
-      ctx.font = 'bold 11px system-ui, sans-serif';
-      ctx.fillStyle = '#fff';
-      const label = `S${s.id}`;
-      ctx.fillText(label, x1 + 4, y + rowH - 7);
-
-      // LED range (if wide enough)
-      if (sw > 50) {
-        ctx.font = '9px system-ui, sans-serif';
-        ctx.fillStyle = '#ddd';
-        ctx.fillText(`${s.offset}-${s.offset + s.led_count - 1}`, x1 + 4, y + rowH - 18);
+      if (stripId >= 0) {
+        ctx.fillStyle = STRIP_COLORS[stripId % STRIP_COLORS.length];
+      } else {
+        ctx.fillStyle = '#333';
       }
+      ctx.fillRect(px, py, cellSize - 1, cellSize - 1);
     }
   }
 }
 
-function showStripStatus(msg, isError = false) {
-  const el = document.getElementById('strip-status');
-  el.textContent = msg;
-  el.className = isError ? 'status-msg error' : 'status-msg';
-  setTimeout(() => { el.textContent = ''; }, 3000);
+function renderStripList(pixelMap) {
+  const container = document.getElementById('pm-strip-list');
+  if (!container) return;
+  container.innerHTML = '';
+
+  const strips = pixelMap.strips || [];
+  if (strips.length === 0) {
+    container.innerHTML = '<p class="text-dim">No strips configured</p>';
+    return;
+  }
+
+  for (const strip of strips) {
+    const card = document.createElement('div');
+    card.className = 'pm-strip-card';
+    card.dataset.stripId = strip.id;
+
+    const color = STRIP_COLORS[strip.id % STRIP_COLORS.length];
+    const scanlineCount = (strip.scanlines || []).length;
+    const segmentCount = (strip.segments || []).length;
+    const totalScanlineLeds = (strip.scanlines || []).reduce((sum, sc) => {
+      const dx = Math.abs(sc.end[0] - sc.start[0]);
+      const dy = Math.abs(sc.end[1] - sc.start[1]);
+      return sum + dx + dy + 1;
+    }, 0);
+
+    card.innerHTML = `
+      <div class="pm-strip-header">
+        <span class="pm-strip-chevron">&#9654;</span>
+        <span class="pm-strip-color-dot" style="background:${color}"></span>
+        <span class="pm-strip-title">Strip ${strip.id}</span>
+        <span class="pm-strip-summary">Out ${strip.output}+${strip.output_offset} | ${strip.total_leds} LEDs | ${scanlineCount} scanlines</span>
+        <button class="pm-strip-delete" data-strip-id="${strip.id}">Delete</button>
+      </div>
+      <div class="pm-strip-body">
+        <div class="pm-field-row">
+          <div class="pm-field">
+            <label>Output Pin</label>
+            <input type="number" data-field="output" value="${strip.output}" min="0" max="7" step="1">
+          </div>
+          <div class="pm-field">
+            <label>Output Offset</label>
+            <input type="number" data-field="output_offset" value="${strip.output_offset}" min="0" max="2400" step="1">
+          </div>
+          <div class="pm-field">
+            <label>Total LEDs</label>
+            <input type="number" data-field="total_leds" value="${strip.total_leds}" min="0" max="2400" step="1">
+          </div>
+        </div>
+
+        <div class="pm-section-label">Scanlines</div>
+        <table class="pm-sub-table pm-scanline-table">
+          <thead>
+            <tr><th>Start X</th><th>Start Y</th><th>End X</th><th>End Y</th><th>LEDs</th><th></th></tr>
+          </thead>
+          <tbody></tbody>
+        </table>
+        <button class="pm-add-row-btn pm-add-scanline" data-strip-id="${strip.id}">+ Scanline</button>
+
+        <div class="pm-section-label">Segments</div>
+        <table class="pm-sub-table pm-segment-table">
+          <thead>
+            <tr><th>Range Start</th><th>Range End</th><th>Color Order</th><th></th></tr>
+          </thead>
+          <tbody></tbody>
+        </table>
+        <button class="pm-add-row-btn pm-add-segment" data-strip-id="${strip.id}">+ Segment</button>
+      </div>
+    `;
+    container.appendChild(card);
+
+    // Populate scanline rows
+    const scanTbody = card.querySelector('.pm-scanline-table tbody');
+    for (let si = 0; si < (strip.scanlines || []).length; si++) {
+      const sc = strip.scanlines[si];
+      const ledCount = Math.abs(sc.end[0] - sc.start[0]) + Math.abs(sc.end[1] - sc.start[1]) + 1;
+      const row = document.createElement('tr');
+      row.innerHTML = `
+        <td><input type="number" data-idx="${si}" data-coord="sx" value="${sc.start[0]}" min="0" max="999"></td>
+        <td><input type="number" data-idx="${si}" data-coord="sy" value="${sc.start[1]}" min="0" max="9999"></td>
+        <td><input type="number" data-idx="${si}" data-coord="ex" value="${sc.end[0]}" min="0" max="999"></td>
+        <td><input type="number" data-idx="${si}" data-coord="ey" value="${sc.end[1]}" min="0" max="9999"></td>
+        <td class="pm-led-count">${ledCount}</td>
+        <td><button class="pm-row-delete" data-idx="${si}" data-type="scanline">&#x2715;</button></td>
+      `;
+      scanTbody.appendChild(row);
+    }
+
+    // Populate segment rows
+    const segTbody = card.querySelector('.pm-segment-table tbody');
+    for (let si = 0; si < (strip.segments || []).length; si++) {
+      const seg = strip.segments[si];
+      const colorOpts = COLOR_ORDERS.map(o =>
+        `<option value="${o}" ${o === seg.color_order ? 'selected' : ''}>${o}</option>`
+      ).join('');
+      const row = document.createElement('tr');
+      row.innerHTML = `
+        <td><input type="number" data-idx="${si}" data-field="range_start" value="${seg.range_start}" min="0" max="9999"></td>
+        <td><input type="number" data-idx="${si}" data-field="range_end" value="${seg.range_end}" min="0" max="9999"></td>
+        <td><select data-idx="${si}" data-field="color_order">${colorOpts}</select></td>
+        <td><button class="pm-row-delete" data-idx="${si}" data-type="segment">&#x2715;</button></td>
+      `;
+      segTbody.appendChild(row);
+    }
+
+    // Wire up events for this card
+    wireStripCardEvents(card, strip.id);
+  }
+}
+
+function wireStripCardEvents(card, stripId) {
+  // Toggle expand/collapse
+  const header = card.querySelector('.pm-strip-header');
+  header.addEventListener('click', (e) => {
+    if (e.target.closest('.pm-strip-delete')) return;
+    card.classList.toggle('expanded');
+  });
+
+  // Delete strip
+  card.querySelector('.pm-strip-delete').addEventListener('click', async (e) => {
+    e.stopPropagation();
+    if (!confirm(`Delete strip ${stripId}?`)) return;
+    const result = await api('DELETE', `/api/pixel-map/strips/${stripId}`);
+    if (result && result.status === 'ok') {
+      showPmStatus(`Strip ${stripId} deleted`);
+      await loadPixelMap();
+    } else {
+      showPmStatus(result?.detail || 'Failed to delete strip', true);
+    }
+  });
+
+  // Field changes (output, output_offset, total_leds) — debounced save of full strip
+  card.querySelectorAll('.pm-field input[type="number"]').forEach(input => {
+    let debounce = null;
+    const saveStrip = () => {
+      clearTimeout(debounce);
+      debounce = setTimeout(() => saveFullStrip(card, stripId), 500);
+    };
+    input.addEventListener('input', saveStrip);
+    input.addEventListener('change', () => { clearTimeout(debounce); saveFullStrip(card, stripId); });
+  });
+
+  // Scanline input changes — debounced save
+  card.querySelectorAll('.pm-scanline-table input').forEach(input => {
+    let debounce = null;
+    input.addEventListener('input', () => {
+      // Update LED count display
+      const row = input.closest('tr');
+      updateScanlineLedCount(row);
+      clearTimeout(debounce);
+      debounce = setTimeout(() => saveFullStrip(card, stripId), 500);
+    });
+    input.addEventListener('change', () => { clearTimeout(debounce); saveFullStrip(card, stripId); });
+  });
+
+  // Segment input changes — debounced save
+  card.querySelectorAll('.pm-segment-table input, .pm-segment-table select').forEach(input => {
+    let debounce = null;
+    input.addEventListener('input', () => {
+      clearTimeout(debounce);
+      debounce = setTimeout(() => saveFullStrip(card, stripId), 500);
+    });
+    input.addEventListener('change', () => { clearTimeout(debounce); saveFullStrip(card, stripId); });
+  });
+
+  // Delete scanline/segment row
+  card.querySelectorAll('.pm-row-delete').forEach(btn => {
+    btn.addEventListener('click', () => {
+      btn.closest('tr').remove();
+      saveFullStrip(card, stripId);
+    });
+  });
+
+  // Add scanline
+  card.querySelector('.pm-add-scanline').addEventListener('click', () => {
+    const tbody = card.querySelector('.pm-scanline-table tbody');
+    const idx = tbody.querySelectorAll('tr').length;
+    const row = document.createElement('tr');
+    row.innerHTML = `
+      <td><input type="number" data-idx="${idx}" data-coord="sx" value="0" min="0" max="999"></td>
+      <td><input type="number" data-idx="${idx}" data-coord="sy" value="0" min="0" max="9999"></td>
+      <td><input type="number" data-idx="${idx}" data-coord="ex" value="0" min="0" max="999"></td>
+      <td><input type="number" data-idx="${idx}" data-coord="ey" value="0" min="0" max="9999"></td>
+      <td class="pm-led-count">1</td>
+      <td><button class="pm-row-delete" data-idx="${idx}" data-type="scanline">&#x2715;</button></td>
+    `;
+    tbody.appendChild(row);
+    // Wire events for new row
+    row.querySelectorAll('input').forEach(input => {
+      let debounce = null;
+      input.addEventListener('input', () => {
+        updateScanlineLedCount(row);
+        clearTimeout(debounce);
+        debounce = setTimeout(() => saveFullStrip(card, stripId), 500);
+      });
+      input.addEventListener('change', () => { clearTimeout(debounce); saveFullStrip(card, stripId); });
+    });
+    row.querySelector('.pm-row-delete').addEventListener('click', () => {
+      row.remove();
+      saveFullStrip(card, stripId);
+    });
+  });
+
+  // Add segment
+  card.querySelector('.pm-add-segment').addEventListener('click', () => {
+    const tbody = card.querySelector('.pm-segment-table tbody');
+    const idx = tbody.querySelectorAll('tr').length;
+    const colorOpts = COLOR_ORDERS.map(o =>
+      `<option value="${o}" ${o === 'BGR' ? 'selected' : ''}>${o}</option>`
+    ).join('');
+    const row = document.createElement('tr');
+    row.innerHTML = `
+      <td><input type="number" data-idx="${idx}" data-field="range_start" value="0" min="0" max="9999"></td>
+      <td><input type="number" data-idx="${idx}" data-field="range_end" value="0" min="0" max="9999"></td>
+      <td><select data-idx="${idx}" data-field="color_order">${colorOpts}</select></td>
+      <td><button class="pm-row-delete" data-idx="${idx}" data-type="segment">&#x2715;</button></td>
+    `;
+    tbody.appendChild(row);
+    row.querySelectorAll('input, select').forEach(input => {
+      let debounce = null;
+      input.addEventListener('input', () => {
+        clearTimeout(debounce);
+        debounce = setTimeout(() => saveFullStrip(card, stripId), 500);
+      });
+      input.addEventListener('change', () => { clearTimeout(debounce); saveFullStrip(card, stripId); });
+    });
+    row.querySelector('.pm-row-delete').addEventListener('click', () => {
+      row.remove();
+      saveFullStrip(card, stripId);
+    });
+  });
+}
+
+function updateScanlineLedCount(row) {
+  const inputs = row.querySelectorAll('input[type="number"]');
+  if (inputs.length < 4) return;
+  const sx = parseInt(inputs[0].value) || 0;
+  const sy = parseInt(inputs[1].value) || 0;
+  const ex = parseInt(inputs[2].value) || 0;
+  const ey = parseInt(inputs[3].value) || 0;
+  const count = Math.abs(ex - sx) + Math.abs(ey - sy) + 1;
+  const countEl = row.querySelector('.pm-led-count');
+  if (countEl) countEl.textContent = count;
+}
+
+function readStripFromCard(card) {
+  const stripId = parseInt(card.dataset.stripId);
+
+  // Read top-level fields
+  const output = parseInt(card.querySelector('input[data-field="output"]').value) || 0;
+  const outputOffset = parseInt(card.querySelector('input[data-field="output_offset"]').value) || 0;
+  const totalLeds = parseInt(card.querySelector('input[data-field="total_leds"]').value) || 0;
+
+  // Read scanlines
+  const scanlines = [];
+  card.querySelectorAll('.pm-scanline-table tbody tr').forEach(row => {
+    const inputs = row.querySelectorAll('input[type="number"]');
+    if (inputs.length < 4) return;
+    scanlines.push({
+      start: [parseInt(inputs[0].value) || 0, parseInt(inputs[1].value) || 0],
+      end: [parseInt(inputs[2].value) || 0, parseInt(inputs[3].value) || 0],
+    });
+  });
+
+  // Read segments
+  const segments = [];
+  card.querySelectorAll('.pm-segment-table tbody tr').forEach(row => {
+    const rangeStart = parseInt(row.querySelector('input[data-field="range_start"]')?.value) || 0;
+    const rangeEnd = parseInt(row.querySelector('input[data-field="range_end"]')?.value) || 0;
+    const colorOrder = row.querySelector('select[data-field="color_order"]')?.value || 'BGR';
+    segments.push({ range_start: rangeStart, range_end: rangeEnd, color_order: colorOrder });
+  });
+
+  return {
+    id: stripId,
+    output,
+    output_offset: outputOffset,
+    total_leds: totalLeds,
+    scanlines,
+    segments,
+  };
+}
+
+async function saveFullStrip(card, stripId) {
+  const body = readStripFromCard(card);
+  const result = await api('POST', `/api/pixel-map/strips/${stripId}`, body);
+  if (result && result.status === 'ok') {
+    showPmStatus(`Strip ${stripId} saved`);
+    // Reload to refresh grid preview
+    await loadPixelMap();
+  } else {
+    showPmStatus(result?.detail || 'Error saving strip', true);
+  }
+}
+
+async function loadTeensyStatus() {
+  const data = await api('GET', '/api/pixel-map/teensy-status');
+  if (!data) return;
+  const el = document.getElementById('pm-teensy-output');
+  if (!el) return;
+
+  const lines = [];
+  lines.push(`Connected: ${data.connected ? 'Yes' : 'No'}`);
+  if (data.caps) {
+    lines.push(`Firmware: ${data.caps.firmware_version || '--'}`);
+  }
+  if (data.teensy_config) {
+    lines.push(`Outputs: ${data.teensy_config.outputs}`);
+    lines.push(`Max LEDs/Output: ${data.teensy_config.max_leds_per_output}`);
+    lines.push(`Wire Order: ${data.teensy_config.wire_order}`);
+  }
+  if (data.output_config) {
+    lines.push('');
+    lines.push('Output Allocation:');
+    for (const [pin, entries] of Object.entries(data.output_config)) {
+      for (const e of entries) {
+        lines.push(`  Pin ${pin}: strip ${e.strip_id} @ offset ${e.offset}, ${e.count} LEDs`);
+      }
+    }
+  }
+  lines.push(`\nLast CONFIG ACK: ${data.last_config_ack === true ? 'ACK' : data.last_config_ack === false ? 'NAK' : '--'}`);
+  el.textContent = lines.join('\n');
 }
 
 function initSetup() {
-  document.getElementById('add-strip-btn').addEventListener('click', async () => {
-    const result = await api('POST', '/api/setup/strips', {});
-    if (result && result.strips) {
-      renderStripTable(result.strips);
-      showStripStatus('Strip added');
+  // Origin change
+  document.getElementById('pm-origin-select').addEventListener('change', async (e) => {
+    const result = await api('POST', '/api/pixel-map/origin', { origin: e.target.value });
+    if (result && result.status === 'ok') {
+      showPmStatus(`Origin set to ${e.target.value}`);
+      await loadPixelMap();
+    } else {
+      showPmStatus(result?.detail || 'Error setting origin', true);
+    }
+  });
+
+  // Add strip
+  document.getElementById('pm-add-strip-btn').addEventListener('click', async () => {
+    // Find next available strip ID
+    const existingIds = (_pixelMapData?.strips || []).map(s => s.id);
+    let nextId = 0;
+    while (existingIds.includes(nextId)) nextId++;
+
+    const newStrip = {
+      id: nextId,
+      output: 0,
+      output_offset: 0,
+      total_leds: 172,
+      scanlines: [{ start: [nextId, 0], end: [nextId, 171] }],
+      segments: [{ range_start: 0, range_end: 171, color_order: 'BGR' }],
+    };
+
+    const result = await api('POST', '/api/pixel-map/strips', newStrip);
+    if (result && result.status === 'ok') {
+      showPmStatus(`Strip ${nextId} added`);
+      await loadPixelMap();
+    } else {
+      showPmStatus(result?.detail || 'Error adding strip', true);
+    }
+  });
+
+  // Validate button
+  document.getElementById('pm-validate-btn').addEventListener('click', async () => {
+    const result = await api('POST', '/api/pixel-map/validate');
+    const el = document.getElementById('pm-validation-result');
+    if (!result) {
+      el.innerHTML = '<div class="pm-errors">Failed to validate</div>';
+      return;
+    }
+    if (result.valid) {
+      el.innerHTML = '<div class="pm-valid">Configuration is valid</div>';
+    } else {
+      const items = (result.errors || []).map(e => `<li>${e}</li>`).join('');
+      el.innerHTML = `<div class="pm-errors">Validation errors:<ul>${items}</ul></div>`;
     }
   });
 }
@@ -1215,14 +1471,19 @@ async function loadSimEffects() {
 }
 
 async function loadSimStripLabels() {
-  const data = await api('GET', '/api/setup/installation');
+  const data = await api('GET', '/api/pixel-map/');
   if (!data || !data.strips) return;
   const container = document.getElementById('sim-strip-labels');
   container.innerHTML = '';
   for (const strip of data.strips) {
     const div = document.createElement('div');
     div.className = 'sim-strip-label';
-    const arrow = strip.direction === 'bottom_to_top' ? '\u2191' : '\u2193';
+    // Infer direction from first scanline: if start Y < end Y, it goes up (bottom-to-top)
+    let arrow = '\u2193';
+    if (strip.scanlines && strip.scanlines.length > 0) {
+      const sc = strip.scanlines[0];
+      arrow = sc.start[1] < sc.end[1] ? '\u2191' : '\u2193';
+    }
     div.innerHTML = `S${strip.id}<br>${arrow}`;
     container.appendChild(div);
   }

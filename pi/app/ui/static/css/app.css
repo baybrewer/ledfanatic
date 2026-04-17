@@ -810,101 +810,7 @@ input:focus-visible {
   margin-top: 8px;
 }
 
-/* Strip mapping table */
-#strip-table {
-  width: 100%;
-  border-collapse: collapse;
-  margin-top: 12px;
-}
-
-#strip-table th {
-  text-align: left;
-  padding: 6px 4px;
-  font-size: 11px;
-  color: var(--text-dim);
-  border-bottom: 1px solid var(--border);
-}
-
-#strip-table td {
-  padding: 4px;
-  border-bottom: 1px solid var(--border);
-}
-
-#strip-table select,
-#strip-table input[type="number"] {
-  width: 100%;
-  padding: 6px;
-  background: var(--surface2);
-  border: 1px solid var(--border);
-  border-radius: 6px;
-  color: var(--text);
-  font-size: 13px;
-}
-
-.strip-table-wrap {
-  overflow-x: auto;
-}
-
-#strip-table input[type="number"] {
-  width: 55px;
-  padding: 6px 2px 6px 6px;
-}
-
-#strip-table .ch-input { width: 38px; }
-#strip-table .ofs-input { width: 46px; }
-
-#strip-table select {
-  padding: 6px 2px 6px 4px;
-}
-
-#strip-table .strip-id {
-  font-weight: bold;
-  text-align: center;
-  font-size: 14px;
-}
-
-#strip-table .dim-slider {
-  width: 50px;
-}
-
-#strip-table .strip-actions {
-  display: flex;
-  gap: 4px;
-}
-
-#strip-table .strip-actions button {
-  padding: 4px 6px;
-  font-size: 10px;
-  border: 1px solid var(--border);
-  border-radius: 4px;
-  background: var(--surface2);
-  color: var(--text);
-  cursor: pointer;
-}
-
-#strip-table .strip-actions .test-btn {
-  color: var(--accent);
-  border-color: var(--accent);
-}
-
-#strip-table .strip-actions .del-btn {
-  color: var(--danger);
-  border-color: var(--danger);
-}
-
-#add-strip-btn {
-  margin-top: 12px;
-}
-
-#mapping-diagram {
-  width: 100%;
-  height: auto;
-  min-height: 200px;
-  background: var(--surface2);
-  border-radius: 8px;
-  display: block;
-  margin-top: 8px;
-}
+/* Legacy strip table styles removed — replaced by pixel map UI */
 
 .status-msg {
   font-size: 13px;
@@ -1047,4 +953,270 @@ input:focus-visible {
   border-radius: 8px;
   image-rendering: pixelated;
   margin-top: 8px;
+}
+
+/* --- Pixel Map Setup UI --- */
+
+.pm-grid-wrap {
+  background: var(--surface2);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 8px;
+  overflow: auto;
+  max-height: 50vh;
+  margin-top: 8px;
+}
+
+#grid-preview {
+  display: block;
+  width: 100%;
+  height: auto;
+  image-rendering: pixelated;
+}
+
+#pm-grid-info {
+  margin-top: 4px;
+}
+
+.pm-origin-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin: 12px 0;
+}
+
+.pm-origin-row label {
+  font-size: 13px;
+  color: var(--text-dim);
+  min-width: 50px;
+}
+
+.pm-origin-row select {
+  flex: 1;
+}
+
+/* Strip accordion cards */
+.pm-strip-card {
+  background: var(--surface2);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  margin-bottom: 8px;
+  overflow: hidden;
+}
+
+.pm-strip-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 12px;
+  cursor: pointer;
+  user-select: none;
+}
+
+.pm-strip-header:hover {
+  background: rgba(255, 255, 255, 0.03);
+}
+
+.pm-strip-chevron {
+  font-size: 12px;
+  color: var(--text-dim);
+  transition: transform 0.15s;
+  flex-shrink: 0;
+}
+
+.pm-strip-card.expanded .pm-strip-chevron {
+  transform: rotate(90deg);
+}
+
+.pm-strip-color-dot {
+  width: 12px;
+  height: 12px;
+  border-radius: 50%;
+  flex-shrink: 0;
+}
+
+.pm-strip-title {
+  font-weight: 600;
+  font-size: 14px;
+  flex: 1;
+}
+
+.pm-strip-summary {
+  font-size: 12px;
+  color: var(--text-dim);
+  flex-shrink: 0;
+}
+
+.pm-strip-delete {
+  padding: 4px 8px;
+  font-size: 11px;
+  border: 1px solid var(--danger);
+  border-radius: 4px;
+  background: transparent;
+  color: var(--danger);
+  cursor: pointer;
+  flex-shrink: 0;
+}
+
+.pm-strip-delete:hover {
+  background: var(--danger);
+  color: white;
+}
+
+.pm-strip-body {
+  display: none;
+  padding: 0 12px 12px;
+  border-top: 1px solid var(--border);
+}
+
+.pm-strip-card.expanded .pm-strip-body {
+  display: block;
+}
+
+/* Strip fields */
+.pm-field-row {
+  display: flex;
+  gap: 8px;
+  margin-top: 8px;
+  flex-wrap: wrap;
+}
+
+.pm-field {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  flex: 1;
+  min-width: 60px;
+}
+
+.pm-field label {
+  font-size: 11px;
+  color: var(--text-dim);
+}
+
+.pm-field input[type="number"],
+.pm-field select {
+  padding: 6px;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  color: var(--text);
+  font-size: 13px;
+  width: 100%;
+}
+
+/* Scanline and segment tables */
+.pm-sub-table {
+  width: 100%;
+  border-collapse: collapse;
+  margin-top: 8px;
+}
+
+.pm-sub-table th {
+  text-align: left;
+  padding: 4px;
+  font-size: 11px;
+  color: var(--text-dim);
+  border-bottom: 1px solid var(--border);
+}
+
+.pm-sub-table td {
+  padding: 3px 4px;
+  border-bottom: 1px solid rgba(42, 42, 62, 0.5);
+}
+
+.pm-sub-table input[type="number"],
+.pm-sub-table select {
+  width: 100%;
+  padding: 4px;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  color: var(--text);
+  font-size: 12px;
+}
+
+.pm-sub-table .pm-led-count {
+  font-size: 12px;
+  color: var(--text-dim);
+  text-align: center;
+}
+
+.pm-sub-table .pm-row-delete {
+  padding: 2px 6px;
+  font-size: 10px;
+  border: 1px solid var(--danger);
+  border-radius: 3px;
+  background: transparent;
+  color: var(--danger);
+  cursor: pointer;
+}
+
+.pm-sub-table .pm-row-delete:hover {
+  background: var(--danger);
+  color: white;
+}
+
+.pm-add-row-btn {
+  display: inline-block;
+  padding: 4px 10px;
+  font-size: 12px;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  background: var(--surface);
+  color: var(--text-dim);
+  cursor: pointer;
+  margin-top: 6px;
+  margin-right: 6px;
+}
+
+.pm-add-row-btn:hover {
+  border-color: var(--accent);
+  color: var(--text);
+}
+
+.pm-section-label {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text);
+  margin-top: 12px;
+  margin-bottom: 4px;
+}
+
+/* Validation results */
+#pm-validation-result {
+  margin-top: 8px;
+  font-size: 13px;
+}
+
+#pm-validation-result .pm-valid {
+  color: var(--success);
+  padding: 8px;
+  background: var(--surface2);
+  border-radius: 6px;
+}
+
+#pm-validation-result .pm-errors {
+  color: var(--danger);
+  padding: 8px;
+  background: var(--surface2);
+  border-radius: 6px;
+}
+
+#pm-validation-result .pm-errors ul {
+  margin: 4px 0 0 16px;
+  padding: 0;
+}
+
+/* Teensy status */
+#pm-teensy-output {
+  background: var(--surface2);
+  padding: 12px;
+  border-radius: 8px;
+  font-family: 'SF Mono', 'Menlo', monospace;
+  font-size: 12px;
+  color: var(--text-dim);
+  overflow-x: auto;
+  white-space: pre-wrap;
+  word-break: break-all;
 }

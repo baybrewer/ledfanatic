@@ -276,37 +276,51 @@
                 <span class="help-icon">?</span> How to use this page
               </button>
               <div class="help-content" hidden>
-                <p>Map LED strips to OctoWS2811 output channels.</p>
-                <p>Each strip is placed on a channel at an LED offset. Set direction to match wiring (bottom-to-top or top-to-bottom). Color order must match your LED chipset (usually BGR for WS2812B). Use the Test button to light up a strip for identification. Changes apply immediately.</p>
+                <p>Configure your LED pixel map — strips, scanlines, and output mapping.</p>
+                <p>The grid preview shows your LED layout colored by strip ID. Each strip defines scanlines (runs of LEDs along an axis) and segments (color order ranges). Changes are validated and sent to the Teensy for confirmation before applying.</p>
               </div>
             </div>
-            <h3>Channel Layout</h3>
-            <canvas id="mapping-diagram" width="400" height="300"></canvas>
 
+            <!-- Grid Preview Canvas -->
+            <h3>Grid Preview</h3>
+            <div class="pm-grid-wrap">
+              <canvas id="grid-preview" width="400" height="300"></canvas>
+            </div>
+            <div id="pm-grid-info" class="text-dim"></div>
+
+            <!-- Origin Selector -->
+            <div class="pm-origin-row">
+              <label>Origin</label>
+              <select id="pm-origin-select">
+                <option value="bottom-left">Bottom Left</option>
+                <option value="top-left">Top Left</option>
+              </select>
+            </div>
+
+            <!-- Strip Status -->
+            <div id="pm-status" class="status-msg"></div>
+
+            <!-- Strip List -->
+            <h3 style="margin-top:12px;">Strips</h3>
+            <div id="pm-strip-list"></div>
+            <button id="pm-add-strip-btn" class="action-btn secondary">Add Strip</button>
+
+            <!-- Validation Display -->
+            <h3 style="margin-top:16px;">Validation</h3>
+            <button id="pm-validate-btn" class="action-btn secondary">Validate Config</button>
+            <div id="pm-validation-result"></div>
+
+            <!-- Teensy Config Status -->
+            <h3 style="margin-top:16px;">Teensy Config</h3>
+            <div id="pm-teensy-status">
+              <pre id="pm-teensy-output">Loading...</pre>
+            </div>
+
+            <!-- Live Output -->
             <h3 style="margin-top:16px;">Live Output</h3>
             <canvas id="setup-live-canvas" width="600" height="100"></canvas>
 
-            <h3 style="margin-top:16px;">Strip Mapping</h3>
-            <div id="strip-status" class="status-msg"></div>
-            <div class="strip-table-wrap">
-            <table id="strip-table">
-              <thead>
-                <tr>
-                  <th>#</th>
-                  <th>Ch</th>
-                  <th>Ofs</th>
-                  <th>Dir</th>
-                  <th>LEDs</th>
-                  <th>Color</th>
-                  <th>Dim</th>
-                  <th></th>
-                </tr>
-              </thead>
-              <tbody id="strip-rows"></tbody>
-            </table>
-            </div>
-            <button id="add-strip-btn" class="action-btn secondary">Add Strip</button>
-
+            <!-- Wiring Tests -->
             <h3 style="margin-top:24px;">Wiring Tests</h3>
             <div class="button-grid">
               <button class="test-btn" data-test="diag_strip_identify">Strip Identify</button>
