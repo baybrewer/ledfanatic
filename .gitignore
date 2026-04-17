@@ -43,3 +43,4 @@ pi/config/system.yaml
 
 # Logs
 *.log
+.worktrees/
