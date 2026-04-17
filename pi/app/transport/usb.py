@@ -207,6 +207,9 @@ class TeensyTransport:
     output_config is the CompiledPixelMap.output_config dict
     (pin -> [(strip_id, offset, count), ...]).
     Returns True on ACK, False on NAK/timeout.
+
+    Holds the serial lock for both write AND read to prevent stats
+    reads from consuming the CONFIG response.
     """
     if not self.connected or not self.serial:
       return False
@@ -218,29 +221,33 @@ class TeensyTransport:
 
     try:
       async with self._lock:
-        self.serial.write(framed)
+        # Send CONFIG
+        await asyncio.to_thread(self.serial.write, framed)
         self.serial.flush()
+
+        # Wait for ACK/NAK while holding lock
+        deadline = time.monotonic() + timeout
+        while time.monotonic() < deadline:
+          result = self._read_packet()
+          if result:
+            header, _ = result
+            if header.packet_type in {PacketType.CONFIG_ACK, PacketType.CONFIG_NAK}:
+              acked = header.packet_type == PacketType.CONFIG_ACK
+              self._last_config_ack = acked
+              if acked:
+                logger.info(f"CONFIG acknowledged (active pins: {config_list})")
+              else:
+                logger.warning("CONFIG rejected (NAK)")
+              return acked
+          await asyncio.sleep(0.05)
     except (serial.SerialException, OSError) as e:
       logger.error(f"Failed to send CONFIG: {e}")
       self._last_config_ack = False
       return False
 
-    response = await self._wait_for_response(
-      {PacketType.CONFIG_ACK, PacketType.CONFIG_NAK}, timeout=timeout
-    )
-    if response is None:
-      logger.warning("CONFIG: no response (timeout)")
-      self._last_config_ack = False
-      return False
-
-    header, _ = response
-    acked = header.packet_type == PacketType.CONFIG_ACK
-    self._last_config_ack = acked
-    if acked:
-      logger.info(f"CONFIG acknowledged (active pins: {config_list})")
-    else:
-      logger.warning(f"CONFIG rejected (NAK)")
-    return acked
+    logger.warning("CONFIG: no response (timeout)")
+    self._last_config_ack = False
+    return False
 
   async def _wait_for_response(
     self,

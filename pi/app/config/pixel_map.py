@@ -255,9 +255,27 @@ def validate_pixel_map(config: PixelMapConfig) -> list[str]:
   """
   errors: list[str] = []
 
+  # --- OctoWS2811 requires exactly 8 outputs ---
+  if config.teensy_outputs != 8:
+    errors.append(
+      f"teensy_outputs must be exactly 8 (OctoWS2811 hardware), got {config.teensy_outputs}"
+    )
+
+  # --- Duplicate strip IDs ---
+  strip_ids = [s.id for s in config.strips]
+  if len(strip_ids) != len(set(strip_ids)):
+    dupes = [sid for sid in strip_ids if strip_ids.count(sid) > 1]
+    errors.append(f"Duplicate strip IDs: {set(dupes)}")
+
   all_positions: set[tuple[int, int]] = set()
 
   for strip in config.strips:
+    # --- Output index must be < 8 (OctoWS2811 hardware) ---
+    if strip.output < 0 or strip.output >= 8:
+      errors.append(
+        f"Strip {strip.id}: output {strip.output} out of range [0, 7] "
+        f"(OctoWS2811 has exactly 8 outputs)"
+      )
     prefix = f"Strip {strip.id}"
 
     # --- Scanline total must match total_leds ---

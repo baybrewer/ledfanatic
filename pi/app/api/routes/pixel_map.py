@@ -51,6 +51,7 @@ class StripRequest(BaseModel):
   total_leds: int = 0
   segments: list[SegmentRequest] = []
   scanlines: list[ScanlineRequest] = []
+  pixel_overrides: dict[str, list[int]] = {}  # {"led_index": [x, y]}
 
 
 class OriginRequest(BaseModel):
@@ -83,6 +84,7 @@ def _strip_from_request(req: StripRequest) -> StripConfig:
       )
       for s in req.scanlines
     ],
+    pixel_overrides={int(k): tuple(v) for k, v in req.pixel_overrides.items()},
   )
 
 
@@ -210,13 +212,27 @@ def create_router(deps, require_auth) -> APIRouter:
     if deps.pixel_map_config is None:
       raise HTTPException(404, "No pixel map loaded")
 
+    # Strip ID changes not supported via update — delete + re-add instead
+    if req.id != strip_id:
+      raise HTTPException(
+        422,
+        f"Strip ID in body ({req.id}) does not match URL ({strip_id}). "
+        f"To change a strip ID, delete and re-add."
+      )
+
     staged = copy.deepcopy(deps.pixel_map_config)
 
     idx = next((i for i, s in enumerate(staged.strips) if s.id == strip_id), None)
     if idx is None:
       raise HTTPException(404, f"Strip {strip_id} not found")
 
-    staged.strips[idx] = _strip_from_request(req)
+    # Preserve existing pixel_overrides if none provided in request
+    old_strip = staged.strips[idx]
+    new_strip = _strip_from_request(req)
+    if not new_strip.pixel_overrides and old_strip.pixel_overrides:
+      new_strip.pixel_overrides = old_strip.pixel_overrides
+
+    staged.strips[idx] = new_strip
     await _recompile_and_apply(staged, deps)
 
     return {"status": "ok", "strip_id": strip_id}

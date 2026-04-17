@@ -179,6 +179,47 @@ class TestValidation:
     errors = validate_pixel_map(config)
     assert any("range" in e.lower() or "exceed" in e.lower() or "bound" in e.lower() for e in errors)
 
+  def test_duplicate_strip_ids(self):
+    """Duplicate strip IDs are rejected."""
+    config = PixelMapConfig(
+      origin="bottom-left",
+      teensy_outputs=8,
+      teensy_max_leds_per_output=1200,
+      teensy_wire_order="BGR",
+      teensy_signal_family="ws281x_800khz",
+      teensy_octo_pins=[2, 14, 7, 8, 6, 20, 21, 5],
+      strips=[
+        StripConfig(
+          id=0, output=0, output_offset=0, total_leds=3,
+          segments=[SegmentConfig(range_start=0, range_end=2, color_order="BGR")],
+          scanlines=[ScanlineConfig(start=(0, 0), end=(0, 2))],
+          pixel_overrides={},
+        ),
+        StripConfig(
+          id=0, output=1, output_offset=0, total_leds=3,  # duplicate ID!
+          segments=[SegmentConfig(range_start=0, range_end=2, color_order="BGR")],
+          scanlines=[ScanlineConfig(start=(1, 0), end=(1, 2))],
+          pixel_overrides={},
+        ),
+      ],
+    )
+    errors = validate_pixel_map(config)
+    assert any("duplicate" in e.lower() and "strip" in e.lower() for e in errors)
+
+  def test_teensy_outputs_must_be_8(self):
+    """OctoWS2811 requires exactly 8 outputs."""
+    config = _simple_map()
+    config.teensy_outputs = 4
+    errors = validate_pixel_map(config)
+    assert any("teensy_outputs" in e.lower() or "exactly 8" in e.lower() for e in errors)
+
+  def test_strip_output_must_be_in_range(self):
+    """Strip output index must be 0-7."""
+    config = _simple_map()
+    config.strips[0].output = 8
+    errors = validate_pixel_map(config)
+    assert any("output" in e.lower() and "range" in e.lower() for e in errors)
+
   def test_overlapping_output_ranges(self):
     """Two strips on the same output pin must not have overlapping LED ranges."""
     config = PixelMapConfig(
