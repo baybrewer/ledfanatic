@@ -1645,6 +1645,12 @@ const SETUP_LIVE_HEADER_SIZE = 10;  // 1 + 4 + 2 + 2 + 1
 
 function startSetupLivePreview() {
   if (setupLiveWs) return;
+  // Small delay to ensure canvas is visible and has dimensions after tab switch
+  setTimeout(() => _connectSetupLiveWs(), 100);
+}
+
+function _connectSetupLiveWs() {
+  if (setupLiveWs) return;
   const canvas = document.getElementById('setup-live-canvas');
   if (!canvas) return;
   const ctx = canvas.getContext('2d');
