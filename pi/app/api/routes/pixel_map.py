@@ -164,6 +164,17 @@ def create_router(deps, require_auth) -> APIRouter:
     errors = validate_pixel_map(staged)
     return {"valid": len(errors) == 0, "errors": errors}
 
+  # --- POST /test-segment/{seg_index} — light one segment for identification ---
+
+  @router.post("/test-segment/{seg_index}", dependencies=[Depends(require_auth)])
+  async def test_segment(seg_index: int):
+    """Light a single segment for identification (5 seconds)."""
+    compiled = deps.compiled_pixel_map
+    if compiled is None or seg_index < 0 or seg_index >= len(compiled.segments):
+      raise HTTPException(404, f"Segment {seg_index} not found")
+    deps.renderer.set_test_strip(seg_index, duration=5.0)
+    return {'status': 'ok', 'segment': seg_index}
+
   # --- GET /teensy-status — Teensy connection + config status ---
 
   @router.get("/teensy-status")

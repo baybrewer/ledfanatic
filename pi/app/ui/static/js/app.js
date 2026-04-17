@@ -881,6 +881,12 @@ function initSystem() {
 const COLOR_ORDERS = ['BGR','RGB','GRB','GBR','BRG','RBG'];
 
 let _pixelMapData = null;
+let _pmApplyTimer = null;
+
+function scheduleApply() {
+  if (_pmApplyTimer) clearTimeout(_pmApplyTimer);
+  _pmApplyTimer = setTimeout(() => applyPixelMap(), 500);
+}
 
 function segmentColor(index) {
   const hue = (index * 137.508) % 360;
@@ -1064,11 +1070,12 @@ function renderSegmentTable(data) {
       <td class="pm-led-count">${ledCount}</td>
       <td><select data-field="output">${outputOpts}</select></td>
       <td><select data-field="color_order">${colorOpts}</select></td>
+      <td><button class="pm-seg-test" title="Test this segment">T</button></td>
       <td><button class="pm-seg-delete" title="Delete segment">&times;</button></td>
     `;
     tbody.appendChild(row);
 
-    // Auto-update LED count on coordinate changes
+    // Auto-update LED count on coordinate changes + schedule auto-apply
     row.querySelectorAll('input[type="number"]').forEach(input => {
       input.addEventListener('input', () => {
         const sx = parseInt(row.querySelector('[data-field="sx"]').value) || 0;
@@ -1077,16 +1084,31 @@ function renderSegmentTable(data) {
         const ey = parseInt(row.querySelector('[data-field="ey"]').value) || 0;
         const count = Math.abs(ex - sx) + Math.abs(ey - sy) + 1;
         row.querySelector('.pm-led-count').textContent = count;
-        // Also update cards view
         syncTableToCards();
+        scheduleApply();
       });
     });
+
+    // Auto-apply on dropdown changes
+    row.querySelectorAll('select').forEach(sel => {
+      sel.addEventListener('change', () => {
+        syncTableToCards();
+        scheduleApply();
+      });
+    });
+
+    // Test segment button
+    const testBtn = row.querySelector('.pm-seg-test');
+    if (testBtn) {
+      testBtn.addEventListener('click', () => testSegment(parseInt(row.dataset.segIndex)));
+    }
 
     // Delete segment
     row.querySelector('.pm-seg-delete').addEventListener('click', () => {
       row.remove();
       reindexSegmentTable();
       syncTableToCards();
+      scheduleApply();
     });
   }
 }
@@ -1120,6 +1142,7 @@ function renderSegmentCards(data) {
       if (tableRow) tableRow.remove();
       card.remove();
       reindexSegmentTable();
+      scheduleApply();
     });
   }
 }
@@ -1209,6 +1232,7 @@ function addSegmentRow(defaults) {
     <td class="pm-led-count">${ledCount}</td>
     <td><select data-field="output">${outputOpts}</select></td>
     <td><select data-field="color_order">${colorOpts}</select></td>
+    <td><button class="pm-seg-test" title="Test this segment">T</button></td>
     <td><button class="pm-seg-delete" title="Delete segment">&times;</button></td>
   `;
   tbody.appendChild(row);
@@ -1221,13 +1245,26 @@ function addSegmentRow(defaults) {
       const rey = parseInt(row.querySelector('[data-field="ey"]').value) || 0;
       row.querySelector('.pm-led-count').textContent = Math.abs(rex - rsx) + Math.abs(rey - rsy) + 1;
       syncTableToCards();
+      scheduleApply();
     });
+  });
+
+  row.querySelectorAll('select').forEach(sel => {
+    sel.addEventListener('change', () => {
+      syncTableToCards();
+      scheduleApply();
+    });
+  });
+
+  row.querySelector('.pm-seg-test').addEventListener('click', () => {
+    testSegment(parseInt(row.dataset.segIndex));
   });
 
   row.querySelector('.pm-seg-delete').addEventListener('click', () => {
     row.remove();
     reindexSegmentTable();
     syncTableToCards();
+    scheduleApply();
   });
 
   syncTableToCards();
@@ -1263,14 +1300,22 @@ async function applyPixelMap() {
   }
   const result = await api('POST', '/api/pixel-map/apply', { origin, segments });
   if (result && !result.error) {
-    showPmStatus('Pixel map applied successfully');
+    showPmStatus('Saved');
     _pixelMapData = result;
     renderGridSVG(result);
-    renderSegmentTable(result);
-    renderSegmentCards(result);
+    // Don't re-render table/cards during auto-apply — it would disrupt editing
     updateSummary(result);
   } else {
     showPmStatus(result?.detail || result?.error || 'Failed to apply pixel map', true);
+  }
+}
+
+async function testSegment(segIndex) {
+  const result = await api('POST', `/api/pixel-map/test-segment/${segIndex}`);
+  if (result && result.status === 'ok') {
+    showPmStatus(`Testing segment ${segIndex}...`);
+  } else {
+    showPmStatus('Test failed', true);
   }
 }
 
@@ -1325,18 +1370,22 @@ async function loadTeensyStatus() {
 }
 
 function initSetup() {
-  // Add segment
+  // Add segment (auto-applies after debounce)
   document.getElementById('pm-add-segment-btn').addEventListener('click', () => {
     const segments = collectSegments();
     const nextX = segments.length;
     addSegmentRow({ sx: nextX, sy: 0, ex: nextX, ey: 171, output: 0, color_order: 'BGR' });
+    scheduleApply();
   });
 
   // Validate button
   document.getElementById('pm-validate-btn').addEventListener('click', () => validatePixelMap());
 
-  // Apply button
+  // Apply button (manual override)
   document.getElementById('pm-apply-btn').addEventListener('click', () => applyPixelMap());
+
+  // Origin change triggers auto-apply
+  document.getElementById('pm-origin-select').addEventListener('change', () => scheduleApply());
 }
 
 // --- Brightness ---
