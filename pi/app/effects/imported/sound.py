@@ -346,13 +346,14 @@ class BassFire(Effect):
   CATEGORY = "sound"
   DISPLAY_NAME = "SR Bass Fire"
   DESCRIPTION = "Audio-reactive fire with beat flares and phrase explosions"
-  PALETTE_SUPPORT = False
+  PALETTE_SUPPORT = True
 
   PARAMS = [
     _Param("Gain", "gain", 0.5, 8.0, 0.5, 3.0),
     _Param("Base Spark", "base_spark", 0.1, 0.8, 0.05, 0.3),
+    _Param("Heat Cap", "heat_cap", 0.3, 1.0, 0.05, 0.75),
   ]
-  _SCALAR_PARAMS = {"gain": 3.0, "base_spark": 0.3}
+  _SCALAR_PARAMS = {"gain": 3.0, "base_spark": 0.3, "heat_cap": 0.75, "palette": 4}
 
   # Fire physics constants (from Fireplace)
   _SPARK_ZONE = 35
@@ -584,8 +585,14 @@ class BassFire(Effect):
         alive.append(e)
     self._embers = alive
 
-    # ── Render heat — VECTORIZED ──────────────────────────────────
-    self.buf.data = fire_color_grid(self._heat)
+    # ── Render heat — VECTORIZED, palette-driven ─────────────────
+    heat_cap = self.params.get("heat_cap", 0.75)
+    capped_heat = np.minimum(self._heat, heat_cap)
+
+    pal_idx = _get_pal_idx(self.params, default=4)
+    pal_rgb = pal_color_grid(pal_idx, capped_heat)  # (cols, rows, 3) uint8
+    brightness = np.sqrt(np.maximum(0, capped_heat))[..., np.newaxis]
+    self.buf.data = (pal_rgb.astype(np.float64) * brightness).astype(np.uint8)
 
     # ── Render embers (keep scalar — sparse particle loop) ────────
     for e in self._embers:
@@ -594,8 +601,8 @@ class BassFire(Effect):
       if 0 <= ecol < cols and 0 <= erow < rows:
         af = max(0.0, e.life / e.max_life)
         fl = 0.65 + 0.35 * math.sin(e.flicker_phase)
-        b = e.brightness * af * fl
-        ec = fire_color(min(1.0, af * 0.45 + 0.15))
+        b = e.brightness * af * fl * heat_cap
+        ec = pal_color(pal_idx, min(1.0, af * 0.45 + 0.15))
         self.buf.add_led(ecol, erow,
                          int(ec[0] * b * 1.4),
                          int(ec[1] * b * 1.1),
