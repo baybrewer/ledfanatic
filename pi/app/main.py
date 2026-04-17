@@ -118,7 +118,7 @@ def main():
   compiled_pixel_map = compile_pixel_map(pixel_map_config)
   logger.info(
     f"Pixel map: {compiled_pixel_map.width}x{compiled_pixel_map.height} grid, "
-    f"{len(pixel_map_config.strips)} strips, {compiled_pixel_map.total_mapped_leds} LEDs"
+    f"{len(pixel_map_config.segments)} segments, {compiled_pixel_map.total_mapped_leds} LEDs"
   )
 
   # Renderer
