@@ -485,7 +485,7 @@ class Fireplace(Effect):
     self._x_g = np.arange(width, dtype=np.float64)[:, np.newaxis] * np.ones(height)
     self._y_g = np.ones(width)[:, np.newaxis] * np.arange(height, dtype=np.float64)
     # Half-resolution grids for noise (2x faster, visually identical for fire)
-    half_h = height // 2
+    half_h = (height + 1) // 2  # round up so repeat(2) covers full height
     self._x_g_half = np.arange(width, dtype=np.float64)[:, np.newaxis] * np.ones(half_h)
     self._y_g_half = np.ones(width)[:, np.newaxis] * (np.arange(half_h, dtype=np.float64) * 2)
     # Noise cache — update at 30 Hz (every other frame), saves ~6ms/frame
