@@ -944,6 +944,16 @@ input:focus-visible {
   color: var(--accent);
 }
 
+/* Scanline color swatch in setup table */
+.pm-scanline-swatch {
+  display: inline-block;
+  width: 14px;
+  height: 14px;
+  border-radius: 3px;
+  vertical-align: middle;
+  border: 1px solid rgba(255,255,255,0.2);
+}
+
 /* Setup live output — horizontal strip preview between channel layout and strip mapping */
 #setup-live-canvas {
   display: block;

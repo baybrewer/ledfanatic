@@ -885,6 +885,25 @@ const STRIP_COLORS = [
   '#6c5ce7','#00cec9','#fdcb6e','#d63031','#74b9ff','#a29bfe',
 ];
 
+// Generate distinct scanline colors using HSL (golden angle spacing for max distinction)
+function scanlineColor(index) {
+  const hue = (index * 137.508) % 360;  // golden angle
+  return `hsl(${hue}, 75%, 55%)`;
+}
+
+// Build scanline color map: returns { key: "stripId-scanlineIdx" -> color }
+function buildScanlineColorMap(strips) {
+  const map = {};
+  let globalIdx = 0;
+  for (const strip of (strips || [])) {
+    for (let si = 0; si < (strip.scanlines || []).length; si++) {
+      map[`${strip.id}-${si}`] = scanlineColor(globalIdx);
+      globalIdx++;
+    }
+  }
+  return map;
+}
+
 const COLOR_ORDERS = ['RGB','RBG','GRB','GBR','BRG','BGR'];
 
 let _pixelMapData = null;
@@ -915,7 +934,7 @@ async function loadPixelMap() {
   }
 
   renderGridPreview(data);
-  renderStripList(data);
+  renderStripList(data, buildScanlineColorMap(data.strips));
 }
 
 function renderGridPreview(pixelMap) {
@@ -935,11 +954,13 @@ function renderGridPreview(pixelMap) {
     return;
   }
 
-  // Build a grid of strip IDs: grid[x][y] = strip_id or -1
-  const grid = Array.from({ length: gridW }, () => new Int8Array(gridH).fill(-1));
+  // Build a grid of scanline keys: grid[x][y] = "stripId-scanlineIdx" or null
+  const grid = Array.from({ length: gridW }, () => new Array(gridH).fill(null));
+  const slColorMap = buildScanlineColorMap(pixelMap.strips);
 
   for (const strip of (pixelMap.strips || [])) {
-    for (const scanline of (strip.scanlines || [])) {
+    for (let si = 0; si < (strip.scanlines || []).length; si++) {
+      const scanline = strip.scanlines[si];
       const [sx, sy] = scanline.start;
       const [ex, ey] = scanline.end;
       const dx = ex - sx;
@@ -950,7 +971,7 @@ function renderGridPreview(pixelMap) {
       let cx = sx, cy = sy;
       for (let i = 0; i <= steps; i++) {
         if (cx >= 0 && cx < gridW && cy >= 0 && cy < gridH) {
-          grid[cx][cy] = strip.id;
+          grid[cx][cy] = `${strip.id}-${si}`;
         }
         cx += stepX;
         cy += stepY;
@@ -979,13 +1000,13 @@ function renderGridPreview(pixelMap) {
 
   for (let gx = 0; gx < gridW; gx++) {
     for (let gy = 0; gy < gridH; gy++) {
-      const stripId = grid[gx][gy];
+      const slKey = grid[gx][gy];
       const px = gx * cellSize;
       // If bottom-left origin, flip Y so y=0 draws at canvas bottom
       const py = isBottomLeft ? (gridH - 1 - gy) * cellSize : gy * cellSize;
 
-      if (stripId >= 0) {
-        ctx.fillStyle = STRIP_COLORS[stripId % STRIP_COLORS.length];
+      if (slKey !== null && slColorMap[slKey]) {
+        ctx.fillStyle = slColorMap[slKey];
       } else {
         ctx.fillStyle = '#333';
       }
@@ -994,7 +1015,7 @@ function renderGridPreview(pixelMap) {
   }
 }
 
-function renderStripList(pixelMap) {
+function renderStripList(pixelMap, slColorMap) {
   const container = document.getElementById('pm-strip-list');
   if (!container) return;
   container.innerHTML = '';
@@ -1046,7 +1067,7 @@ function renderStripList(pixelMap) {
         <div class="pm-section-label">Scanlines</div>
         <table class="pm-sub-table pm-scanline-table">
           <thead>
-            <tr><th>Start X</th><th>Start Y</th><th>End X</th><th>End Y</th><th>LEDs</th><th></th></tr>
+            <tr><th></th><th>Start X</th><th>Start Y</th><th>End X</th><th>End Y</th><th>LEDs</th><th></th></tr>
           </thead>
           <tbody></tbody>
         </table>
@@ -1069,8 +1090,11 @@ function renderStripList(pixelMap) {
     for (let si = 0; si < (strip.scanlines || []).length; si++) {
       const sc = strip.scanlines[si];
       const ledCount = Math.abs(sc.end[0] - sc.start[0]) + Math.abs(sc.end[1] - sc.start[1]) + 1;
+      const slKey = `${strip.id}-${si}`;
+      const slColor = (slColorMap && slColorMap[slKey]) || '#888';
       const row = document.createElement('tr');
       row.innerHTML = `
+        <td><span class="pm-scanline-swatch" style="background:${slColor}" title="Scanline ${si}"></span></td>
         <td><input type="number" data-idx="${si}" data-coord="sx" value="${sc.start[0]}" min="0" max="999"></td>
         <td><input type="number" data-idx="${si}" data-coord="sy" value="${sc.start[1]}" min="0" max="9999"></td>
         <td><input type="number" data-idx="${si}" data-coord="ex" value="${sc.end[0]}" min="0" max="999"></td>
