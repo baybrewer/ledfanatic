@@ -927,10 +927,14 @@ function renderGridSVG(data) {
 
   const isBottomLeft = (data.origin || 'bottom-left') === 'bottom-left';
 
-  // SVG layout: padding for axis labels
+  // SVG layout: fixed compact size, scale content to fit
   const pad = { left: 30, right: 10, top: 10, bottom: 25 };
-  const cellW = 20;
-  const cellH = 3;  // tall grid needs compressed Y
+  const maxSvgW = 400;
+  const maxSvgH = 180;
+  const availW = maxSvgW - pad.left - pad.right;
+  const availH = maxSvgH - pad.top - pad.bottom;
+  const cellW = Math.max(4, Math.min(20, availW / gridW));
+  const cellH = Math.max(0.5, Math.min(3, availH / gridH));
   const svgW = pad.left + gridW * cellW + pad.right;
   const svgH = pad.top + gridH * cellH + pad.bottom;
 

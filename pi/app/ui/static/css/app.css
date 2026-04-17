@@ -991,11 +991,13 @@ input:focus-visible {
   border-radius: 6px;
   padding: 12px;
   margin-bottom: 12px;
+  max-height: 200px;
+  overflow: hidden;
 }
 
 #pm-grid-svg {
   width: 100%;
-  height: auto;
+  max-height: 180px;
 }
 
 /* Segments header with Add button */
