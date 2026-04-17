@@ -218,11 +218,10 @@ class TeensyTransport:
       build_blackout_payload(enabled),
     )
 
-  async def send_config(self, output_config: dict, timeout: float = 3.0) -> bool:
+  async def send_config(self, output_config, timeout: float = 3.0) -> bool:
     """Send CONFIG packet and wait for ACK/NAK.
 
-    output_config is the CompiledPixelMap.output_config dict
-    (pin -> [(strip_id, offset, count), ...]).
+    output_config: list[int] with 8 entries (LEDs per output pin).
     Returns True on ACK, False on NAK/timeout.
 
     Holds the serial lock for both write AND read to prevent stats
@@ -231,7 +230,11 @@ class TeensyTransport:
     if not self.connected or not self.serial:
       return False
 
-    config_list = output_config_to_list(output_config)
+    # Accept list[int] directly (new flat model) or legacy dict
+    if isinstance(output_config, list):
+      config_list = output_config
+    else:
+      config_list = output_config_to_list(output_config)
     payload = build_config_payload(config_list)
     packet = build_packet(PacketType.CONFIG, payload)
     framed = frame_packet(packet)
