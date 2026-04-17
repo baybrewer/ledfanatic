@@ -290,20 +290,32 @@ class TeensyTransport:
     return await self.send_command(PacketType.TEST_PATTERN, struct.pack('<B', pattern_id))
 
   async def request_stats(self) -> Optional[dict]:
-    if not await self.send_command(PacketType.PING):
+    """Send PING and wait for STATS response. Holds lock to avoid stealing CONFIG responses."""
+    if not self.connected or not self.serial:
       return None
 
-    start = time.monotonic()
-    while time.monotonic() - start < 0.5:
-      result = self._read_packet()
-      if result:
-        header, payload = result
-        if header.packet_type == PacketType.STATS:
-          parsed = parse_stats_payload(payload)
-          if parsed:
-            return parsed
-          return {'error': 'malformed_stats', 'payload_len': len(payload)}
-      await asyncio.sleep(0.005)
+    async with self._lock:
+      try:
+        # Send PING
+        packet = build_packet(PacketType.PING)
+        framed = frame_packet(packet)
+        await asyncio.to_thread(self.serial.write, framed)
+
+        # Wait for STATS response
+        start = time.monotonic()
+        while time.monotonic() - start < 0.5:
+          result = self._read_packet()
+          if result:
+            header, payload = result
+            if header.packet_type == PacketType.STATS:
+              parsed = parse_stats_payload(payload)
+              if parsed:
+                return parsed
+              return {'error': 'malformed_stats', 'payload_len': len(payload)}
+          await asyncio.sleep(0.005)
+      except (serial.SerialException, OSError) as e:
+        logger.error(f"Stats request failed: {e}")
+        self.connected = False
     return None
 
   async def reconnect_loop(self):

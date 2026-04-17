@@ -98,13 +98,13 @@ class StripConfig:
 class PixelMapConfig:
   """Top-level pixel map configuration loaded from YAML."""
 
-  origin: str
-  teensy_outputs: int
-  teensy_max_leds_per_output: int
-  teensy_wire_order: str
-  teensy_signal_family: str
-  teensy_octo_pins: list[int]
-  strips: list[StripConfig]
+  origin: str = "bottom-left"
+  teensy_outputs: int = 8
+  teensy_max_leds_per_output: int = 1200
+  teensy_wire_order: str = "BGR"
+  teensy_signal_family: str = "ws281x_800khz"
+  teensy_octo_pins: list[int] = field(default_factory=lambda: [2, 14, 7, 8, 6, 20, 21, 5])
+  strips: list[StripConfig] = field(default_factory=list)
 
 
 @dataclass
@@ -133,8 +133,12 @@ def load_pixel_map(config_dir: Path) -> PixelMapConfig:
   if not path.exists():
     logger.warning(f"No pixel_map.yaml at {path} — using empty config")
     return PixelMapConfig()
-  with open(path) as f:
-    data = yaml.safe_load(f) or {}
+  try:
+    with open(path) as f:
+      data = yaml.safe_load(f) or {}
+  except yaml.YAMLError as e:
+    logger.error(f"Failed to parse {path}: {e} — using empty config")
+    return PixelMapConfig()
   return _parse_config(data)
 
 
