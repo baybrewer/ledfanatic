@@ -285,24 +285,18 @@ class Renderer:
       # Apply gamma
       logical_frame = self._gamma_lut[logical_frame]
 
-      # Test strip pattern: override one logical column with gradient
+      # Test strip pattern: override one segment with gradient
       if self._test_strip_id is not None:
         if time.monotonic() < self._test_strip_until:
           logical_frame[:] = 0  # black out everything
-          for strip in self.pixel_map.strips:
-            if strip.id == self._test_strip_id:
-              # Find the x-column this strip occupies from its lines
-              positions = []
-              for ln in strip.lines:
-                positions.extend(ln.positions())
-              if positions:
-                col = positions[0][0]
-                if col < logical_frame.shape[0]:
-                  sh = logical_frame.shape[1]
-                  for y in range(sh):
-                    frac = y / max(sh - 1, 1)
-                    logical_frame[col, y] = [int(255 * (1 - frac)), 0, int(255 * frac)]
-              break
+          # _test_strip_id is now a segment index
+          if self._test_strip_id < len(self.pixel_map.segments):
+            segment = self.pixel_map.segments[self._test_strip_id]
+            positions = segment.positions()
+            for idx, (x, y) in enumerate(positions):
+              if x < logical_frame.shape[0] and y < logical_frame.shape[1]:
+                frac = idx / max(len(positions) - 1, 1)
+                logical_frame[x, y] = [int(255 * (1 - frac)), 0, int(255 * frac)]
         else:
           self._test_strip_id = None
 

@@ -8,44 +8,25 @@ import numpy as np
 import pytest
 
 from app.config.pixel_map import (
-  CompiledPixelMap,
   PixelMapConfig,
-  LineConfig,
-  StripConfig,
+  SegmentConfig,
   compile_pixel_map,
 )
 from app.mapping.packer import pack_frame
 
 
-def _simple_compiled() -> CompiledPixelMap:
+def _simple_compiled():
   """
-  2x3 grid with 1 strip of 6 LEDs (BGR order), compiled via compile_pixel_map.
+  2x3 grid with 2 segments on output 0, BGR order, compiled via compile_pixel_map.
 
-  Strip 0: output 0, offset 0, 6 LEDs, BGR color order.
-    Line 0: col 0 going up — (0,0) -> (0,2) = 3 LEDs
-    Line 1: col 1 going down — (1,2) -> (1,0) = 3 LEDs
+  Segment 0: (0,0) -> (0,2) = 3 LEDs going up col 0
+  Segment 1: (1,2) -> (1,0) = 3 LEDs going down col 1
   """
-  config = PixelMapConfig(
-    origin="bottom-left",
-    teensy_outputs=8,
-    teensy_max_leds_per_output=1200,
-    teensy_wire_order="BGR",
-    teensy_signal_family="ws281x_800khz",
-    teensy_octo_pins=[2, 14, 7, 8, 6, 20, 21, 5],
-    strips=[
-      StripConfig(
-        id=0,
-        output=0,
-        output_offset=0,
-        lines=[
-          LineConfig(start=(0, 0), end=(0, 2), color_order="BGR"),
-          LineConfig(start=(1, 2), end=(1, 0), color_order="BGR"),
-        ],
-        pixel_overrides={},
-      ),
-    ],
-  )
-  return compile_pixel_map(config)
+  cfg = PixelMapConfig(segments=[
+    SegmentConfig(start=(0, 0), end=(0, 2), output=0, color_order='BGR'),
+    SegmentConfig(start=(1, 2), end=(1, 0), output=0, color_order='BGR'),
+  ])
+  return compile_pixel_map(cfg)
 
 
 class TestPacker:
@@ -67,24 +48,10 @@ class TestPacker:
 
   def test_color_order_swizzle(self):
     """GRB order: frame pixel [255, 128, 64] (RGB) -> wire bytes [128, 255, 64] (GRB)."""
-    config = PixelMapConfig(
-      origin="bottom-left",
-      teensy_outputs=8,
-      teensy_max_leds_per_output=1200,
-      teensy_wire_order="GRB",
-      teensy_signal_family="ws281x_800khz",
-      teensy_octo_pins=[2, 14, 7, 8, 6, 20, 21, 5],
-      strips=[
-        StripConfig(
-          id=0,
-          output=0,
-          output_offset=0,
-          lines=[LineConfig(start=(0, 0), end=(0, 0), color_order="GRB")],
-          pixel_overrides={},
-        ),
-      ],
-    )
-    pm = compile_pixel_map(config)
+    cfg = PixelMapConfig(segments=[
+      SegmentConfig(start=(0, 0), end=(0, 0), output=0, color_order='GRB'),
+    ])
+    pm = compile_pixel_map(cfg)
     frame = np.zeros((1, 1, 3), dtype=np.uint8)
     frame[0, 0] = [255, 128, 64]  # R=255, G=128, B=64
     buf = pack_frame(frame, pm)
@@ -94,40 +61,18 @@ class TestPacker:
     assert buf[2] == 64   # B
 
   def test_multi_output(self):
-    """2 strips on different outputs (0 and 2), total buffer = sum of all output allocations * 3."""
-    config = PixelMapConfig(
-      origin="bottom-left",
-      teensy_outputs=8,
-      teensy_max_leds_per_output=1200,
-      teensy_wire_order="RGB",
-      teensy_signal_family="ws281x_800khz",
-      teensy_octo_pins=[2, 14, 7, 8, 6, 20, 21, 5],
-      strips=[
-        StripConfig(
-          id=0,
-          output=0,
-          output_offset=0,
-          lines=[LineConfig(start=(0, 0), end=(0, 0), color_order="RGB")],
-          pixel_overrides={},
-        ),
-        StripConfig(
-          id=1,
-          output=2,
-          output_offset=0,
-          lines=[LineConfig(start=(1, 0), end=(1, 0), color_order="RGB")],
-          pixel_overrides={},
-        ),
-      ],
-    )
-    pm = compile_pixel_map(config)
+    """2 segments on different outputs (0 and 2), total buffer = sum of all output allocations * 3."""
+    cfg = PixelMapConfig(segments=[
+      SegmentConfig(start=(0, 0), end=(0, 0), output=0, color_order='RGB'),
+      SegmentConfig(start=(1, 0), end=(1, 0), output=2, color_order='RGB'),
+    ])
+    pm = compile_pixel_map(cfg)
     frame = np.zeros((2, 1, 3), dtype=np.uint8)
     frame[0, 0] = [10, 20, 30]
     frame[1, 0] = [40, 50, 60]
     buf = pack_frame(frame, pm)
     # Output 0: 1 LED = 3 bytes, Output 1: 0 LEDs, Output 2: 1 LED = 3 bytes
-    # Total = (1 + 0 + 1) * 3 = 6 bytes for outputs 0-2 only
-    # But buffer should cover all outputs 0 through max used (2), so:
-    # pin 0: 1 LED, pin 1: 0 LEDs, pin 2: 1 LED -> 3 + 0 + 3 = 6 bytes
+    # output_config = [1, 0, 1, 0, 0, 0, 0, 0] -> total = 6 bytes
     assert len(buf) == 6
     # Output 0 pixel at offset 0: [10, 20, 30] (RGB order)
     assert buf[0] == 10
@@ -140,24 +85,10 @@ class TestPacker:
 
   def test_unmapped_cells_are_black(self):
     """Mapped pixel at (0,0) appears correctly; unmapped LEDs are zero."""
-    config = PixelMapConfig(
-      origin="bottom-left",
-      teensy_outputs=8,
-      teensy_max_leds_per_output=1200,
-      teensy_wire_order="RGB",
-      teensy_signal_family="ws281x_800khz",
-      teensy_octo_pins=[2, 14, 7, 8, 6, 20, 21, 5],
-      strips=[
-        StripConfig(
-          id=0,
-          output=0,
-          output_offset=0,
-          lines=[LineConfig(start=(0, 0), end=(0, 0), color_order="RGB")],
-          pixel_overrides={},
-        ),
-      ],
-    )
-    pm = compile_pixel_map(config)
+    cfg = PixelMapConfig(segments=[
+      SegmentConfig(start=(0, 0), end=(0, 0), output=0, color_order='RGB'),
+    ])
+    pm = compile_pixel_map(cfg)
     frame = np.full((1, 1, 3), 255, dtype=np.uint8)
     buf = pack_frame(frame, pm)
     # (0,0) is mapped -> should contain [255, 255, 255]

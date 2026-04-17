@@ -878,35 +878,14 @@ function initSystem() {
 
 // --- Pixel Map Setup ---
 
-// Strip-to-channel mapping colors (one per strip, cycling)
-const STRIP_COLORS = [
-  '#e74c3c','#3498db','#2ecc71','#f39c12','#9b59b6',
-  '#1abc9c','#e67e22','#e84393','#00b894','#fd79a8',
-  '#6c5ce7','#00cec9','#fdcb6e','#d63031','#74b9ff','#a29bfe',
-];
-
-// Generate distinct line colors using HSL (golden angle spacing for max distinction)
-function lineColor(index) {
-  const hue = (index * 137.508) % 360;  // golden angle
-  return `hsl(${hue}, 75%, 55%)`;
-}
-
-// Build line color map: returns { key: "stripId-lineIdx" -> color }
-function buildLineColorMap(strips) {
-  const map = {};
-  let globalIdx = 0;
-  for (const strip of (strips || [])) {
-    for (let li = 0; li < (strip.lines || []).length; li++) {
-      map[`${strip.id}-${li}`] = lineColor(globalIdx);
-      globalIdx++;
-    }
-  }
-  return map;
-}
-
-const COLOR_ORDERS = ['RGB','RBG','GRB','GBR','BRG','BGR'];
+const COLOR_ORDERS = ['BGR','RGB','GRB','GBR','BRG','RBG'];
 
 let _pixelMapData = null;
+
+function segmentColor(index) {
+  const hue = (index * 137.508) % 360;
+  return `hsl(${hue}, 75%, 55%)`;
+}
 
 function showPmStatus(msg, isError = false) {
   const el = document.getElementById('pm-status');
@@ -921,323 +900,393 @@ async function loadPixelMap() {
   if (!data) return;
   _pixelMapData = data;
 
-  // Set origin selector
   const originSelect = document.getElementById('pm-origin-select');
   if (originSelect && data.origin) {
     originSelect.value = data.origin;
   }
 
-  // Grid info
+  renderGridSVG(data);
+  renderSegmentTable(data);
+  renderSegmentCards(data);
+  updateSummary(data);
+}
+
+function renderGridSVG(data) {
+  const svg = document.getElementById('pm-grid-svg');
+  if (!svg) return;
+
+  const segments = data.segments || [];
+  const gridW = data.grid ? data.grid.width : 0;
+  const gridH = data.grid ? data.grid.height : 0;
+
+  if (gridW === 0 || gridH === 0 || segments.length === 0) {
+    svg.innerHTML = '<text x="20" y="30" fill="#666" font-size="14">No grid data</text>';
+    svg.setAttribute('viewBox', '0 0 200 50');
+    return;
+  }
+
+  const isBottomLeft = (data.origin || 'bottom-left') === 'bottom-left';
+
+  // SVG layout: padding for axis labels
+  const pad = { left: 30, right: 10, top: 10, bottom: 25 };
+  const cellW = 20;
+  const cellH = 3;  // tall grid needs compressed Y
+  const svgW = pad.left + gridW * cellW + pad.right;
+  const svgH = pad.top + gridH * cellH + pad.bottom;
+
+  svg.setAttribute('viewBox', `0 0 ${svgW} ${svgH}`);
+
+  const parts = [];
+
+  // Background grid dots
+  for (let gx = 0; gx < gridW; gx++) {
+    for (let gy = 0; gy < gridH; gy += Math.max(1, Math.floor(gridH / 40))) {
+      const px = pad.left + gx * cellW + cellW / 2;
+      const drawY = isBottomLeft ? (gridH - 1 - gy) : gy;
+      const py = pad.top + drawY * cellH + cellH / 2;
+      parts.push(`<circle cx="${px}" cy="${py}" r="0.8" fill="#333" />`);
+    }
+  }
+
+  // X axis labels (every column)
+  for (let gx = 0; gx < gridW; gx++) {
+    const px = pad.left + gx * cellW + cellW / 2;
+    parts.push(`<text x="${px}" y="${svgH - 5}" fill="#666" font-size="8" text-anchor="middle">${gx}</text>`);
+  }
+
+  // Y axis labels (sparse)
+  const yLabelStep = Math.max(1, Math.floor(gridH / 8));
+  for (let gy = 0; gy <= gridH; gy += yLabelStep) {
+    const drawY = isBottomLeft ? (gridH - 1 - gy) : gy;
+    const py = pad.top + drawY * cellH + cellH / 2;
+    parts.push(`<text x="${pad.left - 4}" y="${py + 3}" fill="#666" font-size="7" text-anchor="end">${gy}</text>`);
+  }
+
+  // Group segments by output for daisy-chain lines
+  const byOutput = {};
+  segments.forEach((seg, idx) => {
+    const out = seg.output;
+    if (!byOutput[out]) byOutput[out] = [];
+    byOutput[out].push({ seg, idx });
+  });
+
+  // Draw daisy-chain dashed lines between consecutive segments on same output
+  for (const entries of Object.values(byOutput)) {
+    if (entries.length < 2) continue;
+    for (let i = 0; i < entries.length - 1; i++) {
+      const prevSeg = entries[i].seg;
+      const nextSeg = entries[i + 1].seg;
+      const prevEnd = prevSeg.end;
+      const nextStart = nextSeg.start;
+      const x1 = pad.left + prevEnd[0] * cellW + cellW / 2;
+      const y1d = isBottomLeft ? (gridH - 1 - prevEnd[1]) : prevEnd[1];
+      const y1 = pad.top + y1d * cellH + cellH / 2;
+      const x2 = pad.left + nextStart[0] * cellW + cellW / 2;
+      const y2d = isBottomLeft ? (gridH - 1 - nextStart[1]) : nextStart[1];
+      const y2 = pad.top + y2d * cellH + cellH / 2;
+      parts.push(`<line x1="${x1}" y1="${y1}" x2="${x2}" y2="${y2}" stroke="#555" stroke-width="1" stroke-dasharray="3,3" />`);
+    }
+  }
+
+  // Draw segments
+  for (let i = 0; i < segments.length; i++) {
+    const seg = segments[i];
+    const color = segmentColor(i);
+    const sx = pad.left + seg.start[0] * cellW + cellW / 2;
+    const sy_raw = isBottomLeft ? (gridH - 1 - seg.start[1]) : seg.start[1];
+    const sy = pad.top + sy_raw * cellH + cellH / 2;
+    const ex = pad.left + seg.end[0] * cellW + cellW / 2;
+    const ey_raw = isBottomLeft ? (gridH - 1 - seg.end[1]) : seg.end[1];
+    const ey = pad.top + ey_raw * cellH + cellH / 2;
+
+    // Thick line for segment path
+    parts.push(`<line x1="${sx}" y1="${sy}" x2="${ex}" y2="${ey}" stroke="${color}" stroke-width="3" stroke-linecap="round" />`);
+
+    // Circle at start (LED 0)
+    parts.push(`<circle cx="${sx}" cy="${sy}" r="4" fill="${color}" stroke="#000" stroke-width="1" />`);
+
+    // Arrow/triangle at end (direction)
+    const dx = ex - sx;
+    const dy = ey - sy;
+    const len = Math.sqrt(dx * dx + dy * dy);
+    if (len > 0) {
+      const ux = dx / len;
+      const uy = dy / len;
+      const arrowSize = 5;
+      const ax = ex;
+      const ay = ey;
+      const p1x = ax - ux * arrowSize + uy * arrowSize * 0.6;
+      const p1y = ay - uy * arrowSize - ux * arrowSize * 0.6;
+      const p2x = ax - ux * arrowSize - uy * arrowSize * 0.6;
+      const p2y = ay - uy * arrowSize + ux * arrowSize * 0.6;
+      parts.push(`<polygon points="${ax},${ay} ${p1x},${p1y} ${p2x},${p2y}" fill="${color}" />`);
+    }
+  }
+
+  svg.innerHTML = parts.join('\n');
+
+  // Grid info text
   const gridInfo = document.getElementById('pm-grid-info');
   if (gridInfo && data.grid) {
     gridInfo.textContent = `${data.grid.width} x ${data.grid.height} — ${data.grid.total_mapped_leds} mapped LEDs`;
   }
-
-  renderGridPreview(data);
-  renderStripList(data, buildLineColorMap(data.strips));
 }
 
-function renderGridPreview(pixelMap) {
-  const canvas = document.getElementById('grid-preview');
-  if (!canvas) return;
-  const ctx = canvas.getContext('2d');
+function renderSegmentTable(data) {
+  const tbody = document.getElementById('pm-segment-tbody');
+  if (!tbody) return;
+  tbody.innerHTML = '';
 
-  const gridW = pixelMap.grid ? pixelMap.grid.width : 0;
-  const gridH = pixelMap.grid ? pixelMap.grid.height : 0;
+  const segments = data.segments || [];
+  for (let i = 0; i < segments.length; i++) {
+    const seg = segments[i];
+    const ledCount = seg.led_count || (Math.abs(seg.end[0] - seg.start[0]) + Math.abs(seg.end[1] - seg.start[1]) + 1);
+    const color = segmentColor(i);
+    const colorOpts = COLOR_ORDERS.map(o =>
+      `<option value="${o}" ${o === (seg.color_order || 'BGR') ? 'selected' : ''}>${o}</option>`
+    ).join('');
+    const outputOpts = Array.from({ length: 8 }, (_, n) =>
+      `<option value="${n}" ${n === seg.output ? 'selected' : ''}>${n}</option>`
+    ).join('');
 
-  if (gridW === 0 || gridH === 0) {
-    canvas.width = 400;
-    canvas.height = 60;
-    ctx.fillStyle = '#666';
-    ctx.font = '14px system-ui, sans-serif';
-    ctx.fillText('No grid data', 20, 35);
-    return;
-  }
+    const row = document.createElement('tr');
+    row.dataset.segIndex = i;
+    row.innerHTML = `
+      <td><span class="pm-seg-swatch" style="background:${color}"></span></td>
+      <td><input type="number" data-field="sx" value="${seg.start[0]}" min="0" max="999"></td>
+      <td><input type="number" data-field="sy" value="${seg.start[1]}" min="0" max="9999"></td>
+      <td><input type="number" data-field="ex" value="${seg.end[0]}" min="0" max="999"></td>
+      <td><input type="number" data-field="ey" value="${seg.end[1]}" min="0" max="9999"></td>
+      <td class="pm-led-count">${ledCount}</td>
+      <td><select data-field="output">${outputOpts}</select></td>
+      <td><select data-field="color_order">${colorOpts}</select></td>
+      <td><button class="pm-seg-delete" title="Delete segment">&times;</button></td>
+    `;
+    tbody.appendChild(row);
 
-  // Build a grid of line keys: grid[x][y] = "stripId-lineIdx" or null
-  const grid = Array.from({ length: gridW }, () => new Array(gridH).fill(null));
-  const lnColorMap = buildLineColorMap(pixelMap.strips);
+    // Auto-update LED count on coordinate changes
+    row.querySelectorAll('input[type="number"]').forEach(input => {
+      input.addEventListener('input', () => {
+        const sx = parseInt(row.querySelector('[data-field="sx"]').value) || 0;
+        const sy = parseInt(row.querySelector('[data-field="sy"]').value) || 0;
+        const ex = parseInt(row.querySelector('[data-field="ex"]').value) || 0;
+        const ey = parseInt(row.querySelector('[data-field="ey"]').value) || 0;
+        const count = Math.abs(ex - sx) + Math.abs(ey - sy) + 1;
+        row.querySelector('.pm-led-count').textContent = count;
+        // Also update cards view
+        syncTableToCards();
+      });
+    });
 
-  for (const strip of (pixelMap.strips || [])) {
-    for (let li = 0; li < (strip.lines || []).length; li++) {
-      const line = strip.lines[li];
-      const [sx, sy] = line.start;
-      const [ex, ey] = line.end;
-      const dx = ex - sx;
-      const dy = ey - sy;
-      const steps = Math.abs(dx) + Math.abs(dy);
-      const stepX = steps === 0 ? 0 : (dx > 0 ? 1 : dx < 0 ? -1 : 0);
-      const stepY = steps === 0 ? 0 : (dy > 0 ? 1 : dy < 0 ? -1 : 0);
-      let cx = sx, cy = sy;
-      for (let i = 0; i <= steps; i++) {
-        if (cx >= 0 && cx < gridW && cy >= 0 && cy < gridH) {
-          grid[cx][cy] = `${strip.id}-${li}`;
-        }
-        cx += stepX;
-        cy += stepY;
-      }
-    }
-  }
-
-  // Draw cells scaled to fit container
-  const dpr = window.devicePixelRatio || 1;
-  const rect = canvas.getBoundingClientRect();
-  const containerW = rect.width || 400;
-
-  // Cell size: scale to fit container width, minimum 3px
-  const cellSize = Math.max(3, Math.floor(containerW / gridW));
-  const canvasW = gridW * cellSize;
-  const canvasH = gridH * cellSize;
-
-  canvas.width = canvasW * dpr;
-  canvas.height = canvasH * dpr;
-  canvas.style.width = canvasW + 'px';
-  canvas.style.height = canvasH + 'px';
-  ctx.scale(dpr, dpr);
-
-  // Origin: bottom-left means y=0 is bottom of canvas
-  const isBottomLeft = (pixelMap.origin || 'bottom-left') === 'bottom-left';
-
-  for (let gx = 0; gx < gridW; gx++) {
-    for (let gy = 0; gy < gridH; gy++) {
-      const lnKey = grid[gx][gy];
-      const px = gx * cellSize;
-      // If bottom-left origin, flip Y so y=0 draws at canvas bottom
-      const py = isBottomLeft ? (gridH - 1 - gy) * cellSize : gy * cellSize;
-
-      if (lnKey !== null && lnColorMap[lnKey]) {
-        ctx.fillStyle = lnColorMap[lnKey];
-      } else {
-        ctx.fillStyle = '#333';
-      }
-      ctx.fillRect(px, py, cellSize - 1, cellSize - 1);
-    }
+    // Delete segment
+    row.querySelector('.pm-seg-delete').addEventListener('click', () => {
+      row.remove();
+      reindexSegmentTable();
+      syncTableToCards();
+    });
   }
 }
 
-function renderStripList(pixelMap, lnColorMap) {
-  const container = document.getElementById('pm-strip-list');
+function renderSegmentCards(data) {
+  const container = document.getElementById('pm-segment-cards');
   if (!container) return;
   container.innerHTML = '';
 
-  const strips = pixelMap.strips || [];
-  if (strips.length === 0) {
-    container.innerHTML = '<p class="text-dim">No strips configured</p>';
-    return;
-  }
+  const segments = data.segments || [];
+  for (let i = 0; i < segments.length; i++) {
+    const seg = segments[i];
+    const ledCount = seg.led_count || (Math.abs(seg.end[0] - seg.start[0]) + Math.abs(seg.end[1] - seg.start[1]) + 1);
+    const color = segmentColor(i);
 
-  for (const strip of strips) {
     const card = document.createElement('div');
-    card.className = 'pm-strip-card';
-    card.dataset.stripId = strip.id;
-
-    const color = STRIP_COLORS[strip.id % STRIP_COLORS.length];
-    const lineCount = (strip.lines || []).length;
-    const totalLineLeds = (strip.lines || []).reduce((sum, ln) => {
-      const dx = Math.abs(ln.end[0] - ln.start[0]);
-      const dy = Math.abs(ln.end[1] - ln.start[1]);
-      return sum + dx + dy + 1;
-    }, 0);
-
+    card.className = 'pm-seg-card';
+    card.dataset.segIndex = i;
     card.innerHTML = `
-      <div class="pm-strip-header">
-        <span class="pm-strip-chevron">&#9654;</span>
-        <span class="pm-strip-color-dot" style="background:${color}"></span>
-        <span class="pm-strip-title">Strip ${strip.id}</span>
-        <span class="pm-strip-summary">Out ${strip.output}+${strip.output_offset} | ${strip.total_leds} LEDs | ${lineCount} lines</span>
-        <button class="pm-strip-delete" data-strip-id="${strip.id}">Delete</button>
-      </div>
-      <div class="pm-strip-body">
-        <div class="pm-field-row">
-          <div class="pm-field">
-            <label>Output Pin</label>
-            <input type="number" data-field="output" value="${strip.output}" min="0" max="7" step="1">
-          </div>
-          <div class="pm-field">
-            <label>Output Offset</label>
-            <input type="number" data-field="output_offset" value="${strip.output_offset}" min="0" max="2400" step="1">
-          </div>
-        </div>
-
-        <div class="pm-section-label">Lines</div>
-        <table class="pm-sub-table pm-line-table">
-          <thead>
-            <tr><th></th><th>Start X</th><th>Start Y</th><th>End X</th><th>End Y</th><th>Color Order</th><th>LEDs</th><th></th></tr>
-          </thead>
-          <tbody></tbody>
-        </table>
-        <button class="pm-add-row-btn pm-add-line" data-strip-id="${strip.id}">+ Line</button>
-      </div>
+      <span class="pm-seg-swatch" style="background:${color}"></span>
+      <span class="pm-seg-card-coords">(${seg.start[0]},${seg.start[1]}) &rarr; (${seg.end[0]},${seg.end[1]})</span>
+      <span class="pm-seg-card-leds">${ledCount} LEDs</span>
+      <span class="pm-seg-card-detail">Out: ${seg.output} &nbsp; Color: ${seg.color_order || 'BGR'}</span>
+      <button class="pm-seg-delete" title="Delete segment">&times;</button>
     `;
     container.appendChild(card);
 
-    // Populate line rows
-    const lineTbody = card.querySelector('.pm-line-table tbody');
-    for (let li = 0; li < (strip.lines || []).length; li++) {
-      const ln = strip.lines[li];
-      const ledCount = Math.abs(ln.end[0] - ln.start[0]) + Math.abs(ln.end[1] - ln.start[1]) + 1;
-      const lnKey = `${strip.id}-${li}`;
-      const lnClr = (lnColorMap && lnColorMap[lnKey]) || '#888';
-      const colorOpts = COLOR_ORDERS.map(o =>
-        `<option value="${o}" ${o === (ln.color_order || 'BGR') ? 'selected' : ''}>${o}</option>`
-      ).join('');
-      const row = document.createElement('tr');
-      row.innerHTML = `
-        <td><span class="pm-line-swatch" style="background:${lnClr}" title="Line ${li}"></span></td>
-        <td><input type="number" data-idx="${li}" data-coord="sx" value="${ln.start[0]}" min="0" max="999"></td>
-        <td><input type="number" data-idx="${li}" data-coord="sy" value="${ln.start[1]}" min="0" max="9999"></td>
-        <td><input type="number" data-idx="${li}" data-coord="ex" value="${ln.end[0]}" min="0" max="999"></td>
-        <td><input type="number" data-idx="${li}" data-coord="ey" value="${ln.end[1]}" min="0" max="9999"></td>
-        <td><select data-idx="${li}" data-field="color_order">${colorOpts}</select></td>
-        <td class="pm-led-count">${ledCount}</td>
-        <td><button class="pm-row-delete" data-idx="${li}" data-type="line">&#x2715;</button></td>
-      `;
-      lineTbody.appendChild(row);
-    }
-
-    // Wire up events for this card
-    wireStripCardEvents(card, strip.id);
+    card.querySelector('.pm-seg-delete').addEventListener('click', () => {
+      // Remove from table too
+      const tableRow = document.querySelector(`#pm-segment-tbody tr[data-seg-index="${i}"]`);
+      if (tableRow) tableRow.remove();
+      card.remove();
+      reindexSegmentTable();
+    });
   }
 }
 
-function wireStripCardEvents(card, stripId) {
-  // Toggle expand/collapse
-  const header = card.querySelector('.pm-strip-header');
-  header.addEventListener('click', (e) => {
-    if (e.target.closest('.pm-strip-delete')) return;
-    card.classList.toggle('expanded');
-  });
-
-  // Delete strip
-  card.querySelector('.pm-strip-delete').addEventListener('click', async (e) => {
-    e.stopPropagation();
-    if (!confirm(`Delete strip ${stripId}?`)) return;
-    const result = await api('DELETE', `/api/pixel-map/strips/${stripId}`);
-    if (result && result.status === 'ok') {
-      showPmStatus(`Strip ${stripId} deleted`);
-      await loadPixelMap();
-    } else {
-      showPmStatus(result?.detail || 'Failed to delete strip', true);
-    }
-  });
-
-  // Field changes (output, output_offset, total_leds) — debounced save of full strip
-  card.querySelectorAll('.pm-field input[type="number"]').forEach(input => {
-    let debounce = null;
-    const saveStrip = () => {
-      clearTimeout(debounce);
-      debounce = setTimeout(() => saveFullStrip(card, stripId), 500);
-    };
-    input.addEventListener('input', saveStrip);
-    input.addEventListener('change', () => { clearTimeout(debounce); saveFullStrip(card, stripId); });
-  });
-
-  // Line input changes — debounced save
-  card.querySelectorAll('.pm-line-table input, .pm-line-table select').forEach(input => {
-    let debounce = null;
-    input.addEventListener('input', () => {
-      // Update LED count display if it's a coordinate input
-      const row = input.closest('tr');
-      updateLineLedCount(row);
-      clearTimeout(debounce);
-      debounce = setTimeout(() => saveFullStrip(card, stripId), 500);
-    });
-    input.addEventListener('change', () => { clearTimeout(debounce); saveFullStrip(card, stripId); });
-  });
-
-  // Delete line row
-  card.querySelectorAll('.pm-row-delete').forEach(btn => {
-    btn.addEventListener('click', () => {
-      btn.closest('tr').remove();
-      saveFullStrip(card, stripId);
-    });
-  });
-
-  // Add line
-  card.querySelector('.pm-add-line').addEventListener('click', () => {
-    const tbody = card.querySelector('.pm-line-table tbody');
-    const idx = tbody.querySelectorAll('tr').length;
-    const colorOpts = COLOR_ORDERS.map(o =>
-      `<option value="${o}" ${o === 'BGR' ? 'selected' : ''}>${o}</option>`
-    ).join('');
-    const row = document.createElement('tr');
-    row.innerHTML = `
-      <td></td>
-      <td><input type="number" data-idx="${idx}" data-coord="sx" value="0" min="0" max="999"></td>
-      <td><input type="number" data-idx="${idx}" data-coord="sy" value="0" min="0" max="9999"></td>
-      <td><input type="number" data-idx="${idx}" data-coord="ex" value="0" min="0" max="999"></td>
-      <td><input type="number" data-idx="${idx}" data-coord="ey" value="0" min="0" max="9999"></td>
-      <td><select data-idx="${idx}" data-field="color_order">${colorOpts}</select></td>
-      <td class="pm-led-count">1</td>
-      <td><button class="pm-row-delete" data-idx="${idx}" data-type="line">&#x2715;</button></td>
+function syncTableToCards() {
+  const segments = collectSegments();
+  const container = document.getElementById('pm-segment-cards');
+  if (!container) return;
+  container.innerHTML = '';
+  for (let i = 0; i < segments.length; i++) {
+    const seg = segments[i];
+    const ledCount = Math.abs(seg.end[0] - seg.start[0]) + Math.abs(seg.end[1] - seg.start[1]) + 1;
+    const color = segmentColor(i);
+    const card = document.createElement('div');
+    card.className = 'pm-seg-card';
+    card.innerHTML = `
+      <span class="pm-seg-swatch" style="background:${color}"></span>
+      <span class="pm-seg-card-coords">(${seg.start[0]},${seg.start[1]}) &rarr; (${seg.end[0]},${seg.end[1]})</span>
+      <span class="pm-seg-card-leds">${ledCount} LEDs</span>
+      <span class="pm-seg-card-detail">Out: ${seg.output} &nbsp; Color: ${seg.color_order}</span>
     `;
-    tbody.appendChild(row);
-    // Wire events for new row
-    row.querySelectorAll('input, select').forEach(input => {
-      let debounce = null;
-      input.addEventListener('input', () => {
-        updateLineLedCount(row);
-        clearTimeout(debounce);
-        debounce = setTimeout(() => saveFullStrip(card, stripId), 500);
-      });
-      input.addEventListener('change', () => { clearTimeout(debounce); saveFullStrip(card, stripId); });
-    });
-    row.querySelector('.pm-row-delete').addEventListener('click', () => {
-      row.remove();
-      saveFullStrip(card, stripId);
+    container.appendChild(card);
+  }
+}
+
+function reindexSegmentTable() {
+  const rows = document.querySelectorAll('#pm-segment-tbody tr');
+  rows.forEach((row, idx) => {
+    row.dataset.segIndex = idx;
+    const swatch = row.querySelector('.pm-seg-swatch');
+    if (swatch) swatch.style.background = segmentColor(idx);
+  });
+  // Update summary with current table state
+  const segments = collectSegments();
+  const outputs = new Set(segments.map(s => s.output));
+  const totalLeds = segments.reduce((sum, s) =>
+    sum + Math.abs(s.end[0] - s.start[0]) + Math.abs(s.end[1] - s.start[1]) + 1, 0);
+  const maxX = segments.length > 0 ? Math.max(...segments.map(s => Math.max(s.start[0], s.end[0]))) + 1 : 0;
+  const maxY = segments.length > 0 ? Math.max(...segments.map(s => Math.max(s.start[1], s.end[1]))) + 1 : 0;
+  const sumEl = document.getElementById('pm-summary-text');
+  if (sumEl) {
+    sumEl.textContent = `${segments.length} segments · ${outputs.size} outputs · ${totalLeds} LEDs · Grid ${maxX}x${maxY}`;
+  }
+}
+
+function updateSummary(data) {
+  const segments = data.segments || [];
+  const outputs = new Set(segments.map(s => s.output));
+  const totalLeds = segments.reduce((sum, s) => sum + (s.led_count || 0), 0);
+  const gridW = data.grid ? data.grid.width : 0;
+  const gridH = data.grid ? data.grid.height : 0;
+  const el = document.getElementById('pm-summary-text');
+  if (el) {
+    el.textContent = `${segments.length} segments · ${outputs.size} outputs · ${totalLeds} LEDs · Grid ${gridW}x${gridH}`;
+  }
+}
+
+function addSegmentRow(defaults) {
+  const tbody = document.getElementById('pm-segment-tbody');
+  if (!tbody) return;
+  const idx = tbody.querySelectorAll('tr').length;
+  const seg = defaults || {};
+  const sx = seg.sx ?? idx;
+  const sy = seg.sy ?? 0;
+  const ex = seg.ex ?? sx;
+  const ey = seg.ey ?? 171;
+  const output = seg.output ?? 0;
+  const colorOrder = seg.color_order ?? 'BGR';
+  const ledCount = Math.abs(ex - sx) + Math.abs(ey - sy) + 1;
+  const color = segmentColor(idx);
+
+  const colorOpts = COLOR_ORDERS.map(o =>
+    `<option value="${o}" ${o === colorOrder ? 'selected' : ''}>${o}</option>`
+  ).join('');
+  const outputOpts = Array.from({ length: 8 }, (_, n) =>
+    `<option value="${n}" ${n === output ? 'selected' : ''}>${n}</option>`
+  ).join('');
+
+  const row = document.createElement('tr');
+  row.dataset.segIndex = idx;
+  row.innerHTML = `
+    <td><span class="pm-seg-swatch" style="background:${color}"></span></td>
+    <td><input type="number" data-field="sx" value="${sx}" min="0" max="999"></td>
+    <td><input type="number" data-field="sy" value="${sy}" min="0" max="9999"></td>
+    <td><input type="number" data-field="ex" value="${ex}" min="0" max="999"></td>
+    <td><input type="number" data-field="ey" value="${ey}" min="0" max="9999"></td>
+    <td class="pm-led-count">${ledCount}</td>
+    <td><select data-field="output">${outputOpts}</select></td>
+    <td><select data-field="color_order">${colorOpts}</select></td>
+    <td><button class="pm-seg-delete" title="Delete segment">&times;</button></td>
+  `;
+  tbody.appendChild(row);
+
+  row.querySelectorAll('input[type="number"]').forEach(input => {
+    input.addEventListener('input', () => {
+      const rsx = parseInt(row.querySelector('[data-field="sx"]').value) || 0;
+      const rsy = parseInt(row.querySelector('[data-field="sy"]').value) || 0;
+      const rex = parseInt(row.querySelector('[data-field="ex"]').value) || 0;
+      const rey = parseInt(row.querySelector('[data-field="ey"]').value) || 0;
+      row.querySelector('.pm-led-count').textContent = Math.abs(rex - rsx) + Math.abs(rey - rsy) + 1;
+      syncTableToCards();
     });
   });
+
+  row.querySelector('.pm-seg-delete').addEventListener('click', () => {
+    row.remove();
+    reindexSegmentTable();
+    syncTableToCards();
+  });
+
+  syncTableToCards();
+  reindexSegmentTable();
 }
 
-function updateLineLedCount(row) {
-  const inputs = row.querySelectorAll('input[type="number"]');
-  if (inputs.length < 4) return;
-  const sx = parseInt(inputs[0].value) || 0;
-  const sy = parseInt(inputs[1].value) || 0;
-  const ex = parseInt(inputs[2].value) || 0;
-  const ey = parseInt(inputs[3].value) || 0;
-  const count = Math.abs(ex - sx) + Math.abs(ey - sy) + 1;
-  const countEl = row.querySelector('.pm-led-count');
-  if (countEl) countEl.textContent = count;
-}
-
-function readStripFromCard(card) {
-  const stripId = parseInt(card.dataset.stripId);
-
-  // Read top-level fields
-  const output = parseInt(card.querySelector('input[data-field="output"]').value) || 0;
-  const outputOffset = parseInt(card.querySelector('input[data-field="output_offset"]').value) || 0;
-
-  // Read lines
-  const lines = [];
-  card.querySelectorAll('.pm-line-table tbody tr').forEach(row => {
-    const inputs = row.querySelectorAll('input[type="number"]');
-    if (inputs.length < 4) return;
-    const colorOrder = row.querySelector('select[data-field="color_order"]')?.value || 'BGR';
-    lines.push({
-      start: [parseInt(inputs[0].value) || 0, parseInt(inputs[1].value) || 0],
-      end: [parseInt(inputs[2].value) || 0, parseInt(inputs[3].value) || 0],
+function collectSegments() {
+  const rows = document.querySelectorAll('#pm-segment-tbody tr');
+  const segments = [];
+  rows.forEach(row => {
+    const sx = parseInt(row.querySelector('[data-field="sx"]').value) || 0;
+    const sy = parseInt(row.querySelector('[data-field="sy"]').value) || 0;
+    const ex = parseInt(row.querySelector('[data-field="ex"]').value) || 0;
+    const ey = parseInt(row.querySelector('[data-field="ey"]').value) || 0;
+    const output = parseInt(row.querySelector('[data-field="output"]').value) || 0;
+    const colorOrder = row.querySelector('[data-field="color_order"]').value || 'BGR';
+    segments.push({
+      start: [sx, sy],
+      end: [ex, ey],
+      output,
       color_order: colorOrder,
     });
   });
-
-  return {
-    id: stripId,
-    output,
-    output_offset: outputOffset,
-    lines,
-  };
+  return segments;
 }
 
-async function saveFullStrip(card, stripId) {
-  const body = readStripFromCard(card);
-  const result = await api('POST', `/api/pixel-map/strips/${stripId}`, body);
-  if (result && result.status === 'ok') {
-    showPmStatus(`Strip ${stripId} saved`);
-    // Reload to refresh grid preview
-    await loadPixelMap();
+async function applyPixelMap() {
+  const origin = document.getElementById('pm-origin-select').value;
+  const segments = collectSegments();
+  if (segments.length === 0) {
+    showPmStatus('No segments to apply', true);
+    return;
+  }
+  const result = await api('POST', '/api/pixel-map/apply', { origin, segments });
+  if (result && !result.error) {
+    showPmStatus('Pixel map applied successfully');
+    _pixelMapData = result;
+    renderGridSVG(result);
+    renderSegmentTable(result);
+    renderSegmentCards(result);
+    updateSummary(result);
   } else {
-    showPmStatus(result?.detail || 'Error saving strip', true);
+    showPmStatus(result?.detail || result?.error || 'Failed to apply pixel map', true);
+  }
+}
+
+async function validatePixelMap() {
+  const origin = document.getElementById('pm-origin-select').value;
+  const segments = collectSegments();
+  if (segments.length === 0) {
+    showPmStatus('No segments to validate', true);
+    return;
+  }
+  const result = await api('POST', '/api/pixel-map/validate', { origin, segments });
+  if (!result) {
+    showPmStatus('Validation request failed', true);
+    return;
+  }
+  if (result.valid) {
+    showPmStatus('Configuration is valid');
+  } else {
+    const errors = (result.errors || []).join('; ');
+    showPmStatus(`Validation errors: ${errors}`, true);
   }
 }
 
@@ -1260,10 +1309,11 @@ async function loadTeensyStatus() {
   if (data.output_config) {
     lines.push('');
     lines.push('Output Allocation:');
-    for (const [pin, entries] of Object.entries(data.output_config)) {
-      for (const e of entries) {
-        lines.push(`  Pin ${pin}: strip ${e.strip_id} @ offset ${e.offset}, ${e.count} LEDs`);
-      }
+    const outputConfig = data.output_config;
+    if (Array.isArray(outputConfig)) {
+      outputConfig.forEach((count, pin) => {
+        if (count > 0) lines.push(`  Pin ${pin}: ${count} LEDs`);
+      });
     }
   }
   lines.push(`\nLast CONFIG ACK: ${data.last_config_ack === true ? 'ACK' : data.last_config_ack === false ? 'NAK' : '--'}`);
@@ -1271,55 +1321,18 @@ async function loadTeensyStatus() {
 }
 
 function initSetup() {
-  // Origin change
-  document.getElementById('pm-origin-select').addEventListener('change', async (e) => {
-    const result = await api('POST', '/api/pixel-map/origin', { origin: e.target.value });
-    if (result && result.status === 'ok') {
-      showPmStatus(`Origin set to ${e.target.value}`);
-      await loadPixelMap();
-    } else {
-      showPmStatus(result?.detail || 'Error setting origin', true);
-    }
-  });
-
-  // Add strip
-  document.getElementById('pm-add-strip-btn').addEventListener('click', async () => {
-    // Find next available strip ID
-    const existingIds = (_pixelMapData?.strips || []).map(s => s.id);
-    let nextId = 0;
-    while (existingIds.includes(nextId)) nextId++;
-
-    const newStrip = {
-      id: nextId,
-      output: 0,
-      output_offset: 0,
-      lines: [{ start: [nextId, 0], end: [nextId, 171], color_order: 'BGR' }],
-    };
-
-    const result = await api('POST', '/api/pixel-map/strips', newStrip);
-    if (result && result.status === 'ok') {
-      showPmStatus(`Strip ${nextId} added`);
-      await loadPixelMap();
-    } else {
-      showPmStatus(result?.detail || 'Error adding strip', true);
-    }
+  // Add segment
+  document.getElementById('pm-add-segment-btn').addEventListener('click', () => {
+    const segments = collectSegments();
+    const nextX = segments.length;
+    addSegmentRow({ sx: nextX, sy: 0, ex: nextX, ey: 171, output: 0, color_order: 'BGR' });
   });
 
   // Validate button
-  document.getElementById('pm-validate-btn').addEventListener('click', async () => {
-    const result = await api('POST', '/api/pixel-map/validate');
-    const el = document.getElementById('pm-validation-result');
-    if (!result) {
-      el.innerHTML = '<div class="pm-errors">Failed to validate</div>';
-      return;
-    }
-    if (result.valid) {
-      el.innerHTML = '<div class="pm-valid">Configuration is valid</div>';
-    } else {
-      const items = (result.errors || []).map(e => `<li>${e}</li>`).join('');
-      el.innerHTML = `<div class="pm-errors">Validation errors:<ul>${items}</ul></div>`;
-    }
-  });
+  document.getElementById('pm-validate-btn').addEventListener('click', () => validatePixelMap());
+
+  // Apply button
+  document.getElementById('pm-apply-btn').addEventListener('click', () => applyPixelMap());
 }
 
 // --- Brightness ---
@@ -1423,19 +1436,18 @@ async function loadSimEffects() {
 
 async function loadSimStripLabels() {
   const data = await api('GET', '/api/pixel-map/');
-  if (!data || !data.strips) return;
+  if (!data || !data.segments) return;
   const container = document.getElementById('sim-strip-labels');
   container.innerHTML = '';
-  for (const strip of data.strips) {
+  // Group segments by X column for strip labels
+  const xCols = new Set(data.segments.map(s => s.start[0]));
+  const sorted = Array.from(xCols).sort((a, b) => a - b);
+  for (const x of sorted) {
+    const seg = data.segments.find(s => s.start[0] === x);
     const div = document.createElement('div');
     div.className = 'sim-strip-label';
-    // Infer direction from first line: if start Y < end Y, it goes up (bottom-to-top)
-    let arrow = '\u2193';
-    if (strip.lines && strip.lines.length > 0) {
-      const ln = strip.lines[0];
-      arrow = ln.start[1] < ln.end[1] ? '\u2191' : '\u2193';
-    }
-    div.innerHTML = `S${strip.id}<br>${arrow}`;
+    const arrow = seg.start[1] < seg.end[1] ? '\u2191' : '\u2193';
+    div.innerHTML = `S${x}<br>${arrow}`;
     container.appendChild(div);
   }
 }

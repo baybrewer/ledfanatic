@@ -14,7 +14,7 @@ def _make_renderer():
   renderer.pixel_map = CompiledPixelMap(
     width=10, height=172, origin='bottom-left',
     forward_lut=np.full((10, 172, 2), -1, dtype=np.int16),
-    reverse_lut=[], output_config={}, strips=[],
+    reverse_lut=[], output_config=[0]*8, segment_offsets=[], segments=[],
     total_mapped_leds=0, teensy_outputs=8, teensy_max_leds_per_output=1200,
   )
   renderer.effects_config = {}

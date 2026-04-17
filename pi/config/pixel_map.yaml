@@ -1,9 +1,10 @@
 # Pixel map — single source of truth for LED geometry.
 #
-# 10-strip serpentine pillar: 10 columns x 172 rows.
-# Even strips go up (bottom->top), odd strips go down (top->bottom).
+# 10-segment serpentine pillar: 10 columns x 172 rows.
+# Even segments go up (bottom->top), odd segments go down (top->bottom).
 # Paired on 5 OctoWS2811 outputs (0+1 on output 0, 2+3 on output 1, etc.)
 
+schema_version: 2
 origin: bottom-left
 
 teensy:
@@ -13,88 +14,53 @@ teensy:
   signal_family: ws281x_800khz
   octo_pins: [2, 14, 7, 8, 6, 20, 21, 5]
 
-strips:
-  # --- Output 0: strips 0 + 1 ---
-  - id: 0
+segments:
+  # --- Output 0: segments 0 + 1 ---
+  - start: [0, 0]
+    end: [0, 171]
     output: 0
-    output_offset: 0
-    lines:
-      - start: [0, 0]
-        end: [0, 171]
-        color_order: BGR
-
-  - id: 1
+    color_order: BGR
+  - start: [1, 171]
+    end: [1, 0]
     output: 0
-    output_offset: 172
-    lines:
-      - start: [1, 171]
-        end: [1, 0]
-        color_order: BGR
+    color_order: BGR
 
-  # --- Output 1: strips 2 + 3 ---
-  - id: 2
+  # --- Output 1: segments 2 + 3 ---
+  - start: [2, 0]
+    end: [2, 171]
     output: 1
-    output_offset: 0
-    lines:
-      - start: [2, 0]
-        end: [2, 171]
-        color_order: BGR
-
-  - id: 3
+    color_order: BGR
+  - start: [3, 171]
+    end: [3, 0]
     output: 1
-    output_offset: 172
-    lines:
-      - start: [3, 171]
-        end: [3, 0]
-        color_order: BGR
+    color_order: BGR
 
-  # --- Output 2: strips 4 + 5 ---
-  - id: 4
+  # --- Output 2: segments 4 + 5 ---
+  - start: [4, 0]
+    end: [4, 171]
     output: 2
-    output_offset: 0
-    lines:
-      - start: [4, 0]
-        end: [4, 171]
-        color_order: BGR
-
-  - id: 5
+    color_order: BGR
+  - start: [5, 171]
+    end: [5, 0]
     output: 2
-    output_offset: 172
-    lines:
-      - start: [5, 171]
-        end: [5, 0]
-        color_order: BGR
+    color_order: BGR
 
-  # --- Output 3: strips 6 + 7 ---
-  - id: 6
+  # --- Output 3: segments 6 + 7 ---
+  - start: [6, 0]
+    end: [6, 171]
     output: 3
-    output_offset: 0
-    lines:
-      - start: [6, 0]
-        end: [6, 171]
-        color_order: BGR
-
-  - id: 7
+    color_order: BGR
+  - start: [7, 171]
+    end: [7, 0]
     output: 3
-    output_offset: 172
-    lines:
-      - start: [7, 171]
-        end: [7, 0]
-        color_order: BGR
+    color_order: BGR
 
-  # --- Output 4: strips 8 + 9 ---
-  - id: 8
+  # --- Output 4: segments 8 + 9 ---
+  - start: [8, 0]
+    end: [8, 171]
     output: 4
-    output_offset: 0
-    lines:
-      - start: [8, 0]
-        end: [8, 171]
-        color_order: BGR
-
-  - id: 9
+    color_order: BGR
+  - start: [9, 171]
+    end: [9, 0]
     output: 4
-    output_offset: 172
-    lines:
-      - start: [9, 171]
-        end: [9, 0]
-        color_order: BGR
+    color_order: BGR

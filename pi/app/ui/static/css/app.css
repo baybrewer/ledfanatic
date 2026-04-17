@@ -944,16 +944,6 @@ input:focus-visible {
   color: var(--accent);
 }
 
-/* Line color swatch in setup table */
-.pm-line-swatch {
-  display: inline-block;
-  width: 14px;
-  height: 14px;
-  border-radius: 3px;
-  vertical-align: middle;
-  border: 1px solid rgba(255,255,255,0.2);
-}
-
 /* Setup live output — horizontal strip preview between channel layout and strip mapping */
 #setup-live-canvas {
   display: block;
@@ -965,257 +955,207 @@ input:focus-visible {
   margin-top: 8px;
 }
 
-/* --- Pixel Map Setup UI --- */
+/* --- Pixel Map Setup UI (flat segment table) --- */
 
-.pm-grid-wrap {
-  background: var(--surface2);
-  border: 1px solid var(--border);
-  border-radius: 8px;
-  padding: 8px;
-  overflow: auto;
-  max-height: 50vh;
-  margin-top: 8px;
+#pm-grid-container {
+  margin-top: 12px;
 }
 
-#grid-preview {
-  display: block;
-  width: 100%;
-  height: auto;
-  image-rendering: pixelated;
-}
-
-#pm-grid-info {
-  margin-top: 4px;
+.pm-grid-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 8px;
+  flex-wrap: wrap;
 }
 
 .pm-origin-row {
   display: flex;
   align-items: center;
-  gap: 10px;
-  margin: 12px 0;
+  gap: 6px;
 }
 
 .pm-origin-row label {
   font-size: 13px;
   color: var(--text-dim);
-  min-width: 50px;
 }
 
 .pm-origin-row select {
-  flex: 1;
+  padding: 4px 8px;
+  font-size: 13px;
 }
 
-/* Strip accordion cards */
-.pm-strip-card {
-  background: var(--surface2);
-  border: 1px solid var(--border);
-  border-radius: 8px;
-  margin-bottom: 8px;
-  overflow: hidden;
+.pm-svg-wrap {
+  background: #111;
+  border-radius: 6px;
+  padding: 12px;
+  margin-bottom: 12px;
 }
 
-.pm-strip-header {
+#pm-grid-svg {
+  width: 100%;
+  height: auto;
+}
+
+/* Segments header with Add button */
+.pm-segments-header {
   display: flex;
   align-items: center;
-  gap: 8px;
-  padding: 10px 12px;
-  cursor: pointer;
-  user-select: none;
+  justify-content: space-between;
+  margin-bottom: 8px;
 }
 
-.pm-strip-header:hover {
-  background: rgba(255, 255, 255, 0.03);
-}
-
-.pm-strip-chevron {
-  font-size: 12px;
-  color: var(--text-dim);
-  transition: transform 0.15s;
-  flex-shrink: 0;
-}
-
-.pm-strip-card.expanded .pm-strip-chevron {
-  transform: rotate(90deg);
-}
-
-.pm-strip-color-dot {
-  width: 12px;
-  height: 12px;
-  border-radius: 50%;
-  flex-shrink: 0;
-}
-
-.pm-strip-title {
-  font-weight: 600;
+.pm-segments-header .pm-label {
   font-size: 14px;
-  flex: 1;
-}
-
-.pm-strip-summary {
-  font-size: 12px;
-  color: var(--text-dim);
-  flex-shrink: 0;
-}
-
-.pm-strip-delete {
-  padding: 4px 8px;
-  font-size: 11px;
-  border: 1px solid var(--danger);
-  border-radius: 4px;
-  background: transparent;
-  color: var(--danger);
-  cursor: pointer;
-  flex-shrink: 0;
-}
-
-.pm-strip-delete:hover {
-  background: var(--danger);
-  color: white;
-}
-
-.pm-strip-body {
-  display: none;
-  padding: 0 12px 12px;
-  border-top: 1px solid var(--border);
-}
-
-.pm-strip-card.expanded .pm-strip-body {
-  display: block;
-}
-
-/* Strip fields */
-.pm-field-row {
-  display: flex;
-  gap: 8px;
-  margin-top: 8px;
-  flex-wrap: wrap;
-}
-
-.pm-field {
-  display: flex;
-  flex-direction: column;
-  gap: 2px;
-  flex: 1;
-  min-width: 60px;
-}
-
-.pm-field label {
-  font-size: 11px;
-  color: var(--text-dim);
-}
-
-.pm-field input[type="number"],
-.pm-field select {
-  padding: 6px;
-  background: var(--bg);
-  border: 1px solid var(--border);
-  border-radius: 6px;
+  font-weight: 600;
   color: var(--text);
-  font-size: 13px;
-  width: 100%;
 }
 
-/* Line tables */
-.pm-sub-table {
+.pm-segments-header .action-btn {
+  width: auto;
+  padding: 6px 14px;
+  margin: 0;
+  font-size: 13px;
+}
+
+/* Flat segment table */
+.pm-seg-table {
   width: 100%;
   border-collapse: collapse;
-  margin-top: 8px;
+  font-size: 13px;
 }
 
-.pm-sub-table th {
-  text-align: left;
-  padding: 4px;
-  font-size: 11px;
-  color: var(--text-dim);
+.pm-seg-table th {
+  padding: 6px;
+  color: #888;
+  text-align: center;
   border-bottom: 1px solid var(--border);
+  font-size: 11px;
+  font-weight: 500;
 }
 
-.pm-sub-table td {
-  padding: 3px 4px;
-  border-bottom: 1px solid rgba(42, 42, 62, 0.5);
-}
-
-.pm-sub-table input[type="number"],
-.pm-sub-table select {
-  width: 100%;
+.pm-seg-table td {
   padding: 4px;
-  background: var(--bg);
-  border: 1px solid var(--border);
-  border-radius: 4px;
-  color: var(--text);
-  font-size: 12px;
-}
-
-.pm-sub-table .pm-led-count {
-  font-size: 12px;
-  color: var(--text-dim);
   text-align: center;
 }
 
-.pm-sub-table .pm-row-delete {
+.pm-seg-table input[type="number"] {
+  width: 48px;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  color: var(--text);
+  padding: 3px;
+  border-radius: 3px;
+  text-align: center;
+  font-size: 12px;
+}
+
+.pm-seg-table select {
+  padding: 3px 4px;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  color: var(--text);
+  border-radius: 3px;
+  font-size: 12px;
+}
+
+.pm-seg-table .pm-led-count {
+  font-size: 12px;
+  color: var(--text-dim);
+}
+
+.pm-seg-swatch {
+  display: inline-block;
+  width: 12px;
+  height: 12px;
+  border-radius: 3px;
+  border: 1px solid rgba(255,255,255,0.2);
+}
+
+.pm-seg-delete {
   padding: 2px 6px;
-  font-size: 10px;
+  font-size: 14px;
   border: 1px solid var(--danger);
   border-radius: 3px;
   background: transparent;
   color: var(--danger);
   cursor: pointer;
+  line-height: 1;
 }
 
-.pm-sub-table .pm-row-delete:hover {
+.pm-seg-delete:hover {
   background: var(--danger);
   color: white;
 }
 
-.pm-add-row-btn {
-  display: inline-block;
-  padding: 4px 10px;
-  font-size: 12px;
+/* Mobile segment cards */
+.pm-cards-mobile {
+  display: none;
+}
+
+@media (max-width: 600px) {
+  #pm-segment-table-wrap {
+    display: none;
+  }
+  .pm-cards-mobile {
+    display: block;
+  }
+  .pm-seg-card {
+    background: var(--surface2);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 10px;
+    margin-bottom: 6px;
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+    align-items: center;
+  }
+  .pm-seg-card-coords {
+    font-size: 13px;
+    font-weight: 500;
+  }
+  .pm-seg-card-leds {
+    font-size: 12px;
+    color: var(--text-dim);
+  }
+  .pm-seg-card-detail {
+    font-size: 12px;
+    color: var(--text-dim);
+  }
+  .pm-seg-card .pm-seg-delete {
+    margin-left: auto;
+  }
+}
+
+/* Summary bar */
+.pm-summary-bar {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 8px 12px;
+  background: var(--surface2);
   border: 1px solid var(--border);
-  border-radius: 4px;
-  background: var(--surface);
-  color: var(--text-dim);
-  cursor: pointer;
-  margin-top: 6px;
-  margin-right: 6px;
-}
-
-.pm-add-row-btn:hover {
-  border-color: var(--accent);
-  color: var(--text);
-}
-
-.pm-section-label {
-  font-size: 12px;
-  font-weight: 600;
-  color: var(--text);
+  border-radius: 6px;
   margin-top: 12px;
-  margin-bottom: 4px;
 }
 
-/* Validation results */
-#pm-validation-result {
-  margin-top: 8px;
+#pm-summary-text {
   font-size: 13px;
+  color: var(--text-dim);
 }
 
-#pm-validation-result .pm-valid {
-  color: var(--success);
-  padding: 8px;
-  background: var(--surface2);
-  border-radius: 6px;
+.pm-actions {
+  display: flex;
+  gap: 8px;
 }
 
-#pm-validation-result .pm-errors {
-  color: var(--danger);
-  padding: 8px;
-  background: var(--surface2);
-  border-radius: 6px;
-}
-
-#pm-validation-result .pm-errors ul {
-  margin: 4px 0 0 16px;
-  padding: 0;
+.pm-actions .action-btn {
+  width: auto;
+  padding: 6px 16px;
+  margin: 0;
+  font-size: 13px;
 }
 
 /* Teensy status */

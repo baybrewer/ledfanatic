@@ -276,8 +276,8 @@
                 <span class="help-icon">?</span> How to use this page
               </button>
               <div class="help-content" hidden>
-                <p>Configure your LED pixel map — strips, lines, and output mapping.</p>
-                <p>The grid preview shows your LED layout colored by strip ID. Each strip defines lines (runs of LEDs along an axis, each with its own color order). Changes are validated and sent to the Teensy for confirmation before applying.</p>
+                <p>Configure your LED pixel map — segments and output mapping.</p>
+                <p>Each segment is a run of LEDs from a start to end coordinate. The grid preview shows your layout. Click Apply to send changes to the Teensy.</p>
               </div>
             </div>
 
@@ -285,34 +285,52 @@
             <h3>Live Output</h3>
             <canvas id="setup-live-canvas" width="600" height="100"></canvas>
 
-            <!-- Grid Preview Canvas -->
-            <h3 style="margin-top:12px;">Grid Preview</h3>
-            <div class="pm-grid-wrap">
-              <canvas id="grid-preview" width="400" height="300"></canvas>
+            <!-- Grid Preview -->
+            <div id="pm-grid-container">
+              <div class="pm-grid-header">
+                <span id="pm-grid-info" class="text-dim"></span>
+                <div class="pm-origin-row">
+                  <label>Origin:</label>
+                  <select id="pm-origin-select">
+                    <option value="bottom-left">Bottom Left</option>
+                    <option value="top-left">Top Left</option>
+                  </select>
+                </div>
+              </div>
+              <div class="pm-svg-wrap">
+                <svg id="pm-grid-svg" xmlns="http://www.w3.org/2000/svg"></svg>
+              </div>
             </div>
-            <div id="pm-grid-info" class="text-dim"></div>
 
-            <!-- Origin Selector -->
-            <div class="pm-origin-row">
-              <label>Origin</label>
-              <select id="pm-origin-select">
-                <option value="bottom-left">Bottom Left</option>
-                <option value="top-left">Top Left</option>
-              </select>
+            <!-- Segment Table (desktop) -->
+            <div class="pm-segments-header">
+              <span class="pm-label">Segments</span>
+              <button id="pm-add-segment-btn" class="action-btn primary">+ Add Segment</button>
+            </div>
+            <div id="pm-segment-table-wrap">
+              <table id="pm-segment-table" class="pm-seg-table">
+                <thead>
+                  <tr>
+                    <th></th><th>Start X</th><th>Start Y</th><th>End X</th><th>End Y</th>
+                    <th>LEDs</th><th>Out</th><th>Color</th><th></th>
+                  </tr>
+                </thead>
+                <tbody id="pm-segment-tbody"></tbody>
+              </table>
             </div>
 
-            <!-- Strip Status -->
+            <!-- Segment Cards (mobile) -->
+            <div id="pm-segment-cards" class="pm-cards-mobile"></div>
+
+            <!-- Summary + Actions -->
+            <div class="pm-summary-bar">
+              <span id="pm-summary-text"></span>
+              <div class="pm-actions">
+                <button id="pm-validate-btn" class="action-btn secondary">Validate</button>
+                <button id="pm-apply-btn" class="action-btn primary">Apply</button>
+              </div>
+            </div>
             <div id="pm-status" class="status-msg"></div>
-
-            <!-- Strip List -->
-            <h3 style="margin-top:12px;">Strips</h3>
-            <div id="pm-strip-list"></div>
-            <button id="pm-add-strip-btn" class="action-btn secondary">Add Strip</button>
-
-            <!-- Validation Display -->
-            <h3 style="margin-top:16px;">Validation</h3>
-            <button id="pm-validate-btn" class="action-btn secondary">Validate Config</button>
-            <div id="pm-validation-result"></div>
 
             <!-- Teensy Config Status -->
             <h3 style="margin-top:16px;">Teensy Config</h3>
