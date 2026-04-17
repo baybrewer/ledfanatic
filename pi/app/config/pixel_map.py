@@ -283,25 +283,31 @@ def validate_pixel_map(config: PixelMapConfig) -> list[str]:
             f"all coordinates must be non-negative"
           )
 
-    # --- No duplicate grid positions ---
+    # --- Build effective positions (scanlines + overrides) ---
+    effective_positions: list[tuple[int, int]] = []
     for sc in strip.scanlines:
       try:
-        for pos in sc.positions():
-          if pos in all_positions:
-            errors.append(
-              f"{prefix}: duplicate grid position {pos}"
-            )
-          all_positions.add(pos)
+        effective_positions.extend(sc.positions())
       except ValueError:
         pass  # already reported above
 
-    # --- Pixel overrides: check non-negative ---
+    # Apply pixel overrides (same logic as compile_pixel_map)
     for led_idx, pos in strip.pixel_overrides.items():
       if pos[0] < 0 or pos[1] < 0:
         errors.append(
           f"{prefix}: pixel_override LED {led_idx} has negative coordinate {pos} — "
           f"all coordinates must be non-negative"
         )
+      if led_idx < len(effective_positions):
+        effective_positions[led_idx] = pos
+
+    # --- No duplicate grid positions ---
+    for pos in effective_positions:
+      if pos in all_positions:
+        errors.append(
+          f"{prefix}: duplicate grid position {pos}"
+        )
+      all_positions.add(pos)
 
     # --- Output overflow ---
     if strip.output_offset + strip.total_leds > config.teensy_max_leds_per_output:
@@ -330,6 +336,23 @@ def validate_pixel_map(config: PixelMapConfig) -> list[str]:
         errors.append(
           f"{prefix}: segment coverage gap — LED indices {sorted(missing)} not covered"
         )
+
+  # --- Overlapping output ranges on the same pin ---
+  from collections import defaultdict
+  pin_strips: dict[int, list[StripConfig]] = defaultdict(list)
+  for strip in config.strips:
+    pin_strips[strip.output].append(strip)
+
+  for pin, strips_on_pin in pin_strips.items():
+    for i, a in enumerate(strips_on_pin):
+      for b in strips_on_pin[i + 1:]:
+        a_start, a_end = a.output_offset, a.output_offset + a.total_leds - 1
+        b_start, b_end = b.output_offset, b.output_offset + b.total_leds - 1
+        if a_start <= b_end and b_start <= a_end:
+          errors.append(
+            f"Output pin {pin}: Strip {a.id} range [{a_start}..{a_end}] "
+            f"overlaps Strip {b.id} range [{b_start}..{b_end}]"
+          )
 
   return errors
 

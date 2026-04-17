@@ -179,6 +179,60 @@ class TestValidation:
     errors = validate_pixel_map(config)
     assert any("range" in e.lower() or "exceed" in e.lower() or "bound" in e.lower() for e in errors)
 
+  def test_overlapping_output_ranges(self):
+    """Two strips on the same output pin must not have overlapping LED ranges."""
+    config = PixelMapConfig(
+      origin="bottom-left",
+      teensy_outputs=8,
+      teensy_max_leds_per_output=1200,
+      teensy_wire_order="BGR",
+      teensy_signal_family="ws281x_800khz",
+      teensy_octo_pins=[2, 14, 7, 8, 6, 20, 21, 5],
+      strips=[
+        StripConfig(
+          id=0, output=0, output_offset=0, total_leds=3,
+          segments=[SegmentConfig(range_start=0, range_end=2, color_order="BGR")],
+          scanlines=[ScanlineConfig(start=(0, 0), end=(0, 2))],
+          pixel_overrides={},
+        ),
+        StripConfig(
+          id=1, output=0, output_offset=2, total_leds=3,  # overlaps: [2..4] vs [0..2]
+          segments=[SegmentConfig(range_start=0, range_end=2, color_order="BGR")],
+          scanlines=[ScanlineConfig(start=(1, 0), end=(1, 2))],
+          pixel_overrides={},
+        ),
+      ],
+    )
+    errors = validate_pixel_map(config)
+    assert any("overlap" in e.lower() for e in errors)
+
+  def test_non_overlapping_output_ranges(self):
+    """Adjacent but non-overlapping ranges on the same pin should be valid."""
+    config = PixelMapConfig(
+      origin="bottom-left",
+      teensy_outputs=8,
+      teensy_max_leds_per_output=1200,
+      teensy_wire_order="BGR",
+      teensy_signal_family="ws281x_800khz",
+      teensy_octo_pins=[2, 14, 7, 8, 6, 20, 21, 5],
+      strips=[
+        StripConfig(
+          id=0, output=0, output_offset=0, total_leds=3,
+          segments=[SegmentConfig(range_start=0, range_end=2, color_order="BGR")],
+          scanlines=[ScanlineConfig(start=(0, 0), end=(0, 2))],
+          pixel_overrides={},
+        ),
+        StripConfig(
+          id=1, output=0, output_offset=3, total_leds=3,  # adjacent: [3..5] vs [0..2]
+          segments=[SegmentConfig(range_start=0, range_end=2, color_order="BGR")],
+          scanlines=[ScanlineConfig(start=(1, 0), end=(1, 2))],
+          pixel_overrides={},
+        ),
+      ],
+    )
+    errors = validate_pixel_map(config)
+    assert not any("overlap" in e.lower() for e in errors)
+
 
 # ---------------------------------------------------------------------------
 # TestCompilation

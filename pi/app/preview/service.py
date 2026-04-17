@@ -105,7 +105,7 @@ class PreviewService:
       target_w = self._renderer.pixel_map.width
       target_h = self._renderer.pixel_map.height
       img = Image.fromarray(frame.transpose(1, 0, 2))
-      img = img.resize((target_h, target_w), Image.LANCZOS)
+      img = img.resize((target_w, target_h), Image.LANCZOS)
       frame = np.array(img).transpose(1, 0, 2)
 
     width = frame.shape[0]
