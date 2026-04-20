@@ -1112,7 +1112,7 @@ function renderSegmentTable(data) {
       <td><input type="number" data-field="ex" value="${seg.end[0]}" min="0" max="999"></td>
       <td><input type="number" data-field="ey" value="${seg.end[1]}" min="0" max="9999"></td>
       <td class="pm-led-count">${ledCount}</td>
-      <td class="pm-led-range">${ledRanges[i] || '—'}</td>
+      <td class="pm-led-range"><input type="number" data-field="led_offset" value="${seg.led_offset != null && seg.led_offset >= 0 ? seg.led_offset : (seg.offset != null ? seg.offset : '')}" min="0" max="9999" placeholder="auto" title="LED start offset on this output (blank = auto)"> <span class="pm-led-end">– ${seg.offset != null ? seg.offset + ledCount - 1 : ''}</span></td>
       <td><select data-field="output">${outputOpts}</select></td>
       <td><select data-field="color_order">${colorOpts}</select></td>
       <td><button class="pm-seg-test" title="Test this segment">T</button></td>
@@ -1275,7 +1275,7 @@ function addSegmentRow(defaults) {
     <td><input type="number" data-field="ex" value="${ex}" min="0" max="999"></td>
     <td><input type="number" data-field="ey" value="${ey}" min="0" max="9999"></td>
     <td class="pm-led-count">${ledCount}</td>
-    <td class="pm-led-range">—</td>
+    <td class="pm-led-range"><input type="number" data-field="led_offset" value="" min="0" max="9999" placeholder="auto" title="LED start offset on this output (blank = auto)"> <span class="pm-led-end"></span></td>
     <td><select data-field="output">${outputOpts}</select></td>
     <td><select data-field="color_order">${colorOpts}</select></td>
     <td><button class="pm-seg-test" title="Test this segment">T</button></td>
@@ -1327,11 +1327,14 @@ function collectSegments() {
     const ey = parseInt(row.querySelector('[data-field="ey"]').value) || 0;
     const output = parseInt(row.querySelector('[data-field="output"]').value) || 0;
     const colorOrder = row.querySelector('[data-field="color_order"]').value || 'BGR';
+    const ledOffsetInput = row.querySelector('[data-field="led_offset"]');
+    const ledOffset = ledOffsetInput && ledOffsetInput.value !== '' ? parseInt(ledOffsetInput.value) : -1;
     segments.push({
       start: [sx, sy],
       end: [ex, ey],
       output,
       color_order: colorOrder,
+      led_offset: ledOffset,
     });
   });
   return segments;

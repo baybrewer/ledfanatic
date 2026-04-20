@@ -43,6 +43,7 @@ class SegmentConfig:
   end: tuple[int, int]
   output: int
   color_order: str = "BGR"
+  led_offset: int = -1  # -1 = auto-calculate, >=0 = explicit offset on this output
 
   def _validate_axis_aligned(self) -> tuple[int, int]:
     """Return (dx, dy) or raise if diagonal."""
@@ -151,6 +152,7 @@ def _parse_config(data: dict) -> PixelMapConfig:
         end=tuple(seg["end"]),
         output=seg["output"],
         color_order=seg.get("color_order", "BGR"),
+        led_offset=seg.get("led_offset", -1),
       )
       for seg in data["segments"]
     ]
@@ -237,15 +239,17 @@ def save_pixel_map(config: PixelMapConfig, config_dir: Path) -> None:
 
 def _serialize_config(config: PixelMapConfig) -> dict:
   """Convert PixelMapConfig to a dict suitable for YAML serialization (schema v2)."""
-  segments = [
-    {
+  segments = []
+  for seg in config.segments:
+    d = {
       "start": list(seg.start),
       "end": list(seg.end),
       "output": seg.output,
       "color_order": seg.color_order,
     }
-    for seg in config.segments
-  ]
+    if seg.led_offset >= 0:
+      d["led_offset"] = seg.led_offset
+    segments.append(d)
 
   result: dict = {
     "schema_version": 2,
@@ -414,19 +418,26 @@ def compile_pixel_map(config: PixelMapConfig) -> CompiledPixelMap:
   # Build reverse LUT: reverse_lut[segment_index][led_index] → (x, y, swizzle)
   reverse_lut: list[list] = [[] for _ in range(len(config.segments))]
 
-  # Auto-calculate segment offsets: for each output, segments stack sequentially
+  # Calculate segment offsets: use explicit led_offset if set, else auto-stack
   segment_offsets: list[int] = []
   pin_running_offset: dict[int, int] = {}
   for seg in config.segments:
     pin = seg.output
-    offset = pin_running_offset.get(pin, 0)
+    if seg.led_offset >= 0:
+      # Explicit offset — use it directly
+      offset = seg.led_offset
+    else:
+      # Auto-calculate: stack after previous segments on this pin
+      offset = pin_running_offset.get(pin, 0)
     segment_offsets.append(offset)
     try:
-      pin_running_offset[pin] = offset + seg.led_count()
+      end_pos = offset + seg.led_count()
+      # Track the highest end position for output_config
+      pin_running_offset[pin] = max(pin_running_offset.get(pin, 0), end_pos)
     except ValueError:
-      pin_running_offset[pin] = offset
+      pass
 
-  # Build output_config: 8 entries, one per pin, value = total LEDs on that pin
+  # Build output_config: 8 entries, one per pin, value = max LED position on that pin
   output_config = [0] * 8
   for pin, total in pin_running_offset.items():
     if 0 <= pin < 8:

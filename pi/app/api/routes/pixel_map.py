@@ -34,6 +34,7 @@ class SegmentRequest(BaseModel):
   end: list[int]        # [x, y]
   output: int           # 0-7
   color_order: str = 'BGR'
+  led_offset: int = -1  # -1 = auto, >=0 = explicit offset on output
 
 
 class PixelMapApplyRequest(BaseModel):
@@ -56,6 +57,7 @@ def _build_get_response(config: PixelMapConfig, compiled) -> dict:
       'end': list(seg.end),
       'output': seg.output,
       'color_order': seg.color_order,
+      'led_offset': seg.led_offset,
       'led_count': seg.led_count(),
       'offset': compiled.segment_offsets[idx] if compiled else 0,
     })
@@ -143,6 +145,7 @@ def create_router(deps, require_auth) -> APIRouter:
           end=tuple(seg.end),
           output=seg.output,
           color_order=seg.color_order,
+          led_offset=seg.led_offset,
         )
         for seg in req.segments
       ],
@@ -165,6 +168,7 @@ def create_router(deps, require_auth) -> APIRouter:
           end=tuple(seg.end),
           output=seg.output,
           color_order=seg.color_order,
+          led_offset=seg.led_offset,
         )
         for seg in req.segments
       ],

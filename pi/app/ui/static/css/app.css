@@ -982,6 +982,22 @@ input:focus-visible {
   white-space: nowrap;
 }
 
+.pm-led-range input {
+  width: 46px;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  color: var(--text);
+  padding: 2px;
+  border-radius: 3px;
+  text-align: center;
+  font-size: 11px;
+}
+
+.pm-led-end {
+  color: #666;
+  font-size: 11px;
+}
+
 .pm-dim-row {
   display: flex;
   align-items: center;
