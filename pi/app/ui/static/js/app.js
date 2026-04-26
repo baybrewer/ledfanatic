@@ -1399,6 +1399,16 @@ function initSetup() {
     scheduleApply();
   });
 
+  document.getElementById('pm-test-segments-btn').addEventListener('click', async () => {
+    const result = await api('POST', '/api/layout/test-segments');
+    if (result && result.status === 'ok') showPmStatus('Segment identify active (10s)');
+    else showPmStatus('Failed', true);
+  });
+  document.getElementById('pm-test-strips-btn').addEventListener('click', async () => {
+    const result = await api('POST', '/api/layout/test-strips');
+    if (result && result.status === 'ok') showPmStatus('Strip identify active (10s)');
+    else showPmStatus('Failed', true);
+  });
   document.getElementById('pm-validate-btn').addEventListener('click', () => validateLayout());
   document.getElementById('pm-apply-btn').addEventListener('click', () => applyLayout());
   document.getElementById('pm-origin-select').addEventListener('change', () => scheduleApply());

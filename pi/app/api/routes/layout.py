@@ -100,7 +100,7 @@ def create_router(deps, require_auth) -> APIRouter:
 
     @router.post("/test-segment/{seg_id}", dependencies=[Depends(require_auth)])
     async def test_segment(seg_id: str):
-        """Light a single segment for identification (5 seconds)."""
+        """Light a single segment with gradient for identification (5 seconds)."""
         compiled = deps.compiled_layout
         if compiled is None:
             raise HTTPException(404, "No layout loaded")
@@ -108,6 +108,28 @@ def create_router(deps, require_auth) -> APIRouter:
             raise HTTPException(404, f"Segment '{seg_id}' not found")
         deps.renderer.set_test_strip(seg_id, duration=5.0)
         return {"status": "ok", "segment": seg_id}
+
+    @router.post("/test-segments", dependencies=[Depends(require_auth)])
+    async def test_segments_identify():
+        """Light ALL segments, each with a unique color matching the UI swatch."""
+        if deps.compiled_layout is None:
+            raise HTTPException(404, "No layout loaded")
+        deps.renderer.set_test_identify("segment_identify", duration=10.0)
+        return {"status": "ok", "mode": "segment_identify"}
+
+    @router.post("/test-strips", dependencies=[Depends(require_auth)])
+    async def test_strips_identify():
+        """Light each output channel a uniform color (one color per strip)."""
+        if deps.compiled_layout is None:
+            raise HTTPException(404, "No layout loaded")
+        deps.renderer.set_test_identify("strip_identify", duration=10.0)
+        return {"status": "ok", "mode": "strip_identify"}
+
+    @router.post("/test-off", dependencies=[Depends(require_auth)])
+    async def test_off():
+        """Cancel any active test pattern."""
+        deps.renderer.set_test_strip(None)
+        return {"status": "ok"}
 
     return router
 

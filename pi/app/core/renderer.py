@@ -103,6 +103,21 @@ def _build_gamma_lut(gamma: float) -> np.ndarray:
   return lut
 
 
+def _hue_to_rgb(hue_deg: float) -> tuple[int, int, int]:
+  """Convert hue (0-360) to RGB at full saturation/value."""
+  h = (hue_deg % 360) / 60
+  i = int(h)
+  f = h - i
+  q = int(255 * (1 - f))
+  t = int(255 * f)
+  if i == 0: return (255, t, 0)
+  if i == 1: return (q, 255, 0)
+  if i == 2: return (0, 255, t)
+  if i == 3: return (0, q, 255)
+  if i == 4: return (t, 0, 255)
+  return (255, 0, q)
+
+
 class Renderer:
   def __init__(self, transport: TeensyTransport, state: RenderState,
                brightness_engine: BrightnessEngine, layout: CompiledLayout):
@@ -113,6 +128,7 @@ class Renderer:
     self.effect_registry: dict = {}
     self.current_effect = None
     self._test_segment_id: Optional[str] = None
+    self._test_mode: Optional[str] = None  # "segment", "segment_identify", "strip_identify"
     self._test_strip_until: float = 0.0
     self._running = False
     self._gamma_lut = _build_gamma_lut(state.gamma)
@@ -153,19 +169,37 @@ class Renderer:
   def _rebuild_segment_cache_from_config(self, layout_config):
     """Build segment positions cache from layout config for test patterns."""
     self._segment_positions = {}
+    self._segment_ids_ordered = []
+    self._output_segment_ids = {}  # channel -> [seg_ids]
     for output in layout_config.outputs:
+      channel_segs = []
       for seg in output.segments:
         if seg.enabled:
           self._segment_positions[seg.id] = _expand_segment(seg)
+          self._segment_ids_ordered.append(seg.id)
+          channel_segs.append(seg.id)
+      self._output_segment_ids[output.channel] = channel_segs
 
   def set_test_strip(self, segment_id: Optional[str] = None, duration: float = 5.0):
     """Activate a test pattern on a single segment for identification."""
     if segment_id is not None:
       self._test_segment_id = segment_id
+      self._test_mode = "segment"
       self._test_strip_until = time.monotonic() + duration
     else:
       self._test_segment_id = None
+      self._test_mode = None
       self._test_strip_until = 0.0
+
+  def set_test_identify(self, mode: str = "segment_identify", duration: float = 10.0):
+    """Activate segment-identify or strip-identify test pattern.
+
+    mode="segment_identify": each segment gets a unique color (matching UI swatch).
+    mode="strip_identify": each output channel gets a uniform color.
+    """
+    self._test_mode = mode
+    self._test_segment_id = None
+    self._test_strip_until = time.monotonic() + duration
 
   def _set_scene(self, scene_name: str, params: Optional[dict] = None):
     if scene_name not in self.effect_registry:
@@ -300,16 +334,44 @@ class Renderer:
       # Apply gamma
       logical_frame = self._gamma_lut[logical_frame]
 
-      # Test strip pattern: override one segment with gradient
-      if self._test_segment_id is not None:
+      # Test patterns: override frame based on active test mode
+      if self._test_mode is not None:
         if time.monotonic() < self._test_strip_until:
-          logical_frame[:] = 0  # black out everything
-          positions = self._segment_positions.get(self._test_segment_id, [])
-          for idx, (x, y) in enumerate(positions):
-            if x < logical_frame.shape[0] and y < logical_frame.shape[1]:
-              frac = idx / max(len(positions) - 1, 1)
-              logical_frame[x, y] = [int(255 * (1 - frac)), 0, int(255 * frac)]
+          logical_frame[:] = 0
+
+          if self._test_mode == "segment" and self._test_segment_id:
+            # Single segment: red-to-blue gradient
+            positions = self._segment_positions.get(self._test_segment_id, [])
+            for idx, (x, y) in enumerate(positions):
+              if x < logical_frame.shape[0] and y < logical_frame.shape[1]:
+                frac = idx / max(len(positions) - 1, 1)
+                logical_frame[x, y] = [int(255 * (1 - frac)), 0, int(255 * frac)]
+
+          elif self._test_mode == "segment_identify":
+            # Each segment gets a unique hue (matching UI swatch: hue = index * 137.508)
+            for seg_idx, seg_id in enumerate(self._segment_ids_ordered):
+              hue = (seg_idx * 137.508) % 360
+              r, g, b = _hue_to_rgb(hue)
+              for x, y in self._segment_positions.get(seg_id, []):
+                if x < logical_frame.shape[0] and y < logical_frame.shape[1]:
+                  logical_frame[x, y] = [r, g, b]
+
+          elif self._test_mode == "strip_identify":
+            # Each output channel gets a uniform color
+            channel_colors = [
+              (255, 0, 0), (0, 255, 0), (0, 0, 255),
+              (255, 255, 0), (255, 0, 255), (0, 255, 255),
+              (255, 128, 0), (128, 0, 255),
+            ]
+            for ch, seg_ids in self._output_segment_ids.items():
+              color = channel_colors[ch % len(channel_colors)]
+              for seg_id in seg_ids:
+                for x, y in self._segment_positions.get(seg_id, []):
+                  if x < logical_frame.shape[0] and y < logical_frame.shape[1]:
+                    logical_frame[x, y] = color
+
         else:
+          self._test_mode = None
           self._test_segment_id = None
 
       # Snapshot logical frame for live preview (post-brightness/gamma/test-strip)
