@@ -42,9 +42,11 @@ class ScrollingText(Effect):
     def _render_text(self):
         """Pre-render the text message into a pixel buffer."""
         text = self.params.get('text', self._DEFAULT_TEXT)
-        if text == self._current_text and self._text_image is not None:
+        color = self.params.get('color', '#00FFFF')
+        cache_key = f"{text}|{color}"
+        if cache_key == self._current_text and self._text_image is not None:
             return
-        self._current_text = text
+        self._current_text = cache_key
 
         cols = self.width  # 10 pixels wide
 

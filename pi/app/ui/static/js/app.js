@@ -1902,8 +1902,9 @@ function initGame() {
   bindGame('game-fast', 'fast');
   bindGame('game-drop', 'drop');
 
-  // Keyboard (only when game tab is active)
+  // Keyboard (only when game tab is active and not typing in an input)
   document.addEventListener('keydown', (e) => {
+    if (document.activeElement && (document.activeElement.tagName === 'INPUT' || document.activeElement.tagName === 'TEXTAREA')) return;
     const gamePanel = document.getElementById('panel-game');
     if (!gamePanel || gamePanel.style.display === 'none') return;
     if (e.key === 'ArrowLeft') { gameInput('left'); e.preventDefault(); }
