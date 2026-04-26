@@ -49,7 +49,7 @@ class TetrisAutoplay(Effect):
         super().__init__(width, height, params)
         self._game = Tetris(width, height, params)
         self._game.auto_play = True
-        self._game.drop_interval = 0.05
+        self._game.drop_interval = 0.15
 
     def render(self, t: float, state) -> np.ndarray:
         return self._game.render(t, state)
@@ -287,7 +287,7 @@ class Tetris(Effect):
         # Re-enable auto-play after 5 seconds of no input
         if not self.auto_play and now - self.last_input > 5.0:
             self.auto_play = True
-            self.drop_interval = 0.05  # fast auto-play speed
+            self.drop_interval = 0.15  # auto-play speed
             self._auto_target_x = None
 
         # Process queued inputs
