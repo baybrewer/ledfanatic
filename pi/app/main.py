@@ -134,6 +134,8 @@ def main():
     renderer.register_effect(name, cls)
   for name, cls in DIAGNOSTIC_EFFECTS.items():
     renderer.register_effect(name, cls)
+  from .effects.tetris import Tetris
+  renderer.register_effect('tetris', Tetris)
 
   # Register imported animations into renderer
   for name, cls in IMPORTED_EFFECTS.items():

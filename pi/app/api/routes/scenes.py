@@ -117,4 +117,13 @@ def create_router(deps, require_auth, broadcast_state) -> APIRouter:
             return deps.renderer.current_effect.get_switcher_status()
         return {"active": False}
 
+    @router.post("/game-input/{action}")
+    async def game_input(action: str):
+        """Send input to game effects (tetris). Actions: left, right, rotate, down, drop."""
+        effect = deps.renderer.current_effect
+        if effect and hasattr(effect, 'handle_input'):
+            effect.handle_input(action)
+            return {"status": "ok"}
+        return {"status": "ignored", "reason": "no active game effect"}
+
     return router

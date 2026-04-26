@@ -1,0 +1,118 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta name="viewport" content="width=device-width, initial-scale=1, user-scalable=no">
+<title>Tetris Controller</title>
+<style>
+* { box-sizing: border-box; margin: 0; padding: 0; }
+body {
+  background: #111;
+  color: #fff;
+  font-family: -apple-system, sans-serif;
+  height: 100dvh;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  user-select: none;
+  -webkit-user-select: none;
+  touch-action: manipulation;
+}
+h1 { font-size: 24px; margin-bottom: 20px; color: #0ff; }
+.controls {
+  display: grid;
+  grid-template-columns: 100px 100px 100px;
+  grid-template-rows: 100px 100px;
+  gap: 10px;
+}
+.btn {
+  width: 100px;
+  height: 100px;
+  border-radius: 16px;
+  border: 2px solid #444;
+  background: #222;
+  color: #fff;
+  font-size: 36px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  -webkit-tap-highlight-color: transparent;
+}
+.btn:active { background: #0ff; color: #000; }
+.btn.rotate { font-size: 28px; }
+.btn.drop { background: #333; border-color: #666; }
+.status { margin-top: 20px; font-size: 14px; color: #666; }
+.start-btn {
+  margin-top: 20px;
+  padding: 12px 32px;
+  font-size: 18px;
+  background: #0ff;
+  color: #000;
+  border: none;
+  border-radius: 8px;
+  cursor: pointer;
+}
+</style>
+</head>
+<body>
+<h1>TETRIS</h1>
+<div class="controls">
+  <div></div>
+  <div class="btn rotate" id="btn-rotate">&#8635;</div>
+  <div></div>
+  <div class="btn" id="btn-left">&#9664;</div>
+  <div class="btn drop" id="btn-drop">&#9660;&#9660;</div>
+  <div class="btn" id="btn-right">&#9654;</div>
+</div>
+<button class="btn" id="btn-down" style="width:320px;height:80px;margin-top:10px;font-size:28px;border-radius:12px;">&#9660; Down</button>
+<button class="start-btn" id="btn-start">Start Tetris</button>
+<div class="status" id="status"></div>
+
+<script>
+const token = localStorage.getItem('pillar_token') || '';
+
+async function send(action) {
+  try {
+    const headers = {'Content-Type': 'application/json'};
+    if (token) headers['Authorization'] = 'Bearer ' + token;
+    await fetch(`/api/scenes/game-input/${action}`, {method: 'POST', headers});
+  } catch(e) {}
+}
+
+async function startGame() {
+  const headers = {'Content-Type': 'application/json'};
+  if (token) headers['Authorization'] = 'Bearer ' + token;
+  const r = await fetch('/api/scenes/activate', {
+    method: 'POST', headers,
+    body: JSON.stringify({effect: 'tetris', params: {}})
+  });
+  const data = await r.json();
+  document.getElementById('status').textContent = data.status === 'ok' ? 'Game started!' : 'Failed to start';
+}
+
+// Touch events (no delay)
+function bind(id, action) {
+  const el = document.getElementById(id);
+  el.addEventListener('touchstart', (e) => { e.preventDefault(); send(action); });
+  el.addEventListener('mousedown', () => send(action));
+}
+
+bind('btn-left', 'left');
+bind('btn-right', 'right');
+bind('btn-rotate', 'rotate');
+bind('btn-down', 'down');
+bind('btn-drop', 'drop');
+document.getElementById('btn-start').addEventListener('click', startGame);
+
+// Keyboard support too
+document.addEventListener('keydown', (e) => {
+  if (e.key === 'ArrowLeft') send('left');
+  else if (e.key === 'ArrowRight') send('right');
+  else if (e.key === 'ArrowUp') send('rotate');
+  else if (e.key === 'ArrowDown') send('down');
+  else if (e.key === ' ') send('drop');
+});
+</script>
+</body>
+</html>
