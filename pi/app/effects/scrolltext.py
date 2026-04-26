@@ -84,8 +84,8 @@ class ScrollingText(Effect):
 
         draw.text((2, 2 - bbox[1]), text, font=font, fill=(r, g, b))
 
-        # Rotate 90 degrees CCW so text reads bottom-to-top
-        img = img.rotate(90, expand=True, resample=Image.BICUBIC)
+        # Rotate 90 degrees CW so text reads with top to the right
+        img = img.rotate(-90, expand=True, resample=Image.BICUBIC)
 
         # Resize width to match pillar columns, keep aspect ratio
         new_w = cols

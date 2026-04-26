@@ -334,33 +334,59 @@ function showEffectControls(name, meta) {
     });
   }
 
-  // Render param sliders
+  // Render param controls (sliders, text inputs, color pickers)
   for (const p of params) {
     const row = document.createElement('div');
     row.className = 'param-row';
     const val = currentEffectParams[p.name] ?? p.default;
-    row.innerHTML = `
-      <label>${p.label}</label>
-      <input type="range" min="${p.min}" max="${p.max}" step="${p.step}" value="${val}"
-             data-param="${p.name}" class="param-slider">
-      <span class="param-value">${Number.isInteger(p.step) ? val : parseFloat(val).toFixed(1)}</span>
-    `;
-    const slider = row.querySelector('input');
-    const display = row.querySelector('.param-value');
     let debounce = null;
-    slider.addEventListener('input', () => {
-      const v = parseFloat(slider.value);
-      display.textContent = Number.isInteger(p.step) ? v : v.toFixed(1);
-      currentEffectParams[p.name] = v;
+    const sendUpdate = () => {
       clearTimeout(debounce);
       debounce = setTimeout(() => {
         api('POST', '/api/scenes/activate', { effect: name, params: currentEffectParams });
-        // Update preview with new params
         if (activeEffectName === name) {
           startEffectsPreview(name, currentEffectParams);
         }
       }, 100);
-    });
+    };
+
+    if (p.type === 'text') {
+      row.innerHTML = `
+        <label>${p.label}</label>
+        <input type="text" value="${val || ''}" data-param="${p.name}" class="param-text" style="flex:1;padding:4px 8px;background:#222;color:#fff;border:1px solid #444;border-radius:4px;">
+      `;
+      const input = row.querySelector('input');
+      input.addEventListener('input', () => {
+        currentEffectParams[p.name] = input.value;
+        sendUpdate();
+      });
+    } else if (p.type === 'color') {
+      row.innerHTML = `
+        <label>${p.label}</label>
+        <input type="color" value="${val || '#00FFFF'}" data-param="${p.name}" class="param-color" style="width:50px;height:30px;border:none;background:none;cursor:pointer;">
+      `;
+      const input = row.querySelector('input');
+      input.addEventListener('input', () => {
+        currentEffectParams[p.name] = input.value;
+        sendUpdate();
+      });
+    } else {
+      // Default: slider
+      row.innerHTML = `
+        <label>${p.label}</label>
+        <input type="range" min="${p.min}" max="${p.max}" step="${p.step}" value="${val}"
+               data-param="${p.name}" class="param-slider">
+        <span class="param-value">${Number.isInteger(p.step) ? val : parseFloat(val).toFixed(1)}</span>
+      `;
+      const slider = row.querySelector('input');
+      const display = row.querySelector('.param-value');
+      slider.addEventListener('input', () => {
+        const v = parseFloat(slider.value);
+        display.textContent = Number.isInteger(p.step) ? v : v.toFixed(1);
+        currentEffectParams[p.name] = v;
+        sendUpdate();
+      });
+    }
     paramsDiv.appendChild(row);
   }
 
