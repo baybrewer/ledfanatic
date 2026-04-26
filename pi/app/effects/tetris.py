@@ -320,17 +320,20 @@ class Tetris(Effect):
         if self.auto_play:
             self._auto_move(now)
 
-        # Gravity drop
-        if now - self.last_drop >= self.drop_interval:
+        # Gravity drop — multiple drops per frame at high speed
+        elapsed = now - self.last_drop
+        drops = int(elapsed / self.drop_interval) if self.drop_interval > 0 else 1
+        drops = min(drops, self.height)  # cap to avoid infinite loop
+        for _ in range(max(1, drops) if elapsed >= self.drop_interval else 0):
             self.last_drop = now
             if not self._collides(self.piece_x, self.piece_y + 1, self.current_rot):
                 self.piece_y += 1
             else:
                 self._lock_piece()
                 self._auto_target_x = None
-                # Reset speed after lock
                 if self._speed_override is None:
                     self.drop_interval = max(0.15, 0.5 - self.lines_cleared * 0.005)
+                break
 
         # Render board
         frame = np.zeros((self.width, self.height, 3), dtype=np.uint8)
