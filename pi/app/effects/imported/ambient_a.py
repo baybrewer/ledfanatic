@@ -463,36 +463,50 @@ class MatrixRain(Effect):
     active_indices = np.where(self._active_mask)[0]
     n_active = len(active_indices)
     if n_active > 0:
-      # Build all (drop, trail_offset) pixel coordinates at once
-      a_heads = self._drop_y[active_indices].astype(np.int32)  # (n,)
+      # Sub-pixel rendering: use fractional head positions
+      a_heads_f = self._drop_y[active_indices]  # (n,) float
+      a_heads_int = np.floor(a_heads_f).astype(np.int32)
+      a_frac = a_heads_f - a_heads_int  # fractional part per drop
       a_brights = self._drop_bright[active_indices]  # (n,)
       a_xs = self._drop_x[active_indices]  # (n,)
       trail_offsets = np.arange(trail, dtype=np.int32)  # (trail,)
 
       # (n, trail) grids
-      py_grid = a_heads[:, np.newaxis] - trail_offsets[np.newaxis, :]
-      valid = (py_grid >= 0) & (py_grid < rows)
+      py_grid = a_heads_int[:, np.newaxis] - trail_offsets[np.newaxis, :]
+      valid0 = (py_grid >= 0) & (py_grid < rows)
+      valid1 = ((py_grid + 1) >= 0) & ((py_grid + 1) < rows)
 
-      # Brightness per (drop, trail_offset): fade_factors[ty] * drop_bright
-      bright_grid = fade_factors[np.newaxis, :] * a_brights[:, np.newaxis]  # (n, trail)
+      # Brightness per (drop, trail_offset)
+      bright_grid = fade_factors[np.newaxis, :] * a_brights[:, np.newaxis]
 
-      # Scaled palette colors: pal_colors[ty] * bright_grid[drop, ty]
-      # pal_colors is (trail, 3), bright_grid is (n, trail)
       # rgb_grid: (n, trail, 3)
-      rgb_grid = (pal_colors[np.newaxis, :, :] * bright_grid[:, :, np.newaxis]).astype(np.int32)
+      rgb_grid = (pal_colors[np.newaxis, :, :] * bright_grid[:, :, np.newaxis])
 
-      # Extract valid pixels and write into buffer
-      drop_idx, trail_idx = np.where(valid)
+      # Sub-pixel: split each pixel's contribution between two rows
+      frac_grid = a_frac[:, np.newaxis]  # (n, 1) broadcast to (n, trail)
+      rgb_lo = (rgb_grid * (1.0 - frac_grid[:, :, np.newaxis])).astype(np.int32)
+      rgb_hi = (rgb_grid * frac_grid[:, :, np.newaxis]).astype(np.int32)
+
+      buf16 = self.buf.data.astype(np.uint16)
+
+      # Write lower pixel (py_grid)
+      drop_idx, trail_idx = np.where(valid0)
       xs = a_xs[drop_idx]
       ys = py_grid[drop_idx, trail_idx]
-      rgbs = rgb_grid[drop_idx, trail_idx]  # (M, 3) int32
-
-      # Additive blend with clamp via numpy.add.at then clip
-      # Use uint16 scratch to avoid overflow
-      buf16 = self.buf.data.astype(np.uint16)
+      rgbs = rgb_lo[drop_idx, trail_idx]
       np.add.at(buf16, (xs, ys, 0), rgbs[:, 0].astype(np.uint16))
       np.add.at(buf16, (xs, ys, 1), rgbs[:, 1].astype(np.uint16))
       np.add.at(buf16, (xs, ys, 2), rgbs[:, 2].astype(np.uint16))
+
+      # Write upper pixel (py_grid + 1) — sub-pixel fraction
+      drop_idx, trail_idx = np.where(valid1)
+      xs = a_xs[drop_idx]
+      ys = py_grid[drop_idx, trail_idx] + 1
+      rgbs = rgb_hi[drop_idx, trail_idx]
+      np.add.at(buf16, (xs, ys, 0), rgbs[:, 0].astype(np.uint16))
+      np.add.at(buf16, (xs, ys, 1), rgbs[:, 1].astype(np.uint16))
+      np.add.at(buf16, (xs, ys, 2), rgbs[:, 2].astype(np.uint16))
+
       np.clip(buf16, 0, 255, out=buf16)
       self.buf.data[:] = buf16.astype(np.uint8)
 
