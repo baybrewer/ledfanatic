@@ -399,10 +399,10 @@ class Moire(Effect):
 
   PARAMS = [
     _Param("Speed", "speed", 0.05, 2.0, 0.05, 0.4),
-    _Param("Scale", "scale", 0.3, 3.0, 0.1, 1.0),
+    _Param("Scale", "scale", 0.0, 0.7, 0.07, 0.35),
     _Param("Centers", "centers", 2, 5, 1, 3),
   ]
-  _SCALAR_PARAMS = {"speed": 0.4, "scale": 1.0, "centers": 3}
+  _SCALAR_PARAMS = {"speed": 0.4, "scale": 0.35, "centers": 3}
   def __init__(self, width, height, params=None):
     super().__init__(width, height, params)
     self.buf = LEDBuffer(width, height)
