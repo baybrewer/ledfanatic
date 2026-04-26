@@ -107,3 +107,95 @@ def validate_layout(config: LayoutConfig) -> list[str]:
             )
 
     return errors
+
+
+# --- Color order swizzle ---
+SWIZZLE_MAP: dict[str, tuple[int, int, int]] = {
+    "RGB": (0, 1, 2),
+    "RBG": (0, 2, 1),
+    "GRB": (1, 0, 2),
+    "GBR": (1, 2, 0),
+    "BRG": (2, 0, 1),
+    "BGR": (2, 1, 0),
+}
+
+
+@dataclass
+class MappingEntry:
+    """One logical-to-physical mapping. Used for fast iteration during packing."""
+    x: int
+    y: int
+    channel: int
+    pixel_index: int
+    swizzle: tuple[int, int, int]
+
+
+@dataclass
+class CompiledLayout:
+    """Precomputed mapping tables for fast rendering."""
+    width: int
+    height: int
+    origin: str
+    forward_lut: list[list[Optional[tuple[int, int]]]]
+    reverse_lut: dict[int, dict[int, Optional[tuple[int, int]]]]
+    entries: list[MappingEntry]
+    output_sizes: dict[int, int]
+    color_swizzle: dict[int, tuple[int, int, int]]
+    total_mapped: int
+
+
+def compile_layout(config: LayoutConfig) -> CompiledLayout:
+    """Compile a validated LayoutConfig into fast-lookup structures."""
+    w, h = config.matrix.width, config.matrix.height
+
+    forward_lut: list[list[Optional[tuple[int, int]]]] = [
+        [None] * h for _ in range(w)
+    ]
+
+    reverse_lut: dict[int, dict[int, Optional[tuple[int, int]]]] = {}
+    entries: list[MappingEntry] = []
+    output_sizes: dict[int, int] = {}
+    color_swizzle: dict[int, tuple[int, int, int]] = {}
+    total_mapped = 0
+
+    for output in config.outputs:
+        ch = output.channel
+        swizzle = SWIZZLE_MAP.get(output.color_order, (0, 1, 2))
+        color_swizzle[ch] = swizzle
+
+        if ch not in reverse_lut:
+            reverse_lut[ch] = {}
+
+        max_idx = 0
+
+        for seg in output.segments:
+            if not seg.enabled:
+                continue
+
+            positions = _expand_segment(seg)
+
+            for i, (px, py) in enumerate(positions):
+                phys_idx = seg.physical_offset + i
+                forward_lut[px][py] = (ch, phys_idx)
+                reverse_lut[ch][phys_idx] = (px, py)
+                entries.append(MappingEntry(
+                    x=px, y=py, channel=ch,
+                    pixel_index=phys_idx, swizzle=swizzle,
+                ))
+                total_mapped += 1
+                if phys_idx + 1 > max_idx:
+                    max_idx = phys_idx + 1
+
+        output_sizes[ch] = max(output_sizes.get(ch, 0), max_idx)
+
+    return CompiledLayout(
+        width=w,
+        height=h,
+        origin=config.matrix.origin,
+        forward_lut=forward_lut,
+        reverse_lut=reverse_lut,
+        entries=entries,
+        output_sizes=output_sizes,
+        color_swizzle=color_swizzle,
+        total_mapped=total_mapped,
+    )
