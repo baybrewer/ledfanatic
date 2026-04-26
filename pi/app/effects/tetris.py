@@ -53,7 +53,7 @@ class TetrisAutoplay(Effect):
     PALETTE_SUPPORT = False
 
     PARAMS = [
-        _Param("Speed", "speed", 0.1, 4.0, 0.1, 1.0),
+        _Param("Speed", "speed", 0.1, 11.0, 0.1, 1.0),
     ]
 
     def __init__(self, width, height, params=None):
@@ -64,8 +64,8 @@ class TetrisAutoplay(Effect):
 
     def _update_speed(self):
         speed = self.params.get('speed', 1.0)
-        # Exponential: 0.1=0.12s, 1.0=0.04s, 2.0=0.013s, 3.0=0.004s, 4.0=0.001s
-        interval = 0.13 * (0.38 ** speed)
+        # Exponential: 0.1=0.12s, 1=0.07s, 5=0.005s, 10=0.0002s, 11=0.0001s
+        interval = 0.13 * (0.55 ** speed)
         self._game._speed_override = interval
         self._game.drop_interval = interval
 
