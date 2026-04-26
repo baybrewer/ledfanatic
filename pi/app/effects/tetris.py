@@ -322,7 +322,7 @@ class Tetris(Effect):
                 self.piece_y += 1
             else:
                 self._lock_piece()
-                self._auto_target = None
+                self._auto_target_x = None
                 # Reset speed after lock
                 self.drop_interval = max(0.15, 0.5 - self.lines_cleared * 0.005)
 
