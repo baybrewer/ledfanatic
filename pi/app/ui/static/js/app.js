@@ -939,7 +939,7 @@ function segmentEnd(seg) {
 }
 
 async function loadPixelMap() {
-  const data = await api('GET', '/api/layout');
+  const data = await api('GET', '/api/layout/');
   if (!data || data.error) return;
   _layoutData = data;
 
@@ -1283,7 +1283,7 @@ async function applyLayout() {
   if (result && result.status === 'ok') {
     showPmStatus('Saved');
     // Reload to get compiled stats
-    const fresh = await api('GET', '/api/layout');
+    const fresh = await api('GET', '/api/layout/');
     if (fresh && !fresh.error) {
       _layoutData = fresh;
       renderGridSVG(fresh);
@@ -1506,7 +1506,7 @@ async function loadSimEffects() {
 }
 
 async function loadSimStripLabels() {
-  const data = await api('GET', '/api/layout');
+  const data = await api('GET', '/api/layout/');
   if (!data || !data.outputs) return;
   const segments = flattenSegments(data);
   if (segments.length === 0) return;
