@@ -10,7 +10,12 @@ import time
 import random
 import numpy as np
 from .base import Effect
-from .imported_sim_helpers import _Param
+
+
+class _Param:
+  def __init__(self, label, attr, lo, hi, step, default):
+    self.label, self.attr, self.lo, self.hi = label, attr, lo, hi
+    self.step, self.default = step, default
 
 # Standard Tetris pieces (rotations as relative coords from pivot)
 PIECES = {
