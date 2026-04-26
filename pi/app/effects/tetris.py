@@ -53,7 +53,7 @@ class TetrisAutoplay(Effect):
     PALETTE_SUPPORT = False
 
     PARAMS = [
-        _Param("Speed", "speed", 0.1, 2.0, 0.1, 0.5),
+        _Param("Speed", "speed", 0.1, 2.0, 0.1, 1.0),
     ]
 
     def __init__(self, width, height, params=None):
@@ -63,8 +63,9 @@ class TetrisAutoplay(Effect):
         self._update_speed()
 
     def _update_speed(self):
-        speed = self.params.get('speed', 0.5)
-        self._game.drop_interval = max(0.05, 0.8 / max(0.1, speed))
+        speed = self.params.get('speed', 1.0)
+        # 0.1 = 0.5s/row (slow, visible), 1.0 = 0.1s/row (brisk), 2.0 = 0.02s/row (ultra fast)
+        self._game.drop_interval = max(0.02, 0.5 * (0.1 ** ((speed - 0.1) / 1.9)))
 
     def update_params(self, params: dict):
         super().update_params(params)
