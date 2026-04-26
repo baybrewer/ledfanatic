@@ -17,7 +17,8 @@ from .auth import create_auth_dependency
 from .deps import AppDeps
 
 from .routes import system, scenes, brightness, media, audio, diagnostics, setup, effects, preview
-from .routes import pixel_map as pixel_map_routes
+# pixel_map_routes removed — replaced by layout module (Task 8)
+# from .routes import pixel_map as pixel_map_routes
 from .routes import transport as transport_routes
 from .routes import ws
 
@@ -38,8 +39,8 @@ def create_app(
     spatial_map=None,
     preview_service=None,
     effect_catalog=None,
-    pixel_map_config=None,
-    compiled_pixel_map=None,
+    layout_config=None,
+    compiled_layout=None,
     config_dir=None,
 ) -> FastAPI:
 
@@ -63,10 +64,13 @@ def create_app(
         spatial_map=spatial_map,
         preview_service=preview_service,
         effect_catalog=effect_catalog,
-        pixel_map_config=pixel_map_config,
-        compiled_pixel_map=compiled_pixel_map,
+        layout_config=layout_config,
+        compiled_layout=compiled_layout,
         config_dir=config_dir,
     )
+
+    # Expose deps on app.state for startup handlers in main.py
+    app.state.deps = deps
 
     # --- WebSocket + broadcast ---
     ws_router, broadcast_state = ws.create_router(deps)
@@ -82,7 +86,7 @@ def create_app(
     app.include_router(setup.create_router(deps, require_auth, broadcast_state))
     app.include_router(effects.create_router(deps))
     app.include_router(preview.create_router(deps, require_auth))
-    app.include_router(pixel_map_routes.create_router(deps, require_auth))
+    # pixel_map_routes removed — replaced by layout module (Task 8)
     app.include_router(ws_router)
 
     # --- Periodic broadcast ---

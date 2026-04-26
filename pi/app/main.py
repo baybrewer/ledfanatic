@@ -21,7 +21,7 @@ from .audio.analyzer import AudioAnalyzer
 from .effects.generative import EFFECTS
 from .effects.audio_reactive import AUDIO_EFFECTS
 from .diagnostics.patterns import DIAGNOSTIC_EFFECTS
-from .config.pixel_map import load_pixel_map, compile_pixel_map, validate_pixel_map, PixelMapConfig
+from .layout import load_layout, compile_layout, validate_layout, output_config_list, CompiledLayout
 from .config.spatial_map import load_spatial_map
 from .preview.service import PreviewService
 from .effects.imported import IMPORTED_EFFECTS
@@ -107,22 +107,24 @@ def main():
     handshake_timeout=transport_conf.get('handshake_timeout_ms', 3000) / 1000,
   )
 
-  # Pixel map — load, validate, compile
-  pixel_map_config = load_pixel_map(config_dir)
-  errors = validate_pixel_map(pixel_map_config)
+  # Layout — load, validate, compile
+  layout_config = load_layout(config_dir)
+  errors = validate_layout(layout_config)
   if errors:
     for err in errors:
-      logger.error(f"Pixel map validation: {err}")
-    logger.error("Pixel map has errors — using empty config (no LEDs)")
-    pixel_map_config = PixelMapConfig()
-  compiled_pixel_map = compile_pixel_map(pixel_map_config)
+      logger.error(f"Layout validation: {err}")
+    logger.error("Layout has errors — using empty config (no LEDs)")
+    from .layout.schema import LayoutConfig as _LayoutConfig, MatrixConfig as _MatrixConfig
+    layout_config = _LayoutConfig(version=1, matrix=_MatrixConfig(width=0, height=0))
+  compiled_layout = compile_layout(layout_config)
   logger.info(
-    f"Pixel map: {compiled_pixel_map.width}x{compiled_pixel_map.height} grid, "
-    f"{len(pixel_map_config.segments)} segments, {compiled_pixel_map.total_mapped_leds} LEDs"
+    f"Layout: {compiled_layout.width}x{compiled_layout.height} grid, "
+    f"{len(layout_config.outputs)} outputs, {compiled_layout.total_mapped} LEDs"
   )
 
   # Renderer
-  renderer = Renderer(transport, render_state, brightness_engine, compiled_pixel_map)
+  renderer = Renderer(transport, render_state, brightness_engine, compiled_layout)
+  renderer._rebuild_segment_cache_from_config(layout_config)
   effects_conf = config.get('effects', {})
   renderer.effects_config = effects_conf
 
@@ -238,8 +240,8 @@ def main():
     spatial_map=spatial_map,
     preview_service=preview_service,
     effect_catalog=effect_catalog,
-    pixel_map_config=pixel_map_config,
-    compiled_pixel_map=compiled_pixel_map,
+    layout_config=layout_config,
+    compiled_layout=compiled_layout,
     config_dir=config_dir,
   )
 
@@ -249,9 +251,16 @@ def main():
   @app.on_event("startup")
   async def startup_tasks():
     # Register CONFIG resend callback — fires on every connect/reconnect
+    # References app.state.deps.compiled_layout so layout changes propagate
     async def _on_teensy_connect():
       logger.info("Sending CONFIG to Teensy...")
-      ok = await transport.send_config(compiled_pixel_map.output_config)
+      deps = app.state.deps
+      current_layout = deps.compiled_layout
+      if current_layout is None:
+        logger.warning("No compiled layout available for CONFIG")
+        return
+      oc = output_config_list(current_layout)
+      ok = await transport.send_config(oc)
       if ok:
         logger.info("CONFIG ACK received")
       else:

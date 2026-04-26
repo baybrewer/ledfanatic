@@ -11,8 +11,7 @@ from typing import Optional
 
 import numpy as np
 
-from ..mapping.packer import pack_frame
-from ..config.pixel_map import CompiledPixelMap
+from ..layout import pack_frame, CompiledLayout, _expand_segment
 from ..transport.usb import TeensyTransport
 from .brightness import BrightnessEngine
 
@@ -106,53 +105,66 @@ def _build_gamma_lut(gamma: float) -> np.ndarray:
 
 class Renderer:
   def __init__(self, transport: TeensyTransport, state: RenderState,
-               brightness_engine: BrightnessEngine, pixel_map: CompiledPixelMap):
+               brightness_engine: BrightnessEngine, layout: CompiledLayout):
     self.transport = transport
     self.state = state
     self.brightness_engine = brightness_engine
-    self.pixel_map = pixel_map
+    self.layout = layout
     self.effect_registry: dict = {}
     self.current_effect = None
-    self._test_strip_id: Optional[int] = None
+    self._test_segment_id: Optional[str] = None
     self._test_strip_until: float = 0.0
     self._running = False
     self._gamma_lut = _build_gamma_lut(state.gamma)
     self._fps_samples: list[float] = []
     self._fps_window = 60
     self._last_frame_start: float = 0.0
+    # Segment positions cache for test pattern support
+    self._segment_positions: dict[str, list[tuple[int, int]]] = {}
     # Last logical (width×height×3 uint8) frame — snapshot after brightness+gamma,
     # read by live-preview WebSocket. Ring buffer of one frame.
-    self._last_logical_frame = np.zeros((pixel_map.width, pixel_map.height, 3), dtype=np.uint8)
+    self._last_logical_frame = np.zeros((layout.width, layout.height, 3), dtype=np.uint8)
     # Populate state with grid dimensions
-    self.state.grid_width = pixel_map.width
-    self.state.grid_height = pixel_map.height
-    self.state.origin = pixel_map.origin
+    self.state.grid_width = layout.width
+    self.state.grid_height = layout.height
+    self.state.origin = layout.origin
 
   def register_effect(self, name: str, effect_class):
     self.effect_registry[name] = effect_class
 
-  def apply_pixel_map(self, pixel_map: CompiledPixelMap):
-    """Hot-swap the compiled pixel map. Thread-safe: next frame picks it up."""
-    self.pixel_map = pixel_map
-    self._last_logical_frame = np.zeros((pixel_map.width, pixel_map.height, 3), dtype=np.uint8)
-    self.state.grid_width = pixel_map.width
-    self.state.grid_height = pixel_map.height
-    self.state.origin = pixel_map.origin
+  def apply_layout(self, layout: CompiledLayout, layout_config=None):
+    """Hot-swap the compiled layout. Thread-safe: next frame picks it up."""
+    self.layout = layout
+    self._last_logical_frame = np.zeros((layout.width, layout.height, 3), dtype=np.uint8)
+    self.state.grid_width = layout.width
+    self.state.grid_height = layout.height
+    self.state.origin = layout.origin
+    # Rebuild segment cache if config provided
+    if layout_config is not None:
+      self._rebuild_segment_cache_from_config(layout_config)
     # Recreate current effect at new dimensions (force recreation, not update_params)
     if self.state.current_scene and self.state.current_scene in self.effect_registry:
       saved_scene = self.state.current_scene
       self.state.current_scene = None  # Clear to bypass state-preserving check
       self.current_effect = None
       self._set_scene(saved_scene)
-    logger.info(f"Pixel map applied: {pixel_map.width}x{pixel_map.height} grid, {pixel_map.total_mapped_leds} LEDs")
+    logger.info(f"Layout applied: {layout.width}x{layout.height} grid, {layout.total_mapped} LEDs")
 
-  def set_test_strip(self, strip_id: Optional[int], duration: float = 5.0):
-    """Activate a test pattern on a single strip for identification."""
-    if strip_id is not None:
-      self._test_strip_id = strip_id
+  def _rebuild_segment_cache_from_config(self, layout_config):
+    """Build segment positions cache from layout config for test patterns."""
+    self._segment_positions = {}
+    for output in layout_config.outputs:
+      for seg in output.segments:
+        if seg.enabled:
+          self._segment_positions[seg.id] = _expand_segment(seg)
+
+  def set_test_strip(self, segment_id: Optional[str] = None, duration: float = 5.0):
+    """Activate a test pattern on a single segment for identification."""
+    if segment_id is not None:
+      self._test_segment_id = segment_id
       self._test_strip_until = time.monotonic() + duration
     else:
-      self._test_strip_id = None
+      self._test_segment_id = None
       self._test_strip_until = 0.0
 
   def _set_scene(self, scene_name: str, params: Optional[dict] = None):
@@ -180,8 +192,8 @@ class Renderer:
     # Pass effect_registry to AnimationSwitcher so it can instantiate playlist effects
     if scene_name == 'animation_switcher':
       merged['_effect_registry'] = self.effect_registry
-    width = self.pixel_map.width
-    height = self.pixel_map.height
+    width = self.layout.width
+    height = self.layout.height
     render_scale = getattr(effect_cls, 'RENDER_SCALE', 1)
     if render_scale > 1:
       width *= render_scale
@@ -207,8 +219,8 @@ class Renderer:
       if media_manager and item_id in media_manager.items:
         from ..effects.media_playback import MediaPlayback
         self.current_effect = MediaPlayback(
-          width=self.pixel_map.width,
-          height=self.pixel_map.height,
+          width=self.layout.width,
+          height=self.layout.height,
           params={'item_id': item_id, **(params or {})},
           media_manager=media_manager,
         )
@@ -260,8 +272,8 @@ class Renderer:
     """Render one frame and send to Teensy."""
     from datetime import datetime, timezone
 
-    w = self.pixel_map.width
-    h = self.pixel_map.height
+    w = self.layout.width
+    h = self.layout.height
 
     if self.state.blackout or self.current_effect is None:
       logical_frame = np.zeros((w, h, 3), dtype=np.uint8)
@@ -289,19 +301,16 @@ class Renderer:
       logical_frame = self._gamma_lut[logical_frame]
 
       # Test strip pattern: override one segment with gradient
-      if self._test_strip_id is not None:
+      if self._test_segment_id is not None:
         if time.monotonic() < self._test_strip_until:
           logical_frame[:] = 0  # black out everything
-          # _test_strip_id is now a segment index
-          if self._test_strip_id < len(self.pixel_map.segments):
-            segment = self.pixel_map.segments[self._test_strip_id]
-            positions = segment.positions()
-            for idx, (x, y) in enumerate(positions):
-              if x < logical_frame.shape[0] and y < logical_frame.shape[1]:
-                frac = idx / max(len(positions) - 1, 1)
-                logical_frame[x, y] = [int(255 * (1 - frac)), 0, int(255 * frac)]
+          positions = self._segment_positions.get(self._test_segment_id, [])
+          for idx, (x, y) in enumerate(positions):
+            if x < logical_frame.shape[0] and y < logical_frame.shape[1]:
+              frac = idx / max(len(positions) - 1, 1)
+              logical_frame[x, y] = [int(255 * (1 - frac)), 0, int(255 * frac)]
         else:
-          self._test_strip_id = None
+          self._test_segment_id = None
 
       # Snapshot logical frame for live preview (post-brightness/gamma/test-strip)
       self._last_logical_frame = logical_frame
@@ -309,7 +318,7 @@ class Renderer:
     self.state.frames_rendered += 1
 
     # Pack frame to output bytes and send
-    pixel_bytes = pack_frame(logical_frame, self.pixel_map)
+    pixel_bytes = pack_frame(logical_frame, self.layout)
     success = await self.transport.send_frame(pixel_bytes)
     if success:
       self.state.frames_sent += 1

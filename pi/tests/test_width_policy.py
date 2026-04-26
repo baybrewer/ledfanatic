@@ -1,5 +1,5 @@
 # pi/tests/test_width_policy.py
-"""Tests for effect width/height policy using pixel_map in the renderer."""
+"""Tests for effect width/height policy using layout in the renderer."""
 
 import numpy as np
 import time
@@ -8,23 +8,21 @@ from unittest.mock import MagicMock, AsyncMock
 from app.effects.base import Effect
 from app.core.renderer import Renderer, RenderState
 from app.core.brightness import BrightnessEngine
-from app.config.pixel_map import CompiledPixelMap
+from app.layout.compiler import CompiledLayout
 
 
-def _make_pixel_map(width=10, height=172):
-  """Create a minimal CompiledPixelMap for testing."""
-  return CompiledPixelMap(
+def _make_layout(width=10, height=172):
+  """Create a minimal CompiledLayout for testing."""
+  return CompiledLayout(
     width=width,
     height=height,
-    origin='bottom-left',
-    forward_lut=np.full((width, height, 2), -1, dtype=np.int16),
-    reverse_lut=[],
-    output_config=[0]*8,
-    segment_offsets=[],
-    segments=[],
-    total_mapped_leds=0,
-    teensy_outputs=8,
-    teensy_max_leds_per_output=1200,
+    origin='bottom_left',
+    forward_lut=[[None] * height for _ in range(width)],
+    reverse_lut={},
+    entries=[],
+    output_sizes={},
+    color_swizzle={},
+    total_mapped=0,
   )
 
 
@@ -53,8 +51,8 @@ class TestPixelMapWidthPolicy:
     transport.send_frame = AsyncMock(return_value=True)
     state = RenderState()
     brightness = BrightnessEngine({})
-    pixel_map = _make_pixel_map(width=width, height=height)
-    return Renderer(transport, state, brightness, pixel_map=pixel_map)
+    layout = _make_layout(width=width, height=height)
+    return Renderer(transport, state, brightness, layout=layout)
 
   def test_default_effect_gets_pixel_map_width(self):
     renderer = self._make_renderer(width=10, height=172)
@@ -82,15 +80,15 @@ class TestPixelMapWidthPolicy:
     assert renderer.state.grid_width == 10
     assert renderer.state.grid_height == 172
 
-  def test_apply_pixel_map_updates_state(self):
+  def test_apply_layout_updates_state(self):
     renderer = self._make_renderer(width=10, height=172)
-    new_map = _make_pixel_map(width=20, height=100)
-    renderer.apply_pixel_map(new_map)
+    new_layout = _make_layout(width=20, height=100)
+    renderer.apply_layout(new_layout)
     assert renderer.state.grid_width == 20
     assert renderer.state.grid_height == 100
-    assert renderer.pixel_map is new_map
+    assert renderer.layout is new_layout
 
-  def test_last_logical_frame_matches_pixel_map(self):
+  def test_last_logical_frame_matches_layout(self):
     renderer = self._make_renderer(width=10, height=172)
     assert renderer._last_logical_frame.shape == (10, 172, 3)
 

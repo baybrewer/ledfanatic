@@ -1,8 +1,8 @@
 """
-Setup API routes — strip listing and test patterns.
+Setup API routes — segment listing and test patterns.
 
-Read-only strip listing from the compiled pixel map.
-Full pixel map CRUD will be in the pixel_map routes (Task 10).
+Read-only segment listing from the compiled layout.
+Full layout CRUD will be in the layout routes (Task 8).
 """
 
 import logging
@@ -17,45 +17,47 @@ def create_router(deps, require_auth, broadcast_state) -> APIRouter:
 
     @router.get("/strips")
     async def get_strips():
-        """List strips from the compiled pixel map."""
-        pm = deps.compiled_pixel_map
-        if pm is None:
+        """List segments from the layout config (legacy 'strips' name)."""
+        layout_config = deps.layout_config
+        if layout_config is None:
             return {"strips": []}
         strips = []
-        for s in pm.strips:
-            strips.append({
-                "id": s.id,
-                "output": s.output,
-                "output_offset": s.output_offset,
-                "total_leds": s.total_leds,
-            })
+        for output in layout_config.outputs:
+            for seg in output.segments:
+                if seg.enabled:
+                    strips.append({
+                        "id": seg.id,
+                        "output": output.id,
+                        "channel": output.channel,
+                    })
         return {"strips": strips}
 
     @router.get("/installation")
     async def get_installation():
-        """Legacy endpoint — returns strip info from pixel map."""
-        pm = deps.compiled_pixel_map
-        if pm is None:
+        """Legacy endpoint — returns segment info from layout."""
+        layout_config = deps.layout_config
+        if layout_config is None:
             return {"strips": []}
         strips = []
-        for s in pm.strips:
-            strips.append({
-                "id": s.id,
-                "output": s.output,
-                "output_offset": s.output_offset,
-                "total_leds": s.total_leds,
-            })
+        for output in layout_config.outputs:
+            for seg in output.segments:
+                if seg.enabled:
+                    strips.append({
+                        "id": seg.id,
+                        "output": output.id,
+                        "channel": output.channel,
+                    })
         return {"strips": strips}
 
-    @router.post("/strips/{strip_id}/test", dependencies=[Depends(require_auth)])
-    async def test_strip(strip_id: int):
-        pm = deps.compiled_pixel_map
-        if pm is None:
-            raise HTTPException(404, "No pixel map loaded")
-        strip = next((s for s in pm.strips if s.id == strip_id), None)
-        if strip is None:
-            raise HTTPException(404, f"Strip {strip_id} not found")
-        deps.renderer.set_test_strip(strip_id)
-        return {"status": "ok", "strip_id": strip_id, "duration": 5}
+    @router.post("/strips/{segment_id}/test", dependencies=[Depends(require_auth)])
+    async def test_strip(segment_id: str):
+        layout = deps.compiled_layout
+        if layout is None:
+            raise HTTPException(404, "No layout loaded")
+        # Verify segment exists in renderer cache
+        if segment_id not in deps.renderer._segment_positions:
+            raise HTTPException(404, f"Segment '{segment_id}' not found")
+        deps.renderer.set_test_strip(segment_id)
+        return {"status": "ok", "segment_id": segment_id, "duration": 5}
 
     return router

@@ -8,14 +8,13 @@ from app.preview.service import PreviewService, FRAME_HEADER_FORMAT, MSG_TYPE_FR
 
 def _make_renderer():
   from app.effects.generative import EFFECTS
-  from app.config.pixel_map import CompiledPixelMap
-  import numpy as np
+  from app.layout.compiler import CompiledLayout
   renderer = MagicMock()
-  renderer.pixel_map = CompiledPixelMap(
-    width=10, height=172, origin='bottom-left',
-    forward_lut=np.full((10, 172, 2), -1, dtype=np.int16),
-    reverse_lut=[], output_config=[0]*8, segment_offsets=[], segments=[],
-    total_mapped_leds=0, teensy_outputs=8, teensy_max_leds_per_output=1200,
+  renderer.layout = CompiledLayout(
+    width=10, height=172, origin='bottom_left',
+    forward_lut=[[None] * 172 for _ in range(10)],
+    reverse_lut={}, entries=[], output_sizes={},
+    color_swizzle={}, total_mapped=0,
   )
   renderer.effects_config = {}
   renderer.effect_registry = dict(EFFECTS)

@@ -47,8 +47,8 @@ class PreviewService:
       raise ValueError(f"Unknown effect: {effect_name}")
 
     effect_cls = self._renderer.effect_registry[effect_name]
-    width = self._renderer.pixel_map.width
-    height = self._renderer.pixel_map.height
+    width = self._renderer.layout.width
+    height = self._renderer.layout.height
     render_scale = getattr(effect_cls, 'RENDER_SCALE', 1)
     if render_scale > 1:
       width *= render_scale
@@ -84,7 +84,7 @@ class PreviewService:
   def render_frame(self, state) -> Optional[bytes]:
     """Render one preview frame and return binary payload with header.
 
-    Frame is already at grid dimensions from pixel_map.
+    Frame is already at grid dimensions from layout.
     """
     if not self._running or self._effect is None:
       return None
@@ -102,8 +102,8 @@ class PreviewService:
     # Downsample if effect uses RENDER_SCALE > 1
     if self._effect and getattr(self._effect, 'RENDER_SCALE', 1) > 1:
       from PIL import Image
-      target_w = self._renderer.pixel_map.width
-      target_h = self._renderer.pixel_map.height
+      target_w = self._renderer.layout.width
+      target_h = self._renderer.layout.height
       img = Image.fromarray(frame.transpose(1, 0, 2))
       img = img.resize((target_w, target_h), Image.LANCZOS)
       frame = np.array(img).transpose(1, 0, 2)
