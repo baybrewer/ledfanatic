@@ -205,7 +205,7 @@ class LinearSegment:
 class ExplicitSegment:
     """A segment defined by explicit (x, y) points."""
     id: str
-    points: list[tuple[int, int]]
+    points: tuple[tuple[int, int], ...]
     physical_offset: int
     type: str = "explicit"
     enabled: bool = True
@@ -256,7 +256,7 @@ def parse_layout(raw: dict) -> LayoutConfig:
         for seg_raw in out_raw.get("segments", []):
             seg_type = seg_raw.get("type", "linear")
             if seg_type == "explicit":
-                points = [(p["x"], p["y"]) for p in seg_raw["points"]]
+                points = tuple((p["x"], p["y"]) for p in seg_raw["points"])
                 segments.append(ExplicitSegment(
                     id=seg_raw["id"],
                     points=points,
@@ -425,8 +425,6 @@ fast per-frame packing.
 from dataclasses import dataclass, field
 from typing import Optional
 
-import numpy as np
-
 from .schema import (
     LayoutConfig, OutputConfig, LinearSegment, ExplicitSegment, Segment,
     VALID_DIRECTIONS,
@@ -454,7 +452,7 @@ def _expand_linear(seg: LinearSegment) -> list[tuple[int, int]]:
 def _expand_segment(seg: Segment) -> list[tuple[int, int]]:
     """Expand any segment type into its (x, y) positions."""
     if isinstance(seg, ExplicitSegment):
-        return list(seg.points)
+        return [(x, y) for x, y in seg.points]
     return _expand_linear(seg)
 
 
@@ -1281,7 +1279,46 @@ def save_layout(config: LayoutConfig, config_dir: Path) -> None:
 Run: `cd pi && PYTHONPATH=. pytest tests/test_layout_integration.py -v`
 Expected: All 6 tests PASS
 
-- [ ] **Step 6: Commit**
+- [ ] **Step 6: Add save_layout round-trip test**
+
+Append to `pi/tests/test_layout_integration.py`:
+
+```python
+class TestSaveLoadRoundTrip:
+    """Verify save_layout produces YAML that load_layout can reconstruct."""
+
+    def test_round_trip(self, tmp_path):
+        from app.layout import load_layout, save_layout
+        from app.layout.schema import (
+            LayoutConfig, MatrixConfig, OutputConfig, LinearSegment, ExplicitSegment,
+        )
+        original = LayoutConfig(
+            version=1,
+            matrix=MatrixConfig(width=5, height=10, origin="bottom_left"),
+            outputs=[
+                OutputConfig(id="ch0", channel=0, color_order="BGR", segments=[
+                    LinearSegment(id="seg_a", start=(0, 0), direction="+y", length=10, physical_offset=0),
+                    ExplicitSegment(id="seg_b", points=((1, 0), (1, 1)), physical_offset=10),
+                ]),
+            ],
+        )
+        save_layout(original, tmp_path)
+        loaded = load_layout(tmp_path)
+        assert loaded.matrix.width == 5
+        assert loaded.matrix.height == 10
+        assert len(loaded.outputs) == 1
+        assert len(loaded.outputs[0].segments) == 2
+        assert loaded.outputs[0].segments[0].id == "seg_a"
+        assert loaded.outputs[0].segments[1].id == "seg_b"
+        assert loaded.outputs[0].segments[1].points == ((1, 0), (1, 1))
+```
+
+- [ ] **Step 7: Run full test suite**
+
+Run: `cd pi && PYTHONPATH=. pytest tests/test_layout_integration.py -v`
+Expected: All 7 tests PASS
+
+- [ ] **Step 8: Commit**
 
 ```bash
 git add pi/config/layout.yaml pi/app/layout/__init__.py pi/tests/test_layout_integration.py
@@ -1296,10 +1333,11 @@ git commit -m "feat(layout): load/save + default layout.yaml for 10x83 pillar"
 - Modify: `pi/app/core/renderer.py`
 - Modify: `pi/app/main.py`
 - Modify: `pi/app/api/deps.py`
+- Modify: `pi/app/api/server.py`
 
-- [ ] **Step 1: Update renderer to use new layout module**
+- [ ] **Step 1: Update renderer imports and constructor**
 
-In `pi/app/core/renderer.py`, replace:
+In `pi/app/core/renderer.py`, replace the imports:
 ```python
 from ..mapping.packer import pack_frame
 from ..config.pixel_map import CompiledPixelMap
@@ -1307,15 +1345,10 @@ from ..config.pixel_map import CompiledPixelMap
 With:
 ```python
 from ..layout import CompiledLayout, pack_frame
+from ..layout.compiler import MappingEntry
 ```
 
-Then replace all references to `CompiledPixelMap` with `CompiledLayout`. The interface is compatible:
-- `pixel_map.width` → `layout.width`
-- `pixel_map.height` → `layout.height`
-- `pixel_map.origin` → `layout.origin`
-- `pixel_map.segments[i].positions()` → need to update test strip logic
-
-Update `Renderer.__init__` parameter name from `pixel_map` to `layout`:
+Replace the `Renderer.__init__` signature and body — change `pixel_map` param to `layout`, store segment position cache for test patterns:
 ```python
 def __init__(self, transport: TeensyTransport, state: RenderState,
              brightness_engine: BrightnessEngine, layout: CompiledLayout):
@@ -1323,55 +1356,97 @@ def __init__(self, transport: TeensyTransport, state: RenderState,
     self.state = state
     self.brightness_engine = brightness_engine
     self.layout = layout
-    # ... rest unchanged, replacing self.pixel_map with self.layout
+    self.effect_registry: dict = {}
+    self.current_effect = None
+    self._test_segment_id: Optional[str] = None
+    self._test_strip_until: float = 0.0
+    self._running = False
+    self._gamma_lut = _build_gamma_lut(state.gamma)
+    self._fps_samples: list[float] = []
+    self._fps_window = 60
+    self._last_frame_start: float = 0.0
+    self._last_logical_frame = np.zeros((layout.width, layout.height, 3), dtype=np.uint8)
+    self._segment_positions: dict[str, list[tuple[int, int]]] = {}
+    self._rebuild_segment_cache(layout)
+    self.state.grid_width = layout.width
+    self.state.grid_height = layout.height
+    self.state.origin = layout.origin
+
+def _rebuild_segment_cache(self, layout: CompiledLayout):
+    """Cache segment_id → list of (x,y) positions for test patterns."""
+    from collections import defaultdict
+    seg_map: dict[str, list[tuple[int, int]]] = defaultdict(list)
+    # Group entries by looking up segment ids from the config
+    # Since CompiledLayout doesn't store segment ids, we rebuild from config
+    # stored on deps. For now, iterate entries grouped by (channel, offset range).
+    # Simpler: store flat segment_id → positions during compilation.
+    # We'll use the layout_config from deps for this. For renderer standalone,
+    # just track all positions per unique (channel, contiguous offset range).
+    self._segment_positions = {}
+
+def _rebuild_segment_cache_from_config(self, layout_config):
+    """Rebuild segment position cache from layout config (call after apply)."""
+    from ..layout.compiler import _expand_segment
+    self._segment_positions = {}
+    for output in layout_config.outputs:
+        for seg in output.segments:
+            if seg.enabled:
+                positions = _expand_segment(seg)
+                self._segment_positions[seg.id] = positions
 ```
 
-Update `apply_pixel_map` to `apply_layout`:
+- [ ] **Step 2: Update apply_layout and test strip methods**
+
 ```python
-def apply_layout(self, layout: CompiledLayout):
+def apply_layout(self, layout: CompiledLayout, layout_config=None):
     """Hot-swap the compiled layout. Thread-safe: next frame picks it up."""
     self.layout = layout
     self._last_logical_frame = np.zeros((layout.width, layout.height, 3), dtype=np.uint8)
     self.state.grid_width = layout.width
     self.state.grid_height = layout.height
     self.state.origin = layout.origin
+    if layout_config:
+        self._rebuild_segment_cache_from_config(layout_config)
     if self.state.current_scene and self.state.current_scene in self.effect_registry:
         saved_scene = self.state.current_scene
         self.state.current_scene = None
         self.current_effect = None
         self._set_scene(saved_scene)
     logger.info(f"Layout applied: {layout.width}x{layout.height} grid, {layout.total_mapped} LEDs")
+
+def set_test_strip(self, segment_id: Optional[str], duration: float = 5.0):
+    """Activate a test pattern on a single segment for identification."""
+    if segment_id is not None:
+        self._test_segment_id = segment_id
+        self._test_strip_until = time.monotonic() + duration
+    else:
+        self._test_segment_id = None
+        self._test_strip_until = 0.0
 ```
 
-Update `_render_frame` to use `self.layout`:
+- [ ] **Step 3: Update _render_frame**
+
+Replace all `self.pixel_map` references with `self.layout`. The test strip pattern section becomes:
 ```python
-w = self.layout.width
-h = self.layout.height
-# ... (rest same)
+# Test strip pattern: override one segment with gradient
+if self._test_segment_id is not None:
+    if time.monotonic() < self._test_strip_until:
+        logical_frame[:] = 0  # black out everything
+        positions = self._segment_positions.get(self._test_segment_id, [])
+        for idx, (x, y) in enumerate(positions):
+            if x < logical_frame.shape[0] and y < logical_frame.shape[1]:
+                frac = idx / max(len(positions) - 1, 1)
+                logical_frame[x, y] = [int(255 * (1 - frac)), 0, int(255 * frac)]
+    else:
+        self._test_segment_id = None
+```
+
+And the frame packing line:
+```python
 pixel_bytes = pack_frame(logical_frame, self.layout)
 ```
 
-Update test strip logic in `_render_frame` — replace `self.pixel_map.segments[idx].positions()` with a reverse lookup from the compiled layout. For the test-strip pattern, iterate `layout.entries` filtering by the target segment:
-```python
-if self._test_strip_id is not None:
-    if time.monotonic() < self._test_strip_until:
-        logical_frame[:] = 0
-        # Light all pixels belonging to the target output segment
-        seg_id = self._test_strip_id
-        if seg_id < len(self._test_segment_ids):
-            target_seg = self._test_segment_ids[seg_id]
-            entries_for_seg = [e for e in self.layout.entries
-                               if self._entry_in_segment(e, target_seg)]
-            for idx, entry in enumerate(entries_for_seg):
-                frac = idx / max(len(entries_for_seg) - 1, 1)
-                logical_frame[entry.x, entry.y] = [int(255 * (1 - frac)), 0, int(255 * frac)]
-    else:
-        self._test_strip_id = None
-```
-
-Actually, simpler: store segment positions during `apply_layout` for the test pattern use case.
-
-- [ ] **Step 2: Update main.py startup**
+- [ ] **Step 4: Update main.py startup**
 
 In `pi/app/main.py`, replace:
 ```python
@@ -1380,7 +1455,7 @@ from .config.pixel_map import load_pixel_map, compile_pixel_map, validate_pixel_
 With:
 ```python
 from .layout import load_layout, compile_layout, validate_layout, output_config_list, CompiledLayout
-from .layout.schema import LayoutConfig
+from .layout.schema import LayoutConfig, MatrixConfig
 ```
 
 Replace the pixel map loading block:
@@ -1392,7 +1467,6 @@ if errors:
     for err in errors:
         logger.error(f"Layout validation: {err}")
     logger.error("Layout has errors — using empty config (no LEDs)")
-    from .layout.schema import MatrixConfig
     layout_config = LayoutConfig(version=1, matrix=MatrixConfig(width=0, height=0))
 compiled_layout = compile_layout(layout_config)
 logger.info(
@@ -1404,13 +1478,18 @@ logger.info(
 Replace renderer construction:
 ```python
 renderer = Renderer(transport, render_state, brightness_engine, compiled_layout)
+renderer._rebuild_segment_cache_from_config(layout_config)
 ```
 
-Replace `_on_teensy_connect`:
+**CRITICAL — Fix closure bug:** The `_on_teensy_connect` callback must reference `deps.compiled_layout` (which is updated by the API when layout changes), NOT the startup-time local variable:
 ```python
 async def _on_teensy_connect():
     logger.info("Sending CONFIG to Teensy...")
-    oc = output_config_list(compiled_layout)
+    current_layout = deps.compiled_layout
+    if current_layout is None:
+        logger.warning("No compiled layout available for CONFIG")
+        return
+    oc = output_config_list(current_layout)
     ok = await transport.send_config(oc)
     if ok:
         logger.info("CONFIG ACK received")
@@ -1418,9 +1497,17 @@ async def _on_teensy_connect():
         logger.warning("CONFIG send failed (NAK/timeout)")
 ```
 
-Replace `create_app(...)` call — rename `pixel_map_config` and `compiled_pixel_map` to `layout_config` and `compiled_layout`.
+Replace `create_app(...)` parameters:
+```python
+app = create_app(
+    ...,
+    layout_config=layout_config,
+    compiled_layout=compiled_layout,
+    config_dir=config_dir,
+)
+```
 
-- [ ] **Step 3: Update deps.py**
+- [ ] **Step 5: Update deps.py**
 
 In `pi/app/api/deps.py`, replace:
 ```python
@@ -1435,20 +1522,25 @@ layout_config: Optional[object] = None
 compiled_layout: Optional[object] = None
 ```
 
-- [ ] **Step 4: Update server.py**
+- [ ] **Step 6: Update server.py**
 
-In `pi/app/api/server.py`, update `create_app()` parameters and deps construction to use `layout_config` and `compiled_layout` instead of `pixel_map_config` and `compiled_pixel_map`.
+In `pi/app/api/server.py`, update `create_app()` signature and deps construction:
+- Replace parameter names `pixel_map_config` → `layout_config`, `compiled_pixel_map` → `compiled_layout`
+- Update `AppDeps(...)` constructor to use the new field names
 
-- [ ] **Step 5: Run tests**
+- [ ] **Step 7: Run tests**
 
 Run: `cd pi && PYTHONPATH=. pytest tests/ -v --ignore=tests/test_pixel_map.py --ignore=tests/test_packer.py -k "not test_matrix_rain_perf and not test_import_writes" 2>&1 | tail -20`
 Expected: All tests pass (old pixel_map tests ignored)
 
-- [ ] **Step 6: Commit**
+- [ ] **Step 8: Commit**
 
 ```bash
 git add pi/app/core/renderer.py pi/app/main.py pi/app/api/deps.py pi/app/api/server.py
-git commit -m "refactor: wire renderer and main to new layout module"
+git commit -m "refactor: wire renderer and main to new layout module
+
+BREAKING: _on_teensy_connect now references deps.compiled_layout
+to ensure layout changes via API propagate to reconnect callbacks."
 ```
 
 ---
@@ -1665,13 +1757,39 @@ rm pi/tests/test_packer.py
 rm pi/config/pixel_map.yaml
 ```
 
-- [ ] **Step 3: Fix any remaining imports**
+- [ ] **Step 3: Fix remaining imports in dependent files**
 
-Search for and remove any remaining references to the old modules:
-- `tests/test_width_policy.py` — update to use new layout module
-- `tests/test_preview_isolation.py` — update to use new layout module
-- `tools/bench_effects.py` ��� update to use new layout module
-- `app/api/routes/setup.py` — references `pm.strips` which didn't work anyway; update or remove
+In `pi/tests/test_width_policy.py`, replace:
+```python
+from app.config.pixel_map import CompiledPixelMap
+```
+With:
+```python
+from app.layout.compiler import CompiledLayout
+```
+Then update any test code that constructs a `CompiledPixelMap` to use `compile_layout` from the new module instead.
+
+In `pi/tests/test_preview_isolation.py`, replace:
+```python
+from app.config.pixel_map import CompiledPixelMap
+```
+With:
+```python
+from app.layout.compiler import CompiledLayout
+```
+
+In `pi/tools/bench_effects.py`, replace:
+```python
+from app.config.pixel_map import load_pixel_map, compile_pixel_map
+from app.mapping.packer import pack_frame
+```
+With:
+```python
+from app.layout import load_layout, compile_layout, pack_frame
+```
+And update the benchmark code: `load_pixel_map(...)` → `load_layout(...)`, `compile_pixel_map(...)` → `compile_layout(...)`.
+
+Delete `pi/app/api/routes/setup.py` entirely — it references `pm.strips` which never worked with the flat segment model. The setup UI functionality is now served by the layout API routes.
 
 - [ ] **Step 4: Run full test suite**
 
@@ -1687,7 +1805,73 @@ git commit -m "refactor: remove old pixel_map/packer modules, replaced by layout
 
 ---
 
-## Task 9: Deploy + Verify
+## Task 9: Update Frontend UI for New API
+
+**Files:**
+- Modify: `pi/app/ui/static/js/app.js`
+
+- [ ] **Step 1: Update API endpoint calls**
+
+In `pi/app/ui/static/js/app.js`, replace all references to the old pixel map API:
+- `/api/pixel-map` → `/api/layout`
+- `/api/pixel-map/apply` → `/api/layout/apply`
+- `/api/pixel-map/validate` → `/api/layout/validate`
+- `/api/pixel-map/test-segment/` → `/api/layout/test-segment/`
+
+- [ ] **Step 2: Update request/response schema handling**
+
+The new API uses a different response shape. Update `loadPixelMapData()` (rename to `loadLayoutData()`):
+- Response now has `outputs[].segments[]` with `id`, `start`, `direction`, `length`, `physical_offset`
+- The apply request body is the full layout config (not just a flat segments list)
+- `seg.led_offset` field no longer exists — replaced by `physical_offset`
+- `seg.output` field no longer exists — segments are nested under their output
+
+Update `collectSegments()` to build the new request format:
+```javascript
+function collectLayoutConfig() {
+    const gridW = parseInt(document.getElementById('pm-grid-w').value) || 0;
+    const gridH = parseInt(document.getElementById('pm-grid-h').value) || 0;
+    const origin = document.getElementById('pm-origin-select').value;
+    // Build outputs from segment table rows
+    const outputMap = {};  // channel -> {id, segments[]}
+    document.querySelectorAll('#pm-segment-tbody tr').forEach(row => {
+        const channel = parseInt(row.querySelector('[data-field="output"]').value) || 0;
+        const segId = row.querySelector('[data-field="seg_id"]')?.value || `seg_${row.dataset.segIndex}`;
+        const sx = parseInt(row.querySelector('[data-field="sx"]').value) || 0;
+        const sy = parseInt(row.querySelector('[data-field="sy"]').value) || 0;
+        const direction = row.querySelector('[data-field="direction"]').value || '+y';
+        const length = parseInt(row.querySelector('[data-field="length"]').value) || 0;
+        const physOffset = parseInt(row.querySelector('[data-field="physical_offset"]').value) || 0;
+        if (!outputMap[channel]) {
+            outputMap[channel] = {id: `octo_ch${channel}`, channel, color_order: 'BGR', segments: []};
+        }
+        outputMap[channel].segments.push({id: segId, start: {x: sx, y: sy}, direction, length, physical_offset: physOffset});
+    });
+    return {
+        version: 1,
+        matrix: {width: gridW, height: gridH, origin},
+        outputs: Object.values(outputMap),
+    };
+}
+```
+
+- [ ] **Step 3: Test the UI**
+
+Open the Setup tab in a browser, verify:
+- Layout loads and displays correctly
+- Editing and applying works without errors
+- Test segment button lights the correct physical strip
+
+- [ ] **Step 4: Commit**
+
+```bash
+git add pi/app/ui/static/js/app.js
+git commit -m "feat(ui): update frontend to use new /api/layout endpoints"
+```
+
+---
+
+## Task 10: Deploy + Verify
 
 **Files:** None (deployment task)
 
