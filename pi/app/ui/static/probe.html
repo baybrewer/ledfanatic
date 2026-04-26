@@ -1,0 +1,73 @@
+<!DOCTYPE html>
+<html>
+<head>
+<title>LED Probe</title>
+<style>
+body { background: #111; color: #eee; font-family: monospace; font-size: 24px; padding: 40px; }
+#info { margin: 20px 0; }
+#mapped { color: #0f0; }
+kbd { background: #333; padding: 4px 8px; border-radius: 4px; }
+</style>
+</head>
+<body>
+<h2>LED Probe</h2>
+<p><kbd>&larr;</kbd> <kbd>&rarr;</kbd> move 1 &nbsp; <kbd>&uarr;</kbd> <kbd>&darr;</kbd> move 10 &nbsp; <kbd>s</kbd> switch strip &nbsp; <kbd>q</kbd> stop</p>
+<div id="info">Loading...</div>
+<div id="mapped"></div>
+<script>
+const token = localStorage.getItem('pillar_token') || '';
+let strip = 2;
+let led = 248;
+const sizes = {};
+
+async function api(method, path) {
+  const headers = {'Content-Type':'application/json'};
+  if (token) headers['Authorization'] = 'Bearer ' + token;
+  const r = await fetch(path, {method, headers});
+  return r.json();
+}
+
+async function init() {
+  const data = await api('GET', '/api/layout/');
+  if (data && data.compiled) {
+    data.compiled.output_sizes.forEach((s, i) => { if (s > 0) sizes[i] = s; });
+  }
+  update();
+}
+
+async function update() {
+  const size = sizes[strip] || 0;
+  if (led < 0) led = 0;
+  if (led >= size) led = size - 1;
+  document.getElementById('info').textContent = `Strip ${strip}  LED ${led} / ${size-1}`;
+  const result = await api('POST', `/api/layout/probe/${strip}/${led}`);
+  if (result && result.mapped_to) {
+    document.getElementById('mapped').textContent = `Mapped to: (${result.mapped_to.x}, ${result.mapped_to.y})`;
+  } else {
+    document.getElementById('mapped').textContent = 'Mapped to: UNMAPPED';
+  }
+}
+
+document.addEventListener('keydown', (e) => {
+  if (e.key === 'ArrowRight') { led++; update(); }
+  else if (e.key === 'ArrowLeft') { led--; update(); }
+  else if (e.key === 'ArrowUp') { led += 10; update(); }
+  else if (e.key === 'ArrowDown') { led -= 10; update(); }
+  else if (e.key === 's') {
+    const strips = Object.keys(sizes).map(Number);
+    const idx = strips.indexOf(strip);
+    strip = strips[(idx + 1) % strips.length];
+    led = 0;
+    update();
+  }
+  else if (e.key === 'q') {
+    api('POST', '/api/layout/test-off');
+    document.getElementById('info').textContent = 'Stopped.';
+    document.getElementById('mapped').textContent = '';
+  }
+});
+
+init();
+</script>
+</body>
+</html>

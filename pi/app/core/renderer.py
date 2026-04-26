@@ -128,8 +128,10 @@ class Renderer:
     self.effect_registry: dict = {}
     self.current_effect = None
     self._test_segment_id: Optional[str] = None
-    self._test_mode: Optional[str] = None  # "segment", "segment_identify", "strip_identify"
+    self._test_mode: Optional[str] = None  # "segment", "segment_identify", "strip_identify", "probe"
     self._test_strip_until: float = 0.0
+    self._probe_strip: int = -1
+    self._probe_led: int = -1
     self._running = False
     self._gamma_lut = _build_gamma_lut(state.gamma)
     self._fps_samples: list[float] = []
@@ -200,6 +202,13 @@ class Renderer:
     self._test_mode = mode
     self._test_segment_id = None
     self._test_strip_until = time.monotonic() + duration
+
+  def set_probe(self, strip: int, led: int):
+    """Light a single LED by strip/wire position. No timeout — stays until cleared."""
+    self._probe_strip = strip
+    self._probe_led = led
+    self._test_mode = "probe"
+    self._test_strip_until = time.monotonic() + 600  # 10 minutes
 
   def _set_scene(self, scene_name: str, params: Optional[dict] = None):
     if scene_name not in self.effect_registry:
@@ -370,6 +379,12 @@ class Renderer:
                   if x < logical_frame.shape[0] and y < logical_frame.shape[1]:
                     logical_frame[x, y] = color
 
+          elif self._test_mode == "probe":
+            # Single LED by strip/wire position — write directly to output buffer
+            # We need to bypass the logical frame and write to the packed buffer instead.
+            # Set a flag so _render_frame knows to inject after packing.
+            pass  # Handled below after pack_frame
+
         else:
           self._test_mode = None
           self._test_segment_id = None
@@ -381,6 +396,24 @@ class Renderer:
 
     # Pack frame to output bytes and send
     pixel_bytes = pack_frame(logical_frame, self.layout)
+
+    # Probe mode: override the packed buffer to light one LED by wire position
+    if self._test_mode == "probe" and self._probe_strip >= 0:
+      buf = bytearray(pixel_bytes)
+      # Zero everything
+      for i in range(len(buf)):
+        buf[i] = 0
+      # Calculate byte offset for the target LED
+      ch_offset = 0
+      for ch in range(self._probe_strip):
+        ch_offset += self.layout.output_sizes.get(ch, 0) * 3
+      pos = ch_offset + self._probe_led * 3
+      if pos + 2 < len(buf):
+        buf[pos] = 255
+        buf[pos + 1] = 255
+        buf[pos + 2] = 255
+      pixel_bytes = bytes(buf)
+
     success = await self.transport.send_frame(pixel_bytes)
     if success:
       self.state.frames_sent += 1

@@ -131,6 +131,25 @@ def create_router(deps, require_auth) -> APIRouter:
         deps.renderer.set_test_strip(None)
         return {"status": "ok"}
 
+    @router.post("/probe/{strip}/{led}", dependencies=[Depends(require_auth)])
+    async def probe_led(strip: int, led: int):
+        """Light a single LED by strip (channel) and wire position. For debugging."""
+        compiled = deps.compiled_layout
+        if compiled is None:
+            raise HTTPException(404, "No layout loaded")
+        size = compiled.output_sizes.get(strip, 0)
+        if led < 0 or led >= size:
+            raise HTTPException(400, f"LED {led} out of range for strip {strip} (0-{size-1})")
+        # Set probe mode on renderer
+        deps.renderer.set_probe(strip, led)
+        mapping = compiled.reverse_lut.get(strip, {}).get(led)
+        return {
+            "status": "ok",
+            "strip": strip,
+            "led": led,
+            "mapped_to": {"x": mapping[0], "y": mapping[1]} if mapping else None,
+        }
+
     return router
 
 
