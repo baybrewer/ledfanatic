@@ -10,6 +10,7 @@ import time
 import random
 import numpy as np
 from .base import Effect
+from .imported_sim_helpers import _Param
 
 # Standard Tetris pieces (rotations as relative coords from pivot)
 PIECES = {
@@ -44,12 +45,25 @@ class TetrisAutoplay(Effect):
     CATEGORY = "generative"
     DISPLAY_NAME = "Tetris (Auto)"
     DESCRIPTION = "Watch an AI play Tetris endlessly at high speed"
+    PALETTE_SUPPORT = False
+
+    PARAMS = [
+        _Param("Speed", "speed", 0.1, 2.0, 0.1, 0.5),
+    ]
 
     def __init__(self, width, height, params=None):
         super().__init__(width, height, params)
         self._game = Tetris(width, height, params)
         self._game.auto_play = True
-        self._game.drop_interval = 0.15
+        self._update_speed()
+
+    def _update_speed(self):
+        speed = self.params.get('speed', 0.5)
+        self._game.drop_interval = max(0.05, 0.8 / max(0.1, speed))
+
+    def update_params(self, params: dict):
+        super().update_params(params)
+        self._update_speed()
 
     def render(self, t: float, state) -> np.ndarray:
         return self._game.render(t, state)
@@ -213,10 +227,7 @@ class Tetris(Effect):
             self._process_input('right')
         elif self.piece_x > self._auto_target_x:
             self._process_input('left')
-        else:
-            # In position — hard drop
-            self._process_input('drop')
-            self._auto_target_x = None
+        # In position — let gravity do the rest (don't hard drop)
 
     def _collides_at(self, px, py, rot):
         """Check collision at arbitrary position/rotation."""

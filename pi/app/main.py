@@ -199,6 +199,9 @@ def main():
     group='generative',
     description='Watch an AI play Tetris endlessly',
     imported=True,
+    params=(
+      {'name': 'speed', 'label': 'Speed', 'min': 0.1, 'max': 2.0, 'step': 0.1, 'default': 0.5, 'type': 'slider'},
+    ),
   ))
   effect_catalog.register_imported('tetris', EffectMeta(
     name='tetris',
