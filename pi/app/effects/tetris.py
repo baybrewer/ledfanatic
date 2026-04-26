@@ -118,7 +118,7 @@ class Tetris(Effect):
         self.drop_interval = max(0.15, 0.5 - self.lines_cleared * 0.005)
 
     def handle_input(self, action: str):
-        """Queue a player input: left, right, rotate, down, drop."""
+        """Queue a player input: left, right, rotate, down, drop, fast."""
         self._input_queue.append(action)
         self.last_input = time.monotonic()
         self.auto_play = False
@@ -144,11 +144,17 @@ class Tetris(Effect):
         elif action == 'down':
             if not self._collides(self.piece_x, self.piece_y + 1, self.current_rot):
                 self.piece_y += 1
+        elif action == 'fast':
+            # Phase 1: fast drop (3x speed) — piece falls quickly but doesn't lock
+            self.drop_interval = 0.08
         elif action == 'drop':
+            # Phase 2: instant drop — locks immediately
             while not self._collides(self.piece_x, self.piece_y + 1, self.current_rot):
                 self.piece_y += 1
             self._lock_piece()
             self.last_drop = time.monotonic()
+            # Reset speed after hard drop
+            self.drop_interval = max(0.15, 0.5 - self.lines_cleared * 0.005)
 
     def _auto_move(self, t):
         """Simple AI: try to fill from left to right, rotate randomly."""
@@ -194,6 +200,8 @@ class Tetris(Effect):
             else:
                 self._lock_piece()
                 self._auto_target = None
+                # Reset speed after lock
+                self.drop_interval = max(0.15, 0.5 - self.lines_cleared * 0.005)
 
         # Render board
         frame = np.zeros((self.width, self.height, 3), dtype=np.uint8)

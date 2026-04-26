@@ -1848,6 +1848,46 @@ function renderSetupLiveFrame(ctx, canvas, width, height, pixels) {
   }
 }
 
+// --- Game (Tetris) ---
+
+function initGame() {
+  const startBtn = document.getElementById('game-start-btn');
+  if (!startBtn) return;
+
+  async function gameInput(action) {
+    await api('POST', `/api/scenes/game-input/${action}`);
+  }
+
+  startBtn.addEventListener('click', async () => {
+    await api('POST', '/api/scenes/activate', {effect: 'tetris', params: {}});
+  });
+
+  // Touch buttons
+  function bindGame(id, action) {
+    const el = document.getElementById(id);
+    if (!el) return;
+    el.addEventListener('touchstart', (e) => { e.preventDefault(); gameInput(action); });
+    el.addEventListener('mousedown', () => gameInput(action));
+  }
+  bindGame('game-left', 'left');
+  bindGame('game-right', 'right');
+  bindGame('game-rotate', 'rotate');
+  bindGame('game-down', 'down');
+  bindGame('game-fast', 'fast');
+  bindGame('game-drop', 'drop');
+
+  // Keyboard (only when game tab is active)
+  document.addEventListener('keydown', (e) => {
+    const gamePanel = document.getElementById('panel-game');
+    if (!gamePanel || gamePanel.style.display === 'none') return;
+    if (e.key === 'ArrowLeft') { gameInput('left'); e.preventDefault(); }
+    else if (e.key === 'ArrowRight') { gameInput('right'); e.preventDefault(); }
+    else if (e.key === 'ArrowUp') { gameInput('rotate'); e.preventDefault(); }
+    else if (e.key === 'ArrowDown') { gameInput('down'); e.preventDefault(); }
+    else if (e.key === ' ') { gameInput('drop'); e.preventDefault(); }
+  });
+}
+
 // --- Init ---
 
 document.addEventListener('DOMContentLoaded', () => {
@@ -1860,6 +1900,7 @@ document.addEventListener('DOMContentLoaded', () => {
   initDiagnostics();
   initSystem();
   initSim();
+  initGame();
   // Sim toggle — stop/start preview when checkbox changes
   const simToggle = document.getElementById('sim-enabled');
   if (simToggle) {

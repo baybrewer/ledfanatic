@@ -47,6 +47,7 @@
       <button id="tab-media" class="tab" data-tab="media" role="tab" aria-selected="false" aria-controls="panel-media" tabindex="-1">Media</button>
       <button id="tab-audio" class="tab" data-tab="audio" role="tab" aria-selected="false" aria-controls="panel-audio" tabindex="-1">Audio</button>
       <button id="tab-sim" class="tab" data-tab="sim" role="tab" aria-selected="false" aria-controls="panel-sim" tabindex="-1">Sim</button>
+      <button id="tab-game" class="tab" data-tab="game" role="tab" aria-selected="false" aria-controls="panel-game" tabindex="-1">Game</button>
       <button id="tab-system" class="tab" data-tab="system" role="tab" aria-selected="false" aria-controls="panel-system" tabindex="-1">System</button>
     </nav>
 
@@ -236,6 +237,25 @@
             <div id="sim-strip-labels" class="sim-strip-labels"></div>
             <p class="sim-status-line">Preview runs without changing live LEDs</p>
           </div>
+        </div>
+      </section>
+
+      <!-- GAME -->
+      <section id="panel-game" class="panel" role="tabpanel" aria-labelledby="tab-game">
+        <div style="text-align:center;padding:20px;">
+          <h2 style="color:#0ff;margin-bottom:16px;">TETRIS</h2>
+          <button id="game-start-btn" class="action-btn primary" style="font-size:18px;padding:12px 32px;margin-bottom:24px;">Start Game</button>
+          <div id="game-controls" style="display:grid;grid-template-columns:80px 80px 80px;gap:8px;justify-content:center;margin-bottom:12px;">
+            <div></div>
+            <button class="action-btn secondary game-btn" id="game-rotate" style="font-size:28px;height:80px;">&#8635;</button>
+            <div></div>
+            <button class="action-btn secondary game-btn" id="game-left" style="font-size:28px;height:80px;">&#9664;</button>
+            <button class="action-btn secondary game-btn" id="game-fast" style="font-size:22px;height:80px;">&#9660; Fast</button>
+            <button class="action-btn secondary game-btn" id="game-right" style="font-size:28px;height:80px;">&#9654;</button>
+          </div>
+          <button class="action-btn secondary game-btn" id="game-down" style="font-size:22px;width:125px;height:64px;display:inline-block;">&#9660; Down</button>
+          <button class="action-btn secondary game-btn" id="game-drop" style="font-size:22px;width:125px;height:64px;display:inline-block;background:#600;">&#9660;&#9660; Drop</button>
+          <p style="margin-top:16px;color:#666;font-size:12px;">Keyboard: arrows + space. Auto-plays after 5s idle.</p>
         </div>
       </section>
 
