@@ -1,0 +1,92 @@
+# LED layout — single source of truth for physical LED geometry.
+#
+# 10-column serpentine pillar: even columns go up (+y), odd go down (-y).
+# Paired on 5 OctoWS2811 outputs (cols 0+1 on ch0, 2+3 on ch1, etc.)
+
+version: 1
+
+matrix:
+  width: 10
+  height: 83
+  origin: bottom_left
+
+outputs:
+  - id: octo_ch0
+    channel: 0
+    chipset: WS2812
+    color_order: BGR
+    segments:
+      - id: col_0
+        start: {x: 0, y: 0}
+        direction: "+y"
+        length: 83
+        physical_offset: 0
+      - id: col_1
+        start: {x: 1, y: 82}
+        direction: "-y"
+        length: 83
+        physical_offset: 83
+
+  - id: octo_ch1
+    channel: 1
+    chipset: WS2812
+    color_order: BGR
+    segments:
+      - id: col_2
+        start: {x: 2, y: 0}
+        direction: "+y"
+        length: 83
+        physical_offset: 0
+      - id: col_3
+        start: {x: 3, y: 82}
+        direction: "-y"
+        length: 83
+        physical_offset: 83
+
+  - id: octo_ch2
+    channel: 2
+    chipset: WS2812
+    color_order: BGR
+    segments:
+      - id: col_4
+        start: {x: 4, y: 0}
+        direction: "+y"
+        length: 83
+        physical_offset: 0
+      - id: col_5
+        start: {x: 5, y: 82}
+        direction: "-y"
+        length: 83
+        physical_offset: 83
+
+  - id: octo_ch3
+    channel: 3
+    chipset: WS2812
+    color_order: BGR
+    segments:
+      - id: col_6
+        start: {x: 6, y: 0}
+        direction: "+y"
+        length: 83
+        physical_offset: 0
+      - id: col_7
+        start: {x: 7, y: 82}
+        direction: "-y"
+        length: 83
+        physical_offset: 83
+
+  - id: octo_ch4
+    channel: 4
+    chipset: WS2812
+    color_order: BGR
+    segments:
+      - id: col_8
+        start: {x: 8, y: 0}
+        direction: "+y"
+        length: 83
+        physical_offset: 0
+      - id: col_9
+        start: {x: 9, y: 82}
+        direction: "-y"
+        length: 83
+        physical_offset: 83
