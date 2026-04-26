@@ -20,6 +20,7 @@ from .routes import system, scenes, brightness, media, audio, diagnostics, setup
 # pixel_map_routes removed — replaced by layout module (Task 8)
 # from .routes import pixel_map as pixel_map_routes
 from .routes import transport as transport_routes
+from .routes import layout as layout_routes
 from .routes import ws
 
 logger = logging.getLogger(__name__)
@@ -87,6 +88,7 @@ def create_app(
     app.include_router(effects.create_router(deps))
     app.include_router(preview.create_router(deps, require_auth))
     # pixel_map_routes removed — replaced by layout module (Task 8)
+    app.include_router(layout_routes.create_router(deps, require_auth))
     app.include_router(ws_router)
 
     # --- Periodic broadcast ---
