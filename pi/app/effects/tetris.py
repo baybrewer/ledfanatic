@@ -64,8 +64,10 @@ class TetrisAutoplay(Effect):
 
     def _update_speed(self):
         speed = self.params.get('speed', 1.0)
-        # 0.1 = 0.5s/row (slow, visible), 1.0 = 0.1s/row (brisk), 2.0 = 0.02s/row (ultra fast)
-        self._game.drop_interval = max(0.02, 0.5 * (0.1 ** ((speed - 0.1) / 1.9)))
+        # 0.1 = 0.5s/row (slow), 1.0 = 0.12s/row, 2.0 = 0.02s/row (lightning)
+        self._game.drop_interval = 0.55 - speed * 0.265
+        if self._game.drop_interval < 0.02:
+            self._game.drop_interval = 0.02
 
     def update_params(self, params: dict):
         super().update_params(params)
@@ -195,7 +197,7 @@ class Tetris(Effect):
 
     def _auto_move(self, t):
         """Pro-level AI: evaluates all placements, picks the best, moves fast."""
-        if t - self.auto_move_time < 0.03:  # 30+ moves per second
+        if t - self.auto_move_time < self.drop_interval * 0.3:  # scales with drop speed
             return
         self.auto_move_time = t
 
