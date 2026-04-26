@@ -64,8 +64,8 @@ class TetrisAutoplay(Effect):
 
     def _update_speed(self):
         speed = self.params.get('speed', 1.0)
-        # 0.1 = 0.065s/row (slow visible), 1.0 = 0.035s/row, 2.0 = 0.0025s/row (lightning)
-        interval = max(0.0025, 0.07 - speed * 0.0335)
+        # Exponential: 0.1=0.12s, 1.0=0.04s, 2.0=0.013s, 3.0=0.004s, 4.0=0.001s
+        interval = 0.13 * (0.38 ** speed)
         self._game._speed_override = interval
         self._game.drop_interval = interval
 
