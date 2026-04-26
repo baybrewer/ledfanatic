@@ -330,6 +330,7 @@ class Fire(Effect):
     super().__init__(*args, **kwargs)
     self._heat = np.zeros((self.width, self.height), dtype=np.float64)
     self._rng = np.random.default_rng(42)
+    self._prev_frame = None
 
   def render(self, t: float, state) -> np.ndarray:
     cooling = self.params.get('cooling', 55)
@@ -365,7 +366,14 @@ class Fire(Effect):
 
     # Flip vertically — heat sim uses y=0 as hot base, but physical pillar
     # needs hot pixels at high y (bottom of display)
-    return frame[:, ::-1, :]
+    frame = frame[:, ::-1, :]
+
+    # Temporal smoothing for relaxed flicker
+    if self._prev_frame is None:
+      self._prev_frame = frame.copy()
+    smoothed = (frame.astype(np.float32) * 0.4 + self._prev_frame.astype(np.float32) * 0.6).astype(np.uint8)
+    self._prev_frame = smoothed.copy()
+    return smoothed
 
 
 class SineBands(Effect):

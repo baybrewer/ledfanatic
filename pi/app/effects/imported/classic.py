@@ -470,10 +470,11 @@ class Fireplace(Effect):
     "ember_rate": 0.20, "ember_burst": 6, "ember_spread": 0.65,
     "palette": 4, "radial": 0, "heat_cap": 0.75,
   }
-  _FLARE_PROB = 0.025
-  _SPARK_MIN = 0.55
-  _SPARK_MAX = 1.0
+  _FLARE_PROB = 0.008
+  _SPARK_MIN = 0.40
+  _SPARK_MAX = 0.85
   _MAX_EMBERS = 150
+  _TEMPORAL_BLEND = 0.6  # blend 60% previous frame for smoothness
   def __init__(self, width, height, params=None):
     super().__init__(width, height, params)
     self.buf = LEDBuffer(width, height)
@@ -704,7 +705,14 @@ class Fireplace(Effect):
       linear_frame = self.buf.data  # (cols, rows, 3)
       self.buf.data = linear_frame[self._radial_x_idx, self._radial_y_lookup]
 
-    return self.buf.get_frame()
+    # ── Temporal smoothing: blend with previous frame for less flicker ──
+    frame = self.buf.get_frame()
+    if not hasattr(self, '_prev_frame') or self._prev_frame is None:
+      self._prev_frame = frame.copy()
+    blend = self._TEMPORAL_BLEND
+    smoothed = (frame.astype(np.float32) * (1 - blend) + self._prev_frame.astype(np.float32) * blend).astype(np.uint8)
+    self._prev_frame = smoothed.copy()
+    return smoothed
 
   def _calc_dt_ms(self, t):
     if self._last_t is None:
