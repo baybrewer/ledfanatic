@@ -53,7 +53,7 @@ class TetrisAutoplay(Effect):
     PALETTE_SUPPORT = False
 
     PARAMS = [
-        _Param("Speed", "speed", 0.1, 2.0, 0.1, 1.0),
+        _Param("Speed", "speed", 0.1, 4.0, 0.1, 1.0),
     ]
 
     def __init__(self, width, height, params=None):

@@ -200,7 +200,7 @@ def main():
     description='Watch an AI play Tetris endlessly',
     imported=True,
     params=(
-      {'name': 'speed', 'label': 'Speed', 'min': 0.1, 'max': 2.0, 'step': 0.1, 'default': 1.0, 'type': 'slider'},
+      {'name': 'speed', 'label': 'Speed', 'min': 0.1, 'max': 4.0, 'step': 0.1, 'default': 1.0, 'type': 'slider'},
     ),
   ))
   effect_catalog.register_imported('tetris', EffectMeta(
