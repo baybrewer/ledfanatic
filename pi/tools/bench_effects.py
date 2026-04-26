@@ -18,16 +18,15 @@ from pathlib import Path
 from app.effects.generative import EFFECTS
 from app.effects.audio_reactive import AUDIO_EFFECTS
 from app.effects.imported import IMPORTED_EFFECTS
-from app.config.pixel_map import load_pixel_map, compile_pixel_map
-from app.mapping.packer import pack_frame
+from app.layout import load_layout, compile_layout, pack_frame
 from app.core.renderer import _build_gamma_lut
 
-# Load and compile pixel map for benchmarking
+# Load and compile layout for benchmarking
 _config_dir = Path(__file__).parent.parent / "config"
-_pixel_map_config = load_pixel_map(_config_dir)
-_pixel_map = compile_pixel_map(_pixel_map_config)
-GRID_WIDTH = _pixel_map.width
-GRID_HEIGHT = _pixel_map.height
+_layout_config = load_layout(_config_dir)
+_layout = compile_layout(_layout_config)
+GRID_WIDTH = _layout.width
+GRID_HEIGHT = _layout.height
 
 
 def _make_state():
@@ -90,7 +89,7 @@ def bench_one(name, effect_cls, frames, gamma_lut, state):
       logical = internal_frame
     logical = (logical * 0.8).astype(np.uint8)  # brightness
     logical = gamma_lut[logical]
-    _ = pack_frame(logical, _pixel_map)
+    _ = pack_frame(logical, _layout)
     p_end = time.perf_counter()
 
     render_times.append(r_end - r_start)
