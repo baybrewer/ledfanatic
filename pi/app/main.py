@@ -192,6 +192,22 @@ def main():
     ),
   ))
 
+  # Register Tetris effects in catalog
+  effect_catalog.register_imported('tetris_auto', EffectMeta(
+    name='tetris_auto',
+    label='Tetris (Auto)',
+    group='generative',
+    description='Watch an AI play Tetris endlessly',
+    imported=True,
+  ))
+  effect_catalog.register_imported('tetris', EffectMeta(
+    name='tetris',
+    label='Tetris (Play)',
+    group='game',
+    description='Playable Tetris — use the Game tab to control',
+    imported=True,
+  ))
+
   # Spatial map (optional front-projection geometry)
   spatial_map = load_spatial_map(config_dir)
   if spatial_map:
