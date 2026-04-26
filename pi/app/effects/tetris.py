@@ -196,7 +196,7 @@ class Tetris(Effect):
             self.last_drop = time.monotonic()
             # Reset speed after hard drop
             if self._speed_override is None:
-            self.drop_interval = max(0.15, 0.5 - self.lines_cleared * 0.005)
+                self.drop_interval = max(0.15, 0.5 - self.lines_cleared * 0.005)
 
     def _auto_move(self, t):
         """Pro-level AI: evaluates all placements, picks the best, moves fast."""
@@ -330,7 +330,7 @@ class Tetris(Effect):
                 self._auto_target_x = None
                 # Reset speed after lock
                 if self._speed_override is None:
-            self.drop_interval = max(0.15, 0.5 - self.lines_cleared * 0.005)
+                    self.drop_interval = max(0.15, 0.5 - self.lines_cleared * 0.005)
 
         # Render board
         frame = np.zeros((self.width, self.height, 3), dtype=np.uint8)
