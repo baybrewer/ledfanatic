@@ -116,24 +116,33 @@ class ScrollingText(Effect):
 
         self._scroll_offset += dt * pixels_per_sec
 
-        frame = np.zeros((self.width, self.height, 3), dtype=np.uint8)
+        frame = np.zeros((self.width, self.height, 3), dtype=np.float32)
 
         if self._text_image is None or self._text_height == 0:
-            return frame
+            return frame.astype(np.uint8)
 
         # Total scroll distance: text scrolls fully through the display
         total_scroll = self.height + self._text_height
 
-        # Current position (wraps)
-        offset = int(self._scroll_offset) % total_scroll
+        # Sub-pixel offset for smooth scrolling
+        raw_offset = self._scroll_offset % total_scroll
+        offset_int = int(raw_offset)
+        frac = raw_offset - offset_int  # 0.0 to 1.0 fractional pixel
 
-        # Text enters from the bottom: y position of text top edge
-        text_y = self.height - offset
+        # Text enters from the bottom
+        text_y = self.height - offset_int
 
-        # Copy visible portion of text into frame
+        text_f = self._text_image.astype(np.float32)
+
+        # Blend: each output row is a mix of two text rows based on frac
         for ty in range(self._text_height):
             fy = text_y + ty
+            # Current row contribution (1 - frac)
             if 0 <= fy < self.height:
-                frame[:, fy] = self._text_image[:, ty]
+                frame[:, fy] += text_f[:, ty] * (1.0 - frac)
+            # Shifted row contribution (frac) — one pixel up
+            fy_up = fy - 1
+            if 0 <= fy_up < self.height:
+                frame[:, fy_up] += text_f[:, ty] * frac
 
-        return frame
+        return np.clip(frame, 0, 255).astype(np.uint8)
