@@ -38,6 +38,23 @@ PIECE_COLORS = {
 PIECE_NAMES = list(PIECES.keys())
 
 
+class TetrisAutoplay(Effect):
+    """Autoplay Tetris as a visual effect — pro-level AI plays endlessly."""
+
+    CATEGORY = "generative"
+    DISPLAY_NAME = "Tetris (Auto)"
+    DESCRIPTION = "Watch an AI play Tetris endlessly at high speed"
+
+    def __init__(self, width, height, params=None):
+        super().__init__(width, height, params)
+        self._game = Tetris(width, height, params)
+        self._game.auto_play = True
+        self._game.drop_interval = 0.05
+
+    def render(self, t: float, state) -> np.ndarray:
+        return self._game.render(t, state)
+
+
 class Tetris(Effect):
     """Endless Tetris game. Auto-plays when idle."""
 
@@ -157,25 +174,112 @@ class Tetris(Effect):
             self.drop_interval = max(0.15, 0.5 - self.lines_cleared * 0.005)
 
     def _auto_move(self, t):
-        """Simple AI: try to fill from left to right, rotate randomly."""
-        if t - self.auto_move_time < 0.1:
+        """Pro-level AI: evaluates all placements, picks the best, moves fast."""
+        if t - self.auto_move_time < 0.03:  # 30+ moves per second
             return
         self.auto_move_time = t
 
-        # Simple strategy: move toward a target column
-        cells = self._get_cells()
-        piece_center = self.piece_x + max(c[0] for c in cells) / 2
+        # Compute best placement once per piece
+        if not hasattr(self, '_auto_target_x') or self._auto_target_x is None:
+            best_score = -999999
+            best_x = self.piece_x
+            best_rot = self.current_rot
+            rotations = PIECES[self.current_type]
 
-        # Pick a random target (changes per piece)
-        if not hasattr(self, '_auto_target') or self._auto_target is None:
-            self._auto_target = random.randint(0, self.width - 1)
-            if random.random() < 0.4:
-                self._process_input('rotate')
+            for rot in range(len(rotations)):
+                cells = rotations[rot]
+                min_cx = min(c[0] for c in cells)
+                max_cx = max(c[0] for c in cells)
+                for px in range(-min_cx, self.width - max_cx):
+                    # Simulate drop
+                    py = self.piece_y
+                    while not self._collides_at(px, py + 1, rot):
+                        py += 1
+                    score = self._evaluate_placement(px, py, rot)
+                    if score > best_score:
+                        best_score = score
+                        best_x = px
+                        best_rot = rot
 
-        if piece_center < self._auto_target - 0.5:
+            self._auto_target_x = best_x
+            self._auto_target_rot = best_rot
+
+        # Execute moves toward target
+        # First rotate
+        if self.current_rot != self._auto_target_rot:
+            self._process_input('rotate')
+        # Then move horizontally
+        elif self.piece_x < self._auto_target_x:
             self._process_input('right')
-        elif piece_center > self._auto_target + 0.5:
+        elif self.piece_x > self._auto_target_x:
             self._process_input('left')
+        else:
+            # In position — hard drop
+            self._process_input('drop')
+            self._auto_target_x = None
+
+    def _collides_at(self, px, py, rot):
+        """Check collision at arbitrary position/rotation."""
+        cells = PIECES[self.current_type][rot % len(PIECES[self.current_type])]
+        for cx, cy in cells:
+            x = px + cx
+            y = py + cy
+            if x < 0 or x >= self.width or y >= self.height:
+                return True
+            if y >= 0 and self.grid[y][x] is not None:
+                return True
+        return False
+
+    def _evaluate_placement(self, px, py, rot):
+        """Score a placement. Higher = better. Rewards filled rows, flat surface, no holes."""
+        cells = PIECES[self.current_type][rot % len(PIECES[self.current_type])]
+        # Simulate placing the piece
+        test_grid = [row[:] for row in self.grid]
+        color = (1, 1, 1)  # dummy
+        for cx, cy in cells:
+            x = px + cx
+            y = py + cy
+            if 0 <= x < self.width and 0 <= y < self.height:
+                test_grid[y][x] = color
+
+        # Score components
+        score = 0
+
+        # Reward: lines cleared (heavily weighted)
+        lines = sum(1 for row in test_grid if all(c is not None for c in row))
+        score += lines * 1000
+
+        # Reward: piece placed low (maximize y)
+        score += py * 5
+
+        # Penalty: holes (empty cells with filled cells above)
+        holes = 0
+        for x in range(self.width):
+            found_block = False
+            for y in range(self.height):
+                if test_grid[y][x] is not None:
+                    found_block = True
+                elif found_block:
+                    holes += 1
+        score -= holes * 80
+
+        # Penalty: height variance (bumpiness)
+        heights = []
+        for x in range(self.width):
+            h = 0
+            for y in range(self.height):
+                if test_grid[y][x] is not None:
+                    h = self.height - y
+                    break
+            heights.append(h)
+        bumpiness = sum(abs(heights[i] - heights[i+1]) for i in range(len(heights)-1))
+        score -= bumpiness * 15
+
+        # Penalty: max height
+        max_h = max(heights) if heights else 0
+        score -= max_h * 3
+
+        return score
 
     def render(self, t: float, state) -> np.ndarray:
         now = time.monotonic()
@@ -183,6 +287,8 @@ class Tetris(Effect):
         # Re-enable auto-play after 5 seconds of no input
         if not self.auto_play and now - self.last_input > 5.0:
             self.auto_play = True
+            self.drop_interval = 0.05  # fast auto-play speed
+            self._auto_target_x = None
 
         # Process queued inputs
         while self._input_queue:
