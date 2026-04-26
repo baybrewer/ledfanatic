@@ -137,6 +137,8 @@ def main():
   from .effects.tetris import Tetris, TetrisAutoplay
   renderer.register_effect('tetris', Tetris)
   renderer.register_effect('tetris_auto', TetrisAutoplay)
+  from .effects.scrolltext import ScrollingText
+  renderer.register_effect('scrolling_text', ScrollingText)
 
   # Register imported animations into renderer
   for name, cls in IMPORTED_EFFECTS.items():
@@ -189,6 +191,20 @@ def main():
     params=(
       {'name': 'interval', 'label': 'Switch Time (s)', 'min': 5, 'max': 120, 'step': 1, 'default': 15, 'type': 'slider'},
       {'name': 'fade_duration', 'label': 'Fade Duration (s)', 'min': 0.5, 'max': 5.0, 'step': 0.5, 'default': 2.0, 'type': 'slider'},
+    ),
+  ))
+
+  # Register Scrolling Text in catalog
+  effect_catalog.register_imported('scrolling_text', EffectMeta(
+    name='scrolling_text',
+    label='Scrolling Text',
+    group='generative',
+    description='Scroll a message up the pillar',
+    imported=True,
+    params=(
+      {'name': 'speed', 'label': 'Speed', 'min': 0.1, 'max': 5.0, 'step': 0.1, 'default': 1.0, 'type': 'slider'},
+      {'name': 'text', 'label': 'Message', 'type': 'text', 'default': 'LED FANATIC'},
+      {'name': 'color', 'label': 'Color', 'type': 'color', 'default': '#00FFFF'},
     ),
   ))
 
