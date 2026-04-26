@@ -1414,6 +1414,84 @@ function initSetup() {
   document.getElementById('pm-origin-select').addEventListener('change', () => scheduleApply());
   document.getElementById('pm-grid-w').addEventListener('input', () => scheduleApply());
   document.getElementById('pm-grid-h').addEventListener('input', () => scheduleApply());
+
+  // --- LED Probe ---
+  initProbe();
+}
+
+function initProbe() {
+  const stripSelect = document.getElementById('probe-strip');
+  const ledInput = document.getElementById('probe-led');
+  const infoEl = document.getElementById('probe-info');
+  const offBtn = document.getElementById('probe-off-btn');
+  if (!stripSelect || !ledInput) return;
+
+  let probeSizes = {};
+  let probeActive = false;
+
+  // Populate strip selector from layout data
+  async function loadProbeSizes() {
+    const data = await api('GET', '/api/layout/');
+    if (data && data.compiled && data.compiled.output_sizes) {
+      data.compiled.output_sizes.forEach((size, ch) => {
+        if (size > 0) {
+          probeSizes[ch] = size;
+          const opt = document.createElement('option');
+          opt.value = ch;
+          opt.textContent = `${ch} (${size})`;
+          stripSelect.appendChild(opt);
+        }
+      });
+    }
+  }
+
+  async function fireProbe() {
+    const strip = parseInt(stripSelect.value);
+    let led = parseInt(ledInput.value) || 0;
+    const max = probeSizes[strip] || 0;
+    if (led < 0) led = 0;
+    if (led >= max) led = max - 1;
+    ledInput.value = led;
+    ledInput.max = max - 1;
+    const result = await api('POST', `/api/layout/probe/${strip}/${led}`);
+    if (result && result.mapped_to) {
+      infoEl.textContent = `→ (${result.mapped_to.x}, ${result.mapped_to.y})`;
+    } else {
+      infoEl.textContent = '→ UNMAPPED';
+    }
+    probeActive = true;
+  }
+
+  stripSelect.addEventListener('change', fireProbe);
+  ledInput.addEventListener('change', fireProbe);
+  ledInput.addEventListener('input', fireProbe);
+
+  offBtn.addEventListener('click', async () => {
+    await api('POST', '/api/layout/test-off');
+    infoEl.textContent = '';
+    probeActive = false;
+  });
+
+  // Keyboard control when probe panel is focused
+  document.addEventListener('keydown', (e) => {
+    // Only respond if probe is active or led input is focused
+    if (!probeActive && document.activeElement !== ledInput) return;
+    const strip = parseInt(stripSelect.value);
+    const max = probeSizes[strip] || 1;
+    let led = parseInt(ledInput.value) || 0;
+
+    if (e.key === 'ArrowRight') { led = Math.min(led + 1, max - 1); }
+    else if (e.key === 'ArrowLeft') { led = Math.max(led - 1, 0); }
+    else if (e.key === 'ArrowUp') { led = Math.min(led + 10, max - 1); e.preventDefault(); }
+    else if (e.key === 'ArrowDown') { led = Math.max(led - 10, 0); e.preventDefault(); }
+    else return;
+
+    e.preventDefault();
+    ledInput.value = led;
+    fireProbe();
+  });
+
+  loadProbeSizes();
 }
 
 // --- Brightness ---

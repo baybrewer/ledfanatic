@@ -369,6 +369,19 @@
               <button class="test-btn" data-test="heartbeat">Heartbeat</button>
             </div>
             <button id="diag-clear-btn" class="action-btn secondary">Return to Normal</button>
+
+            <!-- LED Probe -->
+            <h3 style="margin-top:24px;">LED Probe</h3>
+            <div id="probe-panel" style="background:#1a1a1a;padding:12px;border-radius:8px;">
+              <div style="display:flex;align-items:center;gap:12px;flex-wrap:wrap;">
+                <label>Strip: <select id="probe-strip" style="width:60px;"></select></label>
+                <label>LED: <input type="number" id="probe-led" value="0" min="0" style="width:70px;"></label>
+                <span id="probe-info" style="font-family:monospace;font-size:16px;color:#0f0;"></span>
+                <button id="probe-off-btn" class="action-btn secondary" style="margin-left:auto;">Off</button>
+              </div>
+              <p style="margin:8px 0 0;font-size:12px;color:#888;">Arrow keys: Left/Right ±1, Up/Down ±10. Press S to switch strip.</p>
+            </div>
+
             <div id="diag-stats">
               <pre id="stats-output">Loading...</pre>
             </div>
