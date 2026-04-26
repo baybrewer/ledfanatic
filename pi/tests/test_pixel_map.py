@@ -561,12 +561,12 @@ class TestDefaultConfig:
     errors = validate_pixel_map(self.config)
     assert errors == [], f"Validation errors: {errors}"
 
-  def test_grid_10x172(self):
+  def test_grid_10x83(self):
     assert self.compiled.width == 10
-    assert self.compiled.height == 172
+    assert self.compiled.height == 83
 
   def test_total_leds(self):
-    assert self.compiled.total_mapped_leds == 1720
+    assert self.compiled.total_mapped_leds == 830
 
   def test_10_segments(self):
     assert len(self.config.segments) == 10
@@ -577,24 +577,24 @@ class TestDefaultConfig:
     assert len(used_outputs) == 5
 
   def test_no_unmapped_cells(self):
-    """Every cell in the 10x172 grid should be mapped."""
+    """Every cell in the 10x83 grid should be mapped."""
     unmapped = (self.compiled.forward_lut[:, :, 0] == -1)
     assert not unmapped.any(), "Found unmapped cells in default config"
 
   def test_output_config_values(self):
-    """Each used output should have 344 LEDs (2 segments x 172)."""
+    """Each used output should have 166 LEDs (2 segments x 83)."""
     oc = self.compiled.output_config
     for pin in range(5):
-      assert oc[pin] == 344, f"Pin {pin}: expected 344, got {oc[pin]}"
+      assert oc[pin] == 166, f"Pin {pin}: expected 166, got {oc[pin]}"
     for pin in range(5, 8):
       assert oc[pin] == 0, f"Pin {pin}: expected 0, got {oc[pin]}"
 
   def test_segment_offsets(self):
-    """Each pair of segments on a pin should have offsets [0, 172]."""
+    """Each pair of segments on a pin should have offsets [0, 83]."""
     offsets = self.compiled.segment_offsets
     # 10 segments, pairs on outputs 0-4
     for pair_idx in range(5):
       seg_a = pair_idx * 2
       seg_b = pair_idx * 2 + 1
       assert offsets[seg_a] == 0, f"Segment {seg_a} offset should be 0"
-      assert offsets[seg_b] == 172, f"Segment {seg_b} offset should be 172"
+      assert offsets[seg_b] == 83, f"Segment {seg_b} offset should be 83"

@@ -4,12 +4,12 @@
 // Dynamic geometry is received via CONFIG packet from Pi at startup.
 
 // --- LED Configuration (defaults) ---
-#define DEFAULT_LEDS_PER_STRIP  344  // 2 × 172 LEDs per serpentine pair
+#define DEFAULT_LEDS_PER_STRIP  166  // 2 × 83 LEDs per serpentine pair
 #define DEFAULT_ACTIVE_OUTPUTS  5    // 5 serpentine pairs
 #define TOTAL_OUTPUTS           8    // OctoWS2811 always addresses 8
 #define MAX_LEDS_PER_OUTPUT     1200 // max LEDs on any single output
 #define MAX_TOTAL_LEDS          (TOTAL_OUTPUTS * MAX_LEDS_PER_OUTPUT)
-#define LEDS_PER_PHYSICAL       172  // LEDs per physical strip (for test patterns)
+#define LEDS_PER_PHYSICAL       83   // LEDs per physical strip (for test patterns)
 #define PHYSICAL_STRIPS         10   // Total physical strips (for test patterns)
 
 // --- Protocol ---
