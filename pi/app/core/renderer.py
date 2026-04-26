@@ -394,6 +394,10 @@ class Renderer:
 
     self.state.frames_rendered += 1
 
+    # Flip y-axis when origin is bottom-left (effects render y=0 as top, physical y=0 is bottom)
+    if self.layout.origin == 'bottom_left':
+      logical_frame = logical_frame[:, ::-1, :]
+
     # Pack frame to output bytes and send
     pixel_bytes = pack_frame(logical_frame, self.layout)
 
