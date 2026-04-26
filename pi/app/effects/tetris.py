@@ -64,10 +64,10 @@ class TetrisAutoplay(Effect):
 
     def _update_speed(self):
         speed = self.params.get('speed', 1.0)
-        # 0.1 = 0.5s/row (slow), 1.0 = 0.12s/row, 2.0 = 0.02s/row (lightning)
-        self._game.drop_interval = 0.55 - speed * 0.265
-        if self._game.drop_interval < 0.02:
-            self._game.drop_interval = 0.02
+        # 0.1 = 0.13s/row (slow visible), 1.0 = 0.07s/row, 2.0 = 0.005s/row (lightning)
+        interval = max(0.005, 0.14 - speed * 0.067)
+        self._game._speed_override = interval
+        self._game.drop_interval = interval
 
     def update_params(self, params: dict):
         super().update_params(params)
@@ -96,6 +96,7 @@ class Tetris(Effect):
         self.last_drop = 0
         self.last_input = 0
         self.drop_interval = 0.5  # seconds between drops
+        self._speed_override = None  # set by TetrisAutoplay to lock speed
         self.auto_play = True
         self.auto_move_time = 0
         self.game_over_time = 0
@@ -154,7 +155,8 @@ class Tetris(Effect):
             new_grid.insert(0, [None] * self.width)
         self.grid = new_grid
         # Speed up slightly with lines cleared
-        self.drop_interval = max(0.15, 0.5 - self.lines_cleared * 0.005)
+        if self._speed_override is None:
+            self.drop_interval = max(0.15, 0.5 - self.lines_cleared * 0.005)
 
     def handle_input(self, action: str):
         """Queue a player input: left, right, rotate, down, drop, fast."""
@@ -193,6 +195,7 @@ class Tetris(Effect):
             self._lock_piece()
             self.last_drop = time.monotonic()
             # Reset speed after hard drop
+            if self._speed_override is None:
             self.drop_interval = max(0.15, 0.5 - self.lines_cleared * 0.005)
 
     def _auto_move(self, t):
@@ -326,7 +329,8 @@ class Tetris(Effect):
                 self._lock_piece()
                 self._auto_target_x = None
                 # Reset speed after lock
-                self.drop_interval = max(0.15, 0.5 - self.lines_cleared * 0.005)
+                if self._speed_override is None:
+            self.drop_interval = max(0.15, 0.5 - self.lines_cleared * 0.005)
 
         # Render board
         frame = np.zeros((self.width, self.height, 3), dtype=np.uint8)
