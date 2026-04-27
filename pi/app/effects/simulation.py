@@ -900,12 +900,139 @@ class FluidJets(FluidSim):
 
 
 # ──────────────────────────────────────────────────────────────────────
+#  Smoke Rings — continuous upward jets creating vortex pairs
+# ──────────────────────────────────────────────────────────────────────
+
+class SmokeRings(FluidSim):
+    """Continuous upward jets that form vortex rings as they rise.
+
+    Each jet injects momentum and dye from the bottom. The velocity
+    shear at the jet edges rolls up into counter-rotating vortex pairs
+    (2D cross-sections of toroidal smoke rings). Jets are evenly spaced
+    and each gets its own slowly-cycling hue.
+    """
+
+    CATEGORY = "simulation"
+    DISPLAY_NAME = "Smoke Rings"
+    DESCRIPTION = "Upward jets that roll into vortex rings as they rise"
+    PALETTE_SUPPORT = False
+
+    PARAMS = [
+        type('P', (), {'label': 'Jets', 'attr': 'num_jets', 'lo': 1, 'hi': 5,
+                        'step': 1, 'default': 2})(),
+        type('P', (), {'label': 'Jet Force', 'attr': 'force', 'lo': 5.0, 'hi': 60.0,
+                        'step': 1.0, 'default': 25.0})(),
+        type('P', (), {'label': 'Pulse Rate', 'attr': 'pulse_rate', 'lo': 0.3, 'hi': 3.0,
+                        'step': 0.1, 'default': 0.8})(),
+        type('P', (), {'label': 'Dye Intensity', 'attr': 'dye_rate', 'lo': 0.5, 'hi': 5.0,
+                        'step': 0.1, 'default': 2.5})(),
+        type('P', (), {'label': 'Color Cycle', 'attr': 'color_speed', 'lo': 0.0, 'hi': 1.0,
+                        'step': 0.05, 'default': 0.15})(),
+        type('P', (), {'label': 'Pressure Iters', 'attr': 'pressure_iters', 'lo': 1, 'hi': 20,
+                        'step': 1, 'default': 2})(),
+    ]
+
+    def __init__(self, width, height, params=None):
+        super().__init__(width, height, params)
+        self._jet_phases = []
+        self._rebuild_jets()
+
+    def _rebuild_jets(self):
+        n = int(self.params.get('num_jets', 2))
+        self._jet_phases = [i * (2 * math.pi / max(n, 1)) for i in range(n)]
+
+    def update_params(self, params: dict):
+        old_n = int(self.params.get('num_jets', 2))
+        super().update_params(params)
+        new_n = int(self.params.get('num_jets', 2))
+        if new_n != old_n:
+            self._rebuild_jets()
+
+    def render(self, t: float, state) -> np.ndarray:
+        if self._last_t is None:
+            self._last_t = t
+        dt = min(t - self._last_t, 0.05)
+        self._last_t = t
+
+        force = self.params.get('force', 25.0)
+        pulse_rate = self.params.get('pulse_rate', 0.8)
+        dye_rate = self.params.get('dye_rate', 2.5)
+        color_speed = self.params.get('color_speed', 0.15)
+        num_jets = int(self.params.get('num_jets', 2))
+
+        w, h = self.width, self.height
+        pw, ph = w + 2, h + 2
+        elapsed = self.elapsed(t)
+
+        # Each jet pulses with a sine wave — creates discrete puffs
+        for ji in range(num_jets):
+            # Evenly spaced across x
+            jet_x_frac = (ji + 0.5) / num_jets
+            jx = int(jet_x_frac * w) + 1
+            jx = max(2, min(jx, pw - 3))
+
+            # Pulsing: sine wave controls injection strength
+            phase = self._jet_phases[ji]
+            pulse = (math.sin(elapsed * pulse_rate * 2 * math.pi + phase) + 1) * 0.5
+            # Sharpen pulse into distinct puffs (raise to power)
+            pulse = pulse ** 3
+
+            if pulse < 0.05:
+                continue
+
+            jet_force = force * pulse
+            jet_dye = dye_rate * pulse
+
+            # Inject upward momentum from bottom (3 cells wide for shear)
+            rx = slice(jx - 1, jx + 2)
+            ry = slice(ph - 4, ph - 1)
+            self._vy[rx, ry] -= jet_force  # upward
+
+            # Slight lateral perturbation to seed vortex rollup
+            wobble = math.sin(elapsed * 3.7 + ji * 2.1) * force * 0.15
+            self._vx[jx - 1, ph - 4:ph - 1] += wobble
+            self._vx[jx + 1, ph - 4:ph - 1] -= wobble
+
+            # Inject dye — each jet gets its own hue that cycles slowly
+            hue = (ji / max(num_jets, 1) + elapsed * color_speed) % 1.0
+            rv, gv, bv = self._hsv_fast(hue, 0.9, 1.0)
+            self._dye[rx, ry] += np.array([rv, gv, bv], dtype=np.float32) * jet_dye
+
+        # Navier-Stokes solver
+        tmp1, tmp2 = self._tmp1, self._tmp2
+        visc = self.params.get('viscosity', 0.0)
+        if visc > 0.00001:
+            tmp1[:] = self._vx
+            tmp2[:] = self._vy
+            self._diffuse(1, self._vx, tmp1, visc, dt)
+            self._diffuse(2, self._vy, tmp2, visc, dt)
+            self._project(self._vx, self._vy)
+
+        tmp1[:] = self._vx
+        tmp2[:] = self._vy
+        self._advect(1, self._vx, tmp1, tmp1, tmp2, dt)
+        self._advect(2, self._vy, tmp2, tmp1, tmp2, dt)
+        self._project(self._vx, self._vy)
+
+        # Advect dye
+        self._dye_tmp[:] = self._dye
+        self._advect_3d(self._dye, self._dye_tmp, self._vx, self._vy, dt)
+
+        # Gentle decay
+        self._dye *= 0.994
+
+        frame = np.clip(self._dye[1:-1, 1:-1] * 255, 0, 255).astype(np.uint8)
+        return frame
+
+
+# ──────────────────────────────────────────────────────────────────────
 #  Registry
 # ──────────────────────────────────────────────────────────────────────
 
 SIMULATION_EFFECTS = {
     'fluid_sim': FluidSim,
     'fluid_jets': FluidJets,
+    'smoke_rings': SmokeRings,
     'reaction_diffusion': ReactionDiffusion,
     'wave_equation': WaveEquation,
     'boids': Boids,

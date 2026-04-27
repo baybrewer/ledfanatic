@@ -299,6 +299,22 @@ def main():
     ),
   ))
 
+  effect_catalog.register_imported('smoke_rings', EffectMeta(
+    name='smoke_rings',
+    label='Smoke Rings',
+    group='simulation',
+    description='Upward jets that roll into vortex rings as they rise',
+    imported=True,
+    params=(
+      {'name': 'num_jets', 'label': 'Jets', 'min': 1, 'max': 5, 'step': 1, 'default': 2, 'type': 'slider'},
+      {'name': 'force', 'label': 'Jet Force', 'min': 5.0, 'max': 60.0, 'step': 1.0, 'default': 25.0, 'type': 'slider'},
+      {'name': 'pulse_rate', 'label': 'Pulse Rate', 'min': 0.3, 'max': 3.0, 'step': 0.1, 'default': 0.8, 'type': 'slider'},
+      {'name': 'dye_rate', 'label': 'Dye Intensity', 'min': 0.5, 'max': 5.0, 'step': 0.1, 'default': 2.5, 'type': 'slider'},
+      {'name': 'color_speed', 'label': 'Color Cycle', 'min': 0.0, 'max': 1.0, 'step': 0.05, 'default': 0.15, 'type': 'slider'},
+      {'name': 'pressure_iters', 'label': 'Pressure Iters', 'min': 1, 'max': 20, 'step': 1, 'default': 2, 'type': 'slider'},
+    ),
+  ))
+
   # Spatial map (optional front-projection geometry)
   spatial_map = load_spatial_map(config_dir)
   if spatial_map:
