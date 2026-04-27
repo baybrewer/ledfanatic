@@ -648,36 +648,24 @@ class Boids(Effect):
         desired_vx = np.cos(self._wander_angle) * target_speed
         desired_vy = np.sin(self._wander_angle) * target_speed
 
-        # Steer toward desired velocity (smooth, not instant)
-        steer_rate = 3.0 * dt
+        # Steer toward desired velocity — strong so wander always dominates
+        steer_rate = 5.0 * dt
         self._vx += (desired_vx - self._vx) * steer_rate
         self._vy += (desired_vy - self._vy) * steer_rate
 
-        # Separation — only kick in when very close (prevents overlap, not lattice)
+        # Separation — prevent overlap (correct vector math)
         dx = self._x[:, np.newaxis] - self._x[np.newaxis, :]
         dy = self._y[:, np.newaxis] - self._y[np.newaxis, :]
         dx = dx - w * np.round(dx / w)
         dist = np.sqrt(dx ** 2 + dy ** 2 + 1e-6)
 
-        sep_radius = h * 0.08  # small — only very close neighbors
-        close = dist < sep_radius
-        np.fill_diagonal(close, False)
-        sep_strength = np.where(close, (sep_radius - dist) / sep_radius, 0)
-        nx = np.where(close, dx / dist, 0)
-        ny = np.where(close, dy / dist, 0)
-        self._vx += nx.sum(axis=1) * sep_strength.sum(axis=1) * 5.0
-        self._vy += ny.sum(axis=1) * sep_strength.sum(axis=1) * 5.0
-
-        # Weak alignment — only immediate neighbors, creates sub-flocks
-        align_radius = h * 0.06
-        align_mask = (dist < align_radius) & (dist > 0.01)
-        align_count = align_mask.sum(axis=1).clip(1)
-        # Align wander angles, not velocities — more organic
-        neighbor_angles = np.where(align_mask, self._wander_angle[np.newaxis, :], 0).sum(axis=1) / align_count
-        angle_diff = neighbor_angles - self._wander_angle
-        # Wrap angle diff to [-pi, pi]
-        angle_diff = (angle_diff + math.pi) % (2 * math.pi) - math.pi
-        self._wander_angle += angle_diff * 0.1
+        sep_radius = h * 0.1
+        sep_weight = np.clip((sep_radius - dist) / sep_radius, 0, 1)
+        np.fill_diagonal(sep_weight, 0)
+        # Average (not sum) so force doesn't scale with boid count
+        neighbor_count = (sep_weight > 0).sum(axis=1).clip(1)
+        self._vx += (dx / dist * sep_weight).sum(axis=1) / neighbor_count * 5.0
+        self._vy += (dy / dist * sep_weight).sum(axis=1) / neighbor_count * 5.0
 
         # Edge avoidance — steer wander angle away from walls
         margin = h * 0.15
