@@ -307,7 +307,7 @@ def main():
     imported=True,
     params=(
       {'name': 'num_jets', 'label': 'Jets', 'min': 1, 'max': 5, 'step': 1, 'default': 2, 'type': 'slider'},
-      {'name': 'force', 'label': 'Impulse', 'min': 1.0, 'max': 30.0, 'step': 0.5, 'default': 8.0, 'type': 'slider'},
+      {'name': 'force', 'label': 'Impulse', 'min': 5.0, 'max': 100.0, 'step': 2.0, 'default': 40.0, 'type': 'slider'},
       {'name': 'interval', 'label': 'Interval', 'min': 1.0, 'max': 10.0, 'step': 0.5, 'default': 3.0, 'type': 'slider'},
       {'name': 'dye_rate', 'label': 'Dye Intensity', 'min': 0.5, 'max': 5.0, 'step': 0.1, 'default': 2.5, 'type': 'slider'},
       {'name': 'color_speed', 'label': 'Color Cycle', 'min': 0.0, 'max': 1.0, 'step': 0.05, 'default': 0.15, 'type': 'slider'},

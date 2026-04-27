@@ -920,8 +920,8 @@ class SmokeRings(FluidSim):
     PARAMS = [
         type('P', (), {'label': 'Jets', 'attr': 'num_jets', 'lo': 1, 'hi': 5,
                         'step': 1, 'default': 2})(),
-        type('P', (), {'label': 'Impulse', 'attr': 'force', 'lo': 1.0, 'hi': 30.0,
-                        'step': 0.5, 'default': 8.0})(),
+        type('P', (), {'label': 'Impulse', 'attr': 'force', 'lo': 5.0, 'hi': 100.0,
+                        'step': 2.0, 'default': 40.0})(),
         type('P', (), {'label': 'Interval', 'attr': 'interval', 'lo': 1.0, 'hi': 10.0,
                         'step': 0.5, 'default': 3.0})(),
         type('P', (), {'label': 'Dye Intensity', 'attr': 'dye_rate', 'lo': 0.5, 'hi': 5.0,
@@ -998,9 +998,9 @@ class SmokeRings(FluidSim):
             rx = slice(jx - 1, jx + 2)
             self._dye[rx, ry] += np.array([rv, gv, bv], dtype=np.float32) * dye_rate
 
-        # Velocity damping — prevents momentum buildup
-        self._vx *= 0.97
-        self._vy *= 0.97
+        # Velocity damping — gentle so puffs travel far but don't accumulate
+        self._vx *= 0.995
+        self._vy *= 0.995
 
         # Navier-Stokes solver
         tmp1, tmp2 = self._tmp1, self._tmp2
