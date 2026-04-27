@@ -658,8 +658,8 @@ class Boids(Effect):
         ny = dy / dist
         np.fill_diagonal(nx, 0)
         np.fill_diagonal(ny, 0)
-        self._vx -= (nx * sep_strength).sum(axis=1) * 8.0
-        self._vy -= (ny * sep_strength).sum(axis=1) * 8.0
+        self._vx += (nx * sep_strength).sum(axis=1) * 8.0
+        self._vy += (ny * sep_strength).sum(axis=1) * 8.0
 
         # Weak alignment — only very close neighbors, keeps some flocking feel
         align_radius = h * 0.06
