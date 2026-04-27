@@ -33,9 +33,9 @@ class _Spark:
 class _Rocket:
   __slots__ = ('x', 'y', 'vy', 'target_y', 'r', 'g', 'b', 'trail')
 
-  def __init__(self, x, target_y, r, g, b):
+  def __init__(self, x, target_y, height, r, g, b):
     self.x = x
-    self.y = 0.0  # launches from bottom
+    self.y = float(height - 1)  # launches from screen bottom (high y)
     self.vy = 0.0
     self.target_y = target_y
     self.r = r
@@ -88,41 +88,41 @@ class SRFireworks(Effect):
 
         self._beat_cooldown = max(0, self._beat_cooldown - dt)
 
-        # Launch rocket on beat
+        # Launch rocket on beat (screen coords: y=0 top, y=rows-1 bottom)
+        # Rockets launch from bottom (high y) toward top (low y)
         if beat and self._beat_cooldown <= 0 and len(self._rockets) < self._MAX_ROCKETS:
             self._beat_cooldown = 0.15
             x = random.uniform(1, cols - 2)
-            target_y = random.uniform(rows * 0.4, rows * 0.85)
-            # Random vivid color
+            target_y = random.uniform(rows * 0.15, rows * 0.6)
             hue = random.random()
             r, g, b = self._hue_rgb(hue)
-            rocket = _Rocket(x, target_y, r, g, b)
-            rocket.vy = target_y * 2.5  # speed to reach target
+            rocket = _Rocket(x, target_y, rows, r, g, b)
+            rocket.vy = -(rows - target_y) * 2.5  # negative = moving up (toward y=0)
             self._rockets.append(rocket)
 
         # Also auto-launch occasionally based on bass energy
         if bass > 0.4 and random.random() < bass * dt * 3 and len(self._rockets) < self._MAX_ROCKETS:
             x = random.uniform(1, cols - 2)
-            target_y = random.uniform(rows * 0.3, rows * 0.8)
+            target_y = random.uniform(rows * 0.2, rows * 0.7)
             hue = random.random()
             r, g, b = self._hue_rgb(hue)
-            rocket = _Rocket(x, target_y, r, g, b)
-            rocket.vy = target_y * 2.5
+            rocket = _Rocket(x, target_y, rows, r, g, b)
+            rocket.vy = -(rows - target_y) * 2.5
             self._rockets.append(rocket)
 
         # Update rockets
         alive_rockets = []
         for rk in self._rockets:
             rk.y += rk.vy * dt
-            rk.vy -= gravity * 0.3 * dt  # slight slowdown
+            rk.vy += gravity * 0.3 * dt  # decelerate (vy is negative, gravity slows it)
 
             # Trail
             rk.trail.append((rk.x, rk.y))
             if len(rk.trail) > 8:
                 rk.trail.pop(0)
 
-            # Explode when reaching target or slowing down
-            if rk.y >= rk.target_y or rk.vy <= 0:
+            # Explode when reaching target or stalling
+            if rk.y <= rk.target_y or rk.vy >= 0:
                 # BOOM — create sparks
                 num = int(spark_count * (0.5 + bass * 0.5))
                 for _ in range(min(num, self._MAX_SPARKS - len(self._sparks))):
@@ -145,7 +145,7 @@ class SRFireworks(Effect):
         for sp in self._sparks:
             sp.x += sp.vx * dt
             sp.y += sp.vy * dt
-            sp.vy -= gravity * dt  # gravity pulls down
+            sp.vy += gravity * dt  # gravity pulls down (increasing y = screen down)
             sp.vx *= 0.98  # air resistance
             sp.life -= dt
             if sp.life > 0 and 0 <= sp.y < rows:
