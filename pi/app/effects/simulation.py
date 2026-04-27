@@ -920,26 +920,31 @@ class SmokeRings(FluidSim):
     PARAMS = [
         type('P', (), {'label': 'Jets', 'attr': 'num_jets', 'lo': 1, 'hi': 5,
                         'step': 1, 'default': 2})(),
-        type('P', (), {'label': 'Jet Force', 'attr': 'force', 'lo': 5.0, 'hi': 60.0,
-                        'step': 1.0, 'default': 25.0})(),
-        type('P', (), {'label': 'Pulse Rate', 'attr': 'pulse_rate', 'lo': 0.02, 'hi': 3.0,
-                        'step': 0.02, 'default': 0.1})(),
+        type('P', (), {'label': 'Impulse', 'attr': 'force', 'lo': 1.0, 'hi': 30.0,
+                        'step': 0.5, 'default': 8.0})(),
+        type('P', (), {'label': 'Interval', 'attr': 'interval', 'lo': 1.0, 'hi': 10.0,
+                        'step': 0.5, 'default': 3.0})(),
         type('P', (), {'label': 'Dye Intensity', 'attr': 'dye_rate', 'lo': 0.5, 'hi': 5.0,
                         'step': 0.1, 'default': 2.5})(),
         type('P', (), {'label': 'Color Cycle', 'attr': 'color_speed', 'lo': 0.0, 'hi': 1.0,
                         'step': 0.05, 'default': 0.15})(),
+        type('P', (), {'label': 'Viscosity', 'attr': 'viscosity', 'lo': 0.0, 'hi': 0.002,
+                        'step': 0.0001, 'default': 0.0005})(),
         type('P', (), {'label': 'Pressure Iters', 'attr': 'pressure_iters', 'lo': 1, 'hi': 20,
                         'step': 1, 'default': 2})(),
     ]
 
     def __init__(self, width, height, params=None):
         super().__init__(width, height, params)
-        self._jet_phases = []
+        self._jet_timers = []
+        self._puff_count = 0
         self._rebuild_jets()
 
     def _rebuild_jets(self):
         n = int(self.params.get('num_jets', 2))
-        self._jet_phases = [i * (2 * math.pi / max(n, 1)) for i in range(n)]
+        interval = self.params.get('interval', 3.0)
+        # Stagger timers so jets don't all fire at once
+        self._jet_timers = [i * interval / max(n, 1) for i in range(n)]
 
     def update_params(self, params: dict):
         old_n = int(self.params.get('num_jets', 2))
@@ -954,8 +959,8 @@ class SmokeRings(FluidSim):
         dt = min(t - self._last_t, 0.05)
         self._last_t = t
 
-        force = self.params.get('force', 25.0)
-        pulse_rate = self.params.get('pulse_rate', 0.8)
+        force = self.params.get('force', 8.0)
+        interval = self.params.get('interval', 3.0)
         dye_rate = self.params.get('dye_rate', 2.5)
         color_speed = self.params.get('color_speed', 0.15)
         num_jets = int(self.params.get('num_jets', 2))
@@ -964,43 +969,42 @@ class SmokeRings(FluidSim):
         pw, ph = w + 2, h + 2
         elapsed = self.elapsed(t)
 
-        # Each jet pulses with a sine wave — creates discrete puffs
+        # Each jet fires a single sharp impulse then waits
         for ji in range(num_jets):
-            # Evenly spaced across x
+            self._jet_timers[ji] -= dt
+            if self._jet_timers[ji] > 0:
+                continue
+
+            # FIRE — one sharp puff
+            self._jet_timers[ji] = interval
+
             jet_x_frac = (ji + 0.5) / num_jets
             jx = int(jet_x_frac * w) + 1
             jx = max(2, min(jx, pw - 3))
 
-            # Pulsing: sine wave controls injection strength
-            phase = self._jet_phases[ji]
-            pulse = (math.sin(elapsed * pulse_rate * 2 * math.pi + phase) + 1) * 0.5
-            # Sharpen pulse into distinct puffs (raise to power)
-            pulse = pulse ** 3
-
-            if pulse < 0.05:
-                continue
-
-            jet_force = force * pulse
-            jet_dye = dye_rate * pulse
-
-            # Inject upward momentum from bottom (3 cells wide for shear)
-            rx = slice(jx - 1, jx + 2)
+            # Upward impulse — center column strong, edges weaker (creates shear)
             ry = slice(ph - 4, ph - 1)
-            self._vy[rx, ry] -= jet_force  # upward
+            self._vy[jx, ry] -= force          # center: strong up
+            self._vy[jx - 1, ry] -= force * 0.3  # left edge: weaker
+            self._vy[jx + 1, ry] -= force * 0.3  # right edge: weaker
+            # Explicit opposite-sign vx on edges to seed vortex pair
+            self._vx[jx - 1, ry] -= force * 0.4
+            self._vx[jx + 1, ry] += force * 0.4
 
-            # Slight lateral perturbation to seed vortex rollup
-            wobble = math.sin(elapsed * 3.7 + ji * 2.1) * force * 0.15
-            self._vx[jx - 1, ph - 4:ph - 1] += wobble
-            self._vx[jx + 1, ph - 4:ph - 1] -= wobble
-
-            # Inject dye — each jet gets its own hue that cycles slowly
-            hue = (ji / max(num_jets, 1) + elapsed * color_speed) % 1.0
+            # Inject dye
+            self._puff_count += 1
+            hue = (self._puff_count * 0.15 + ji / max(num_jets, 1) + elapsed * color_speed) % 1.0
             rv, gv, bv = self._hsv_fast(hue, 0.9, 1.0)
-            self._dye[rx, ry] += np.array([rv, gv, bv], dtype=np.float32) * jet_dye
+            rx = slice(jx - 1, jx + 2)
+            self._dye[rx, ry] += np.array([rv, gv, bv], dtype=np.float32) * dye_rate
+
+        # Velocity damping — prevents momentum buildup
+        self._vx *= 0.97
+        self._vy *= 0.97
 
         # Navier-Stokes solver
         tmp1, tmp2 = self._tmp1, self._tmp2
-        visc = self.params.get('viscosity', 0.0)
+        visc = self.params.get('viscosity', 0.0005)
         if visc > 0.00001:
             tmp1[:] = self._vx
             tmp2[:] = self._vy
@@ -1018,8 +1022,8 @@ class SmokeRings(FluidSim):
         self._dye_tmp[:] = self._dye
         self._advect_3d(self._dye, self._dye_tmp, self._vx, self._vy, dt)
 
-        # Gentle decay
-        self._dye *= 0.994
+        # Slow decay
+        self._dye *= 0.996
 
         frame = np.clip(self._dye[1:-1, 1:-1] * 255, 0, 255).astype(np.uint8)
         return frame
