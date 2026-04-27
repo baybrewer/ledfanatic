@@ -324,14 +324,17 @@ class Starfield(Effect):
     super().__init__(width, height, params)
     self.buf = LEDBuffer(width, height)
     self._last_t = None
-    # Pre-populate stars at default density
-    # Each star: [x, y, phase, freq, max_brightness]
+    # Each star: [x, y, phase, freq, max_brightness, life, max_life]
     count = int(width * height * 0.03)
-    self._stars = [
-      [random.randint(0, width - 1), random.randint(0, height - 1),
-       random.uniform(0, 6.28), random.uniform(0.5, 3.0),
-       random.uniform(0.3, 1.0)]
-      for _ in range(count)
+    self._stars = [self._new_star(width, height) for _ in range(count)]
+
+  @staticmethod
+  def _new_star(cols, rows):
+    max_life = random.uniform(1.5, 6.0)
+    return [
+      random.randint(0, cols - 1), random.randint(0, rows - 1),
+      random.uniform(0, 6.28), random.uniform(0.5, 3.0),
+      random.uniform(0.3, 1.0), max_life, max_life,
     ]
 
   def render(self, t, state):
@@ -348,20 +351,31 @@ class Starfield(Effect):
     # Adjust star count to match density
     target = int(cols * rows * density)
     while len(self._stars) < target:
-      self._stars.append([
-        random.randint(0, cols - 1), random.randint(0, rows - 1),
-        random.uniform(0, 6.28), random.uniform(0.5, 3.0),
-        random.uniform(0.3, 1.0),
-      ])
+      self._stars.append(self._new_star(cols, rows))
     while len(self._stars) > target:
       self._stars.pop()
 
     self.buf.clear()
-    for s in self._stars:
+    for i, s in enumerate(self._stars):
       s[2] += s[3] * speed * dt
-      b = (math.sin(s[2] * twinkle) + 1) * 0.5 * s[4]
+      s[5] -= dt  # decrease life
+
+      # Fade in/out envelope: smooth rise and fall over lifetime
+      life_frac = s[5] / s[6]  # 1.0 → 0.0
+      if life_frac > 0.8:
+        envelope = (1.0 - life_frac) / 0.2  # fade in
+      elif life_frac < 0.2:
+        envelope = life_frac / 0.2  # fade out
+      else:
+        envelope = 1.0
+
+      b = (math.sin(s[2] * twinkle) + 1) * 0.5 * s[4] * envelope
       c = pal_color(pal_idx % NUM_PALETTES, s[4])
       self.buf.add_led(s[0], s[1], c[0] * b, c[1] * b, c[2] * b)
+
+      # Respawn at new random location when life expires
+      if s[5] <= 0:
+        self._stars[i] = self._new_star(cols, rows)
 
     return self.buf.get_frame()
 
