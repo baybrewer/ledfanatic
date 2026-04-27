@@ -70,6 +70,8 @@ def save_layout(config: LayoutConfig, config_dir: Path) -> None:
                 }
                 if not seg.enabled:
                     seg_data["enabled"] = False
+                if seg.color_order:
+                    seg_data["color_order"] = seg.color_order
                 out_data["segments"].append(seg_data)
         data["outputs"].append(out_data)
 

@@ -31,6 +31,7 @@ class LinearSegment:
     physical_offset: int
     type: str = "linear"
     enabled: bool = True
+    color_order: str = ""   # "" = inherit from output
 
 
 @dataclass(frozen=True)
@@ -41,6 +42,7 @@ class ExplicitSegment:
     physical_offset: int
     type: str = "explicit"
     enabled: bool = True
+    color_order: str = ""   # "" = inherit from output
 
 
 # Union type for segments
@@ -94,6 +96,7 @@ def parse_layout(raw: dict) -> LayoutConfig:
                     points=points,
                     physical_offset=seg_raw.get("physical_offset", 0),
                     enabled=seg_raw.get("enabled", True),
+                    color_order=seg_raw.get("color_order", ""),
                 ))
             elif seg_type == "linear":
                 direction = seg_raw["direction"]
@@ -107,6 +110,7 @@ def parse_layout(raw: dict) -> LayoutConfig:
                     length=seg_raw["length"],
                     physical_offset=seg_raw.get("physical_offset", 0),
                     enabled=seg_raw.get("enabled", True),
+                    color_order=seg_raw.get("color_order", ""),
                 ))
             else:
                 raise ValueError(f"Unknown segment type '{seg_type}'")

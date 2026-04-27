@@ -1285,8 +1285,9 @@ function collectLayoutConfig() {
       direction: seg.direction,
       length: seg.length,
       physical_offset: seg.physical_offset,
+      color_order: seg.color_order,
     });
-    // Use first segment's color order for the output
+    // Use first segment's color order as the output default
     if (outputMap[ch].segments.length === 1) {
       outputMap[ch].color_order = seg.color_order;
     }

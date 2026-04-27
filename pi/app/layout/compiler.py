@@ -172,6 +172,10 @@ def compile_layout(config: LayoutConfig) -> CompiledLayout:
             if not seg.enabled:
                 continue
 
+            # Per-segment color_order overrides output-level
+            seg_co = getattr(seg, 'color_order', '') or ''
+            seg_swizzle = SWIZZLE_MAP.get(seg_co, swizzle) if seg_co else swizzle
+
             positions = _expand_segment(seg)
 
             for i, (px, py) in enumerate(positions):
@@ -180,7 +184,7 @@ def compile_layout(config: LayoutConfig) -> CompiledLayout:
                 reverse_lut[ch][phys_idx] = (px, py)
                 entries.append(MappingEntry(
                     x=px, y=py, channel=ch,
-                    pixel_index=phys_idx, swizzle=swizzle,
+                    pixel_index=phys_idx, swizzle=seg_swizzle,
                 ))
                 total_mapped += 1
                 if phys_idx + 1 > max_idx:

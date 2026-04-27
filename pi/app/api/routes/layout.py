@@ -156,14 +156,17 @@ def create_router(deps, require_auth) -> APIRouter:
 def _serialize_segment(seg) -> dict:
     from ...layout.schema import ExplicitSegment
     if isinstance(seg, ExplicitSegment):
-        return {
+        d = {
             "id": seg.id,
             "type": "explicit",
             "points": [{"x": p[0], "y": p[1]} for p in seg.points],
             "physical_offset": seg.physical_offset,
             "enabled": seg.enabled,
         }
-    return {
+        if seg.color_order:
+            d["color_order"] = seg.color_order
+        return d
+    d = {
         "id": seg.id,
         "type": "linear",
         "start": {"x": seg.start[0], "y": seg.start[1]},
@@ -172,3 +175,6 @@ def _serialize_segment(seg) -> dict:
         "physical_offset": seg.physical_offset,
         "enabled": seg.enabled,
     }
+    if seg.color_order:
+        d["color_order"] = seg.color_order
+    return d
