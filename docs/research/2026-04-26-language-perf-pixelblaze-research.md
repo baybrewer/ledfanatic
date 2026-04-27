@@ -218,8 +218,8 @@ Before acting on any optimization, we need real numbers from the live hardware w
 ### Priority 4: Media Frame Cache Keyed by Geometry
 
 - **Target:** `pi/app/effects/media_playback.py`
-- **Current behavior:** `MediaPlayback` is instantiated with the current renderer's width/height and resizes frames on cache miss using PIL LANCZOS. Cache is per-instance, bounded to 120 frames.
-- **Correct approach:** Cache resized frames keyed by `(item_id, frame_idx, width, height, fit_mode)`. When layout changes, the effect is recreated with new dimensions and old cache entries naturally become unused. Do NOT couple cache shape to module import time — layout is mutable at runtime.
+- **Current behavior:** `MediaPlayback` caches the *raw loaded* frame by `frame_idx`, then checks dimensions and resizes via PIL LANCZOS on *every render call* when the cached frame shape doesn't match `self.width`/`self.height`. The resize cost is paid repeatedly for the same cached frame — the cache stores originals, not resized results.
+- **Correct approach:** Cache the *resized* frame keyed by `(frame_idx, width, height, fit_mode)` so resize happens once per unique geometry. When layout changes, the effect is recreated with new dimensions and the old cache is discarded with the old instance. Do NOT couple cache to module import time — layout is mutable at runtime.
 - **Effort:** 2-3 hours
 
 ### Priority 5: Transport Throughput Measurement (LIKELY NO ACTION)

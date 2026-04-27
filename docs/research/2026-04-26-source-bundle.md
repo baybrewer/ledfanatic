@@ -507,7 +507,7 @@ Shows why media caching must be geometry-aware: `width` and `height` come from t
 class MediaPlayback(Effect):
   def __init__(self, *args, media_manager=None, **kwargs):
     super().__init__(*args, **kwargs)
-    self._frame_cache: dict[int, np.ndarray] = {}  # frame_idx -> resized frame
+    self._frame_cache: dict[int, np.ndarray] = {}  # frame_idx -> raw loaded frame (NOT resized)
     self._fit_mode = self.params.get('fit', 'fill')
 
   def render(self, t, state):
@@ -530,7 +530,7 @@ class MediaPlayback(Effect):
     return frame
 ```
 
-**Cache concern:** When layout changes, `renderer.apply_layout()` recreates the effect with new dimensions. The old cache is discarded with the old instance. But within an instance, resized frames are cached without a geometry key — if the instance's dimensions somehow changed (they don't currently), cached frames would be wrong. The proposed fix: key cache by `(frame_idx, width, height, fit_mode)`.
+**Cache concern:** The cache stores *raw loaded* frames, not resized frames. The PIL LANCZOS resize happens on every `render()` call when dimensions don't match — so the resize cost is paid repeatedly for the same cached original. The proposed fix: cache the *resized* result keyed by `(frame_idx, width, height, fit_mode)`. When layout changes, `renderer.apply_layout()` recreates the effect with new dimensions, discarding the old instance and its cache.
 
 ---
 
@@ -579,7 +579,7 @@ Phone/Browser (WiFi)
 | **RAM** | 4-8 GB | 520 KB |
 | **OS** | Linux | None (bare metal) |
 | **Effect language** | Python + NumPy | Custom JS bytecode |
-| **Claimed throughput** | ~49,800 px/sec at default layout (60fps x 830, unmeasured) | 48,000 px/sec (manufacturer claim) |
+| **Nominal target throughput** | 49,800 px/sec if sustaining 60 FPS at 830px (not measured) | 48,000 px/sec (manufacturer claim) |
 | **Max pixels** | Layout-dependent (dynamic, untested at scale) | 5000 (hardware limit) |
 | **Audio** | Full FFT + beat detection | Basic via sensor board |
 | **Media** | Video/image playback | None |
