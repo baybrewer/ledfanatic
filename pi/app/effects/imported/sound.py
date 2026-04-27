@@ -937,18 +937,26 @@ class SoundWorm(Effect):
     # Base worm count from param, extra on drop
     base_worms = max(1, int(self.params.get("num_worms", 1)))
     num_worms = base_worms + int(self._drop_split * 2)
+    # Each worm gets its own lane — spread evenly across the width
+    lane_width = cols / max(1, base_worms)
     for worm in range(num_worms):
-      phase_offset = worm * 6.28 / max(1, num_worms)
-      amp = (vol + buildup * 0.5 + self._drop_split * 0.3) * gain * (cols / 2)
-      wave_x = cols / 2 + np.sin(y_arr * 0.03 + self._t * 3 + phase_offset) * amp
+      phase_offset = worm * 6.28 / max(1, num_worms) + worm * 1.7
+      # Lane center: evenly spaced for base worms, drop extras wander freely
+      if worm < base_worms:
+        center_x = (worm + 0.5) * lane_width
+      else:
+        center_x = cols / 2  # drop extras use center
+      max_amp = lane_width * 0.4 if base_worms > 1 else cols / 2
+      amp = (vol + buildup * 0.5 + self._drop_split * 0.3) * gain * max_amp
+      wave_x = center_x + np.sin(y_arr * 0.03 + self._t * 3 + phase_offset) * amp
 
-      # Palette lookup (vectorized per row)
+      # Palette lookup — each worm gets its own hue offset
       if self._drop_split > 0.5:
         hue_arr = (y_arr / rows + worm / num_worms + self._t * 0.3) % 1.0
-        c_arr = pal_color_grid(0, hue_arr)  # (rows, 3)
+        c_arr = pal_color_grid(0, hue_arr)
       else:
-        hue_arr = (y_arr / rows + self._t * 0.1) % 1.0
-        c_arr = pal_color_grid(pal_idx % NUM_PALETTES, hue_arr)  # (rows, 3)
+        hue_arr = (y_arr / rows + worm / max(1, base_worms) * 0.3 + self._t * 0.1) % 1.0
+        c_arr = pal_color_grid(pal_idx % NUM_PALETTES, hue_arr)
 
       for dx in range(-w, w + 1):
         fade_val = 1.0 - abs(dx) / (w + 1)
