@@ -108,7 +108,7 @@ class EffectCatalogService:
     ),
     'twinkle': (
       {'name': 'speed', 'label': 'Speed', 'min': 0, 'max': 2, 'step': 0.1, 'default': 1.0, 'type': 'slider'},
-      {'name': 'density', 'label': 'Density', 'min': 0.001, 'max': 0.05, 'step': 0.001, 'default': 0.005, 'type': 'slider'},
+      {'name': 'density', 'label': 'Density', 'min': 0.0001, 'max': 0.05, 'step': 0.0001, 'default': 0.005, 'type': 'slider'},
       {'name': 'darkness', 'label': 'Darkness', 'min': 0, 'max': 1, 'step': 0.05, 'default': 0, 'type': 'slider'},
     ),
     'spark': (

@@ -44,7 +44,8 @@ class RenderState:
     self.last_frame_time_ms: float = 0.0
     self.render_cost_ms: float = 0.0
     self.effect_render_ms: float = 0.0  # just the effect.render() call
-    self.pack_send_ms: float = 0.0      # pack_frame + transport
+    self.pack_ms: float = 0.0           # pack_frame only
+    self.send_ms: float = 0.0           # transport.send_frame only
 
   def update_audio(self, snapshot: dict):
     """Receive thread-safe audio snapshot."""
@@ -90,7 +91,8 @@ class RenderState:
       'last_frame_time_ms': round(self.last_frame_time_ms, 2),
       'render_cost_ms': round(self.render_cost_ms, 2),
       'effect_render_ms': round(self.effect_render_ms, 2),
-      'pack_send_ms': round(self.pack_send_ms, 2),
+      'pack_ms': round(self.pack_ms, 2),
+      'send_ms': round(self.send_ms, 2),
       'audio_level': round(self.audio_level, 3),
       'audio_bass': round(self.audio_bass, 3),
       'audio_mid': round(self.audio_mid, 3),
@@ -405,7 +407,7 @@ class Renderer:
     if self.layout.origin == 'bottom_left':
       logical_frame = logical_frame[:, ::-1, :]
 
-    # Pack frame to output bytes and send
+    # Pack frame to output bytes
     pack_start = time.perf_counter()
     pixel_bytes = pack_frame(logical_frame, self.layout)
 
@@ -425,9 +427,12 @@ class Renderer:
         buf[pos + 1] = 255
         buf[pos + 2] = 255
       pixel_bytes = bytes(buf)
+    self.state.pack_ms = (time.perf_counter() - pack_start) * 1000
 
+    # Send to Teensy
+    send_start = time.perf_counter()
     success = await self.transport.send_frame(pixel_bytes)
-    self.state.pack_send_ms = (time.perf_counter() - pack_start) * 1000
+    self.state.send_ms = (time.perf_counter() - send_start) * 1000
     if success:
       self.state.frames_sent += 1
 

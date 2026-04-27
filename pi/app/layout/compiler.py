@@ -9,6 +9,8 @@ fast per-frame packing.
 from dataclasses import dataclass, field
 from typing import Optional
 
+import numpy as np
+
 from .schema import (
     LayoutConfig, OutputConfig, LinearSegment, ExplicitSegment, Segment,
     VALID_DIRECTIONS,
@@ -142,6 +144,10 @@ class CompiledLayout:
     output_sizes: dict[int, int]
     color_swizzle: dict[int, tuple[int, int, int]]
     total_mapped: int
+    # Precomputed NumPy index arrays for vectorized pack_frame
+    pack_src: np.ndarray = field(default_factory=lambda: np.empty(0, dtype=np.int32))
+    pack_dst: np.ndarray = field(default_factory=lambda: np.empty(0, dtype=np.int32))
+    pack_buf_size: int = 0
 
 
 def compile_layout(config: LayoutConfig) -> CompiledLayout:
@@ -192,6 +198,28 @@ def compile_layout(config: LayoutConfig) -> CompiledLayout:
 
         output_sizes[ch] = max(output_sizes.get(ch, 0), max_idx)
 
+    # Precompute NumPy index arrays for vectorized pack_frame
+    channel_offsets: dict[int, int] = {}
+    offset = 0
+    for ch in range(8):
+        channel_offsets[ch] = offset
+        offset += output_sizes.get(ch, 0) * 3
+    pack_buf_size = offset
+
+    n = len(entries)
+    src = np.empty(n * 3, dtype=np.int32)
+    dst = np.empty(n * 3, dtype=np.int32)
+    for i, e in enumerate(entries):
+        base_src = (e.x * h + e.y) * 3
+        base_dst = channel_offsets[e.channel] + e.pixel_index * 3
+        i3 = i * 3
+        src[i3] = base_src + e.swizzle[0]
+        src[i3 + 1] = base_src + e.swizzle[1]
+        src[i3 + 2] = base_src + e.swizzle[2]
+        dst[i3] = base_dst
+        dst[i3 + 1] = base_dst + 1
+        dst[i3 + 2] = base_dst + 2
+
     return CompiledLayout(
         width=w,
         height=h,
@@ -202,4 +230,7 @@ def compile_layout(config: LayoutConfig) -> CompiledLayout:
         output_sizes=output_sizes,
         color_swizzle=color_swizzle,
         total_mapped=total_mapped,
+        pack_src=src,
+        pack_dst=dst,
+        pack_buf_size=pack_buf_size,
     )
