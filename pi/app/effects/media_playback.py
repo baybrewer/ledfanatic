@@ -1,10 +1,12 @@
 """
 Media playback effect — plays cached media items as LED frames.
+Scales video/image frames to fit the matrix dimensions.
 """
 
 import time
 import numpy as np
 from typing import Optional
+from PIL import Image
 
 from .base import Effect
 from ..media.manager import MediaManager
@@ -61,6 +63,14 @@ class MediaPlayback(Effect):
     frame = self._frame_cache.get(frame_idx)
     if frame is None:
       return np.zeros((self.width, self.height, 3), dtype=np.uint8)
+
+    # Scale frame to fit matrix dimensions
+    # frame is (w, h, 3) — check if it needs resizing
+    if frame.shape[0] != self.width or frame.shape[1] != self.height:
+      # Transpose to PIL (h, w, 3), resize, transpose back
+      img = Image.fromarray(frame.transpose(1, 0, 2))
+      img = img.resize((self.width, self.height), Image.LANCZOS)
+      frame = np.array(img).transpose(1, 0, 2)
 
     return frame
 
