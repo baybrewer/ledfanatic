@@ -12,8 +12,8 @@ LED pillar controller: Raspberry Pi + Teensy 4.1 + OctoWS2811.
 ## Layout system (rewrote 2026-04-26)
 - `pi/config/layout.yaml` — declarative LED geometry SSOT (outputs, segments, directions, offsets)
 - `pi/app/layout/schema.py` — data models: LayoutConfig, OutputConfig, LinearSegment, ExplicitSegment
-- `pi/app/layout/compiler.py` — validates config, compiles to CompiledLayout with forward/reverse LUTs + flat MappingEntry list
-- `pi/app/layout/packer.py` — iterates precomputed entries to build per-output byte buffers (O(pixel_count), no geometry logic at runtime)
+- `pi/app/layout/compiler.py` — validates config, compiles to CompiledLayout with forward/reverse LUTs + flat MappingEntry list + precomputed NumPy pack indices
+- `pi/app/layout/packer.py` — vectorized NumPy packer using precomputed index arrays (0.24ms per frame)
 - `pi/app/layout/__init__.py` — public API: load_layout, save_layout, compile_layout, validate_layout, pack_frame, output_config_list
 - Per-segment color_order supported (overrides output-level default)
 - Renderer flips y-axis when origin is "bottom_left" (effects use screen coords, y=0 at top)
@@ -29,7 +29,8 @@ LED pillar controller: Raspberry Pi + Teensy 4.1 + OctoWS2811.
 - `pi/app/core/brightness.py` — brightness engine + solar automation (astral)
 - `pi/app/core/state.py` — debounced persistent state (mark_dirty/flush)
 - `pi/app/transport/usb.py` — USB serial transport (lock-protected I/O)
-- `pi/app/effects/` — generative, audio-reactive, imported, tetris, fireworks, scrolltext
+- `pi/app/effects/` — generative, audio-reactive, imported, simulation, tetris, fireworks, scrolltext
+- `pi/app/effects/registry.py` — canonical ALL_EFFECTS dict (SSOT for renderer + benchmark)
 - `pi/app/audio/adapter.py` — AudioCompatAdapter with resample_bands() for width-independent effects
 - `teensy/firmware/src/main.cpp` — Teensy firmware
 
@@ -38,6 +39,14 @@ LED pillar controller: Raspberry Pi + Teensy 4.1 + OctoWS2811.
 - Audio bands must be resampled to grid width via `AudioCompatAdapter.resample_bands(bands, self.width)`
 - Effects render in screen coordinates (y=0 = top) — renderer handles y-flip for physical origin
 - Temporal smoothing (blend with previous frame) for fire/smooth effects
+- All new effects must be registered in `pi/app/effects/registry.py` (SSOT) and `pi/app/effects/catalog.py` (metadata)
+- Particle systems should use NumPy structured arrays, not Python object lists
+
+## Performance (measured 2026-04-26)
+- pack_frame: 0.24ms (vectorized NumPy fancy indexing, precomputed at compile time)
+- send_frame: ~5ms (USB CDC, hardware-limited)
+- Render profiling: `effect_render_ms`, `pack_ms`, `send_ms` exposed via `/api/system/status`
+- Benchmark harness: `python -m tools.bench_effects` (uses ALL_EFFECTS from registry)
 
 ## Auth
 - Bearer token in `Authorization` header

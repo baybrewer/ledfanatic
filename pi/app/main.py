@@ -224,6 +224,61 @@ def main():
     imported=True,
   ))
 
+  # Register simulation effects in catalog
+  effect_catalog.register_imported('fluid_sim', EffectMeta(
+    name='fluid_sim',
+    label='Fluid Dynamics',
+    group='simulation',
+    description='Navier-Stokes fluid simulation — audio drives the flow',
+    imported=True,
+    audio_requires=('level', 'bass', 'mid', 'high', 'beat'),
+    params=(
+      {'name': 'viscosity', 'label': 'Viscosity', 'min': 0.0, 'max': 0.001, 'step': 0.00005, 'default': 0.0, 'type': 'slider'},
+      {'name': 'diffusion', 'label': 'Diffusion', 'min': 0.0, 'max': 0.001, 'step': 0.00005, 'default': 0.0, 'type': 'slider'},
+      {'name': 'force', 'label': 'Force', 'min': 1.0, 'max': 20.0, 'step': 0.5, 'default': 8.0, 'type': 'slider'},
+      {'name': 'pressure_iters', 'label': 'Pressure Iters', 'min': 1, 'max': 20, 'step': 1, 'default': 2, 'type': 'slider'},
+    ),
+  ))
+  effect_catalog.register_imported('reaction_diffusion', EffectMeta(
+    name='reaction_diffusion',
+    label='Reaction Diffusion',
+    group='simulation',
+    description='Gray-Scott model — organic coral-like patterns that grow and breathe',
+    imported=True,
+    params=(
+      {'name': 'feed', 'label': 'Feed Rate', 'min': 0.01, 'max': 0.08, 'step': 0.001, 'default': 0.037, 'type': 'slider'},
+      {'name': 'kill', 'label': 'Kill Rate', 'min': 0.04, 'max': 0.075, 'step': 0.001, 'default': 0.06, 'type': 'slider'},
+      {'name': 'speed', 'label': 'Speed', 'min': 1, 'max': 20, 'step': 1, 'default': 8, 'type': 'slider'},
+      {'name': 'color_speed', 'label': 'Color Cycle', 'min': 0.0, 'max': 1.0, 'step': 0.05, 'default': 0.2, 'type': 'slider'},
+    ),
+  ))
+  effect_catalog.register_imported('wave_equation', EffectMeta(
+    name='wave_equation',
+    label='Wave Equation',
+    group='simulation',
+    description='2D wave simulation — beats create ripples that interfere and decay',
+    imported=True,
+    audio_requires=('level', 'bass', 'beat'),
+    params=(
+      {'name': 'wave_speed', 'label': 'Wave Speed', 'min': 0.1, 'max': 1.0, 'step': 0.05, 'default': 0.5, 'type': 'slider'},
+      {'name': 'damping', 'label': 'Damping', 'min': 0.9, 'max': 0.999, 'step': 0.001, 'default': 0.985, 'type': 'slider'},
+      {'name': 'color_speed', 'label': 'Color Cycle', 'min': 0.0, 'max': 1.0, 'step': 0.05, 'default': 0.3, 'type': 'slider'},
+    ),
+  ))
+  effect_catalog.register_imported('boids', EffectMeta(
+    name='boids',
+    label='Boids Flock',
+    group='simulation',
+    description='Emergent flocking — separation, alignment, cohesion create a living swarm',
+    imported=True,
+    params=(
+      {'name': 'count', 'label': 'Count', 'min': 20, 'max': 200, 'step': 10, 'default': 80, 'type': 'slider'},
+      {'name': 'speed', 'label': 'Speed', 'min': 5.0, 'max': 60.0, 'step': 1.0, 'default': 25.0, 'type': 'slider'},
+      {'name': 'trail', 'label': 'Trail', 'min': 0.0, 'max': 0.95, 'step': 0.05, 'default': 0.7, 'type': 'slider'},
+      {'name': 'color_speed', 'label': 'Color Cycle', 'min': 0.0, 'max': 1.0, 'step': 0.05, 'default': 0.2, 'type': 'slider'},
+    ),
+  ))
+
   # Spatial map (optional front-projection geometry)
   spatial_map = load_spatial_map(config_dir)
   if spatial_map:

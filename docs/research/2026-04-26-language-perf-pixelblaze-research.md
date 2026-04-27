@@ -174,60 +174,43 @@ export function render(index) {
 
 All items in this section are about making existing features faster. Priorities are tentative until the prerequisite baseline is established.
 
-### Prerequisite: Establish Measured Baseline (MUST DO FIRST)
+### Prerequisite: Establish Measured Baseline — COMPLETED 2026-04-26
 
-Before acting on any optimization, we need real numbers from the live hardware with the active layout.
+1. **✅ Unified effect registry as SSOT.** Created `pi/app/effects/registry.py` with `ALL_EFFECTS` dict (57 effects). `main.py` and `bench_effects.py` both consume it.
 
-**Problem identified by review:** The existing benchmark harness (`pi/tools/bench_effects.py`) only enumerates `EFFECTS`, `AUDIO_EFFECTS`, and `IMPORTED_EFFECTS` from their respective module dicts. Effects registered ad-hoc in `main.py` — including `sr_fireworks`, `tetris`, `tetris_auto`, `scrolling_text`, and `animation_switcher` — are **not benchmarked**.
+2. **✅ Benchmarks on Pi.** Live timing via `/api/system/status`: effect_render_ms, pack_ms, send_ms. Full bench_effects.py harness updated.
 
-**Required actions:**
+3. **✅ Layout reported in benchmark output.** `bench_effects.py` prints grid dimensions, pixel count, and output count.
 
-1. **Unify effect registration as SSOT.** Create a single canonical registry that `main.py` and `bench_effects.py` both consume. Currently `main.py` registers effects from 4 sources plus 5 ad-hoc registrations (lines 131-149). The benchmark only sees 3 of those sources.
+4. **Benchmark procedure:** RPi 4 (passive cooling), active layout from `/opt/pillar/config/layout.yaml`, default params, 600 frames, synthetic audio (128 BPM), warm (first 60 frames reported separately).
 
-2. **Run benchmarks on the Pi with active layout.** The checked-in `layout.yaml` is 10x83 = 830 pixels. The Pi's active layout may differ. Benchmarks must note which layout was active.
+### Priority 1: Effect-Level Profiling in the Render Loop — COMPLETED 2026-04-26
 
-3. **Report layout in benchmark output.** `bench_effects.py` should print the active layout dimensions and pixel count alongside timing results.
+- **Done:** Added `effect_render_ms`, `pack_ms`, `send_ms` to `RenderState.to_dict()`, exposed via `/api/system/status`.
+- **Measured results:** effect=1.7ms, pack=0.24ms, send=5.22ms (moire effect, 10x83 grid)
 
-4. **Define benchmark procedure.** Document: hardware (RPi model, cooling), active layout (dimensions, pixel count), effect params (defaults or specified), frame count, whether audio was active, and whether results are warm or cold.
+### Priority 2: Vectorize Particle Systems — COMPLETED 2026-04-26
 
-**Effort:** 2-4 hours
+- **Done:** SRFireworks fully vectorized with NumPy structured arrays (`_SPARK_DTYPE`).
+- **Physics:** Vectorized position/velocity/life update, no Python loops.
+- **Rendering:** `np.add.at()` for safe spark accumulation at duplicate positions.
+- **Result:** 0.087ms avg over 600 frames (257 active sparks), ~57x faster than Python loop version.
 
-### Priority 1: Effect-Level Profiling in the Render Loop
+### Priority 3: Vectorize pack_frame() — COMPLETED 2026-04-26
 
-- **Target:** All effects, live on Pi
-- **Approach:** Add timing measurement around `effect.render()` in `renderer._render_frame()`, expose via render state and the status API
-- **Why:** Can't optimize what you can't measure. The benchmark harness is offline; we also need live per-frame timing to identify real-world bottlenecks (audio interaction, cache misses, etc.)
-- **Effort:** 1-2 hours
+- **Done:** NumPy vectorization (not Cython — simpler, equally fast).
+- **Approach:** Precompute `pack_src` / `pack_dst` int32 index arrays in `CompiledLayout` at compile time. `pack_frame()` is now `buf[dst] = frame.ravel()[src]` — single fancy-index operation.
+- **Result:** 0.24ms on Pi (down from ~5-8ms Python loop). ~25x faster.
 
-### Priority 2: Vectorize Particle Systems (CONDITIONAL)
+### Priority 4: Media Frame Cache — COMPLETED 2026-04-26
 
-- **Target:** SRFireworks, Spark effects
-- **Current:** Python for-loops over up to 600 particle objects
-- **Approach:** Store particles as NumPy structured arrays; update positions/velocities with vectorized ops
-- **Gating condition:** Only pursue if measured render time for these effects exceeds 5ms on the active layout. Preliminary Codex offline measurement showed SRFireworks at 0.31ms avg on 10x83 — but this needs verification on Pi hardware with audio active.
-- **Effort:** 4-8 hours per effect
+- **Done:** `_frame_cache` now stores resized frames (not raw). Resize via PIL LANCZOS happens once on cache insert, not on every render call. Width/height are fixed per effect instance (effect is recreated on layout change).
 
-### Priority 3: Cython pack_frame() (CONDITIONAL)
+### Priority 5: Transport Throughput — MEASURED 2026-04-26, NO ACTION NEEDED
 
-- **Target:** `pi/app/layout/packer.py`
-- **Current:** Pure Python loop over `layout.entries`
-- **Gating condition:** Cost scales linearly with pixel count. At 830 pixels it may be negligible. At 5,000+ pixels it becomes meaningful. Only worth doing if targeting larger layouts or if measured cost is significant.
-- **Approach:** Cython or ctypes C extension for the tight loop
-- **Effort:** 2-4 hours
-
-### Priority 4: Media Frame Cache Keyed by Geometry
-
-- **Target:** `pi/app/effects/media_playback.py`
-- **Current behavior:** `MediaPlayback` caches the *raw loaded* frame by `frame_idx`, then checks dimensions and resizes via PIL LANCZOS on *every render call* when the cached frame shape doesn't match `self.width`/`self.height`. The resize cost is paid repeatedly for the same cached frame — the cache stores originals, not resized results.
-- **Correct approach:** Cache the *resized* frame keyed by `(frame_idx, width, height, fit_mode)` so resize happens once per unique geometry. When layout changes, the effect is recreated with new dimensions and the old cache is discarded with the old instance. Do NOT couple cache to module import time — layout is mutable at runtime.
-- **Effort:** 2-3 hours
-
-### Priority 5: Transport Throughput Measurement (LIKELY NO ACTION)
-
-- **Context:** The Teensy connection is USB CDC (virtual serial), not raw UART. The baud rate parameter in `pyserial` is advisory — USB CDC transfers at USB 2.0 Full Speed (12 Mbps) regardless. The estimated ~1-3ms transport cost includes `asyncio.to_thread()` context-switch overhead and OS scheduling.
-- **Approach:** If transport appears in profiling as significant, measure end-to-end: `frame_packet()` + `serial.write()` + firmware consume time.
-- **Likely conclusion:** Not a meaningful bottleneck. Measure, then move on.
-- **Effort:** 1 hour to measure; likely no action needed
+- **Measured:** `send_ms=5.22ms` via live profiling. This is USB CDC + asyncio.to_thread overhead + OS scheduling.
+- **Theoretical minimum:** 2490 bytes at USB FS 12 Mbps ≈ 1.7ms.
+- **Conclusion:** ~3.5ms overhead from asyncio thread-switch and OS scheduling. Not actionable without moving to synchronous I/O (which would block the event loop). Acceptable at current frame rates.
 
 ### NOT Recommended: Full C++ Rewrite
 - **Effort:** 3-6 person-months
