@@ -897,8 +897,9 @@ class SoundWorm(Effect):
     _Param("Gain", "gain", 0.2, 5.0, 0.1, 1.0),
     _Param("Speed", "speed", 0.3, 3.0, 0.1, 1.0),
     _Param("Width", "worm_width", 1, 5, 1, 2),
+    _Param("Worms", "num_worms", 1, 8, 1, 1),
   ]
-  _SCALAR_PARAMS = {"gain": 1.0, "speed": 1.0, "worm_width": 2}
+  _SCALAR_PARAMS = {"gain": 1.0, "speed": 1.0, "worm_width": 2, "num_worms": 1}
   def __init__(self, width, height, params=None):
     super().__init__(width, height, params)
     self._audio_adapter = AudioCompatAdapter()
@@ -933,8 +934,9 @@ class SoundWorm(Effect):
     y_arr = np.arange(rows, dtype=np.float64)
     y_idx = np.arange(rows)
 
-    # During drop: split into multiple worms with rainbow
-    num_worms = 1 + int(self._drop_split * 2)
+    # Base worm count from param, extra on drop
+    base_worms = max(1, int(self.params.get("num_worms", 1)))
+    num_worms = base_worms + int(self._drop_split * 2)
     for worm in range(num_worms):
       phase_offset = worm * 6.28 / max(1, num_worms)
       amp = (vol + buildup * 0.5 + self._drop_split * 0.3) * gain * (cols / 2)

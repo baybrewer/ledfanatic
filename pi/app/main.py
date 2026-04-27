@@ -137,6 +137,8 @@ def main():
   from .effects.tetris import Tetris, TetrisAutoplay
   renderer.register_effect('tetris', Tetris)
   renderer.register_effect('tetris_auto', TetrisAutoplay)
+  from .effects.fireworks import SRFireworks
+  renderer.register_effect('sr_fireworks', SRFireworks)
   from .effects.scrolltext import ScrollingText
   renderer.register_effect('scrolling_text', ScrollingText)
 
@@ -191,6 +193,20 @@ def main():
     params=(
       {'name': 'interval', 'label': 'Switch Time (s)', 'min': 5, 'max': 120, 'step': 1, 'default': 15, 'type': 'slider'},
       {'name': 'fade_duration', 'label': 'Fade Duration (s)', 'min': 0.5, 'max': 5.0, 'step': 0.5, 'default': 2.0, 'type': 'slider'},
+    ),
+  ))
+
+  # Register SR Fireworks in catalog
+  effect_catalog.register_imported('sr_fireworks', EffectMeta(
+    name='sr_fireworks',
+    label='SR Fireworks',
+    group='sound',
+    description='Beat-triggered fireworks with trailing sparks',
+    imported=True,
+    params=(
+      {'name': 'gain', 'label': 'Gain', 'min': 0.5, 'max': 5.0, 'step': 0.1, 'default': 2.0, 'type': 'slider'},
+      {'name': 'gravity', 'label': 'Gravity', 'min': 10, 'max': 80, 'step': 5, 'default': 40, 'type': 'slider'},
+      {'name': 'spark_count', 'label': 'Sparks', 'min': 10, 'max': 80, 'step': 5, 'default': 40, 'type': 'slider'},
     ),
   ))
 

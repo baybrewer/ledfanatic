@@ -522,7 +522,6 @@ AMBIENT_A_EFFECTS: dict[str, type[Effect]] = {
   "plasma_sim": Plasma,
   "aurora_borealis": AuroraBorealis,
   "lava_lamp": LavaLamp,
-  "ocean_waves": OceanWaves,
   "starfield": Starfield,
   "matrix_rain": MatrixRain,
 }

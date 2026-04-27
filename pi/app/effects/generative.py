@@ -482,8 +482,4 @@ EFFECTS = {
   'color_wipe': ColorWipe,
   'scanline': Scanline,
   'fire': Fire,
-  'sine_bands': SineBands,
-  'cylinder_rotate': CylinderRotate,
-  'seam_pulse': SeamPulse,
-  'diagnostic_labels': DiagnosticLabels,
 }

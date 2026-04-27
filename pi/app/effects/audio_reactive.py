@@ -10,14 +10,35 @@ from .generative import _hsv_array_to_rgb
 
 
 class VUPulse(Effect):
-  """VU meter-style pulse from bottom."""
+  """VU meter-style pulse from bottom with fast attack/slow release."""
+
+  def __init__(self, *args, **kwargs):
+    super().__init__(*args, **kwargs)
+    self._smoothed = 0.0
+    self._peak = 0.0
+    self._peak_age = 0
 
   def render(self, t: float, state) -> np.ndarray:
-    sensitivity = self.params.get('sensitivity', 1.0)
+    sensitivity = self.params.get('sensitivity', 2.0)
     frame = np.zeros((self.width, self.height, 3), dtype=np.uint8)
 
-    level = min(1.0, state.audio_level * sensitivity)
-    fill_height = int(level * self.height)
+    raw = min(1.0, state.audio_level * sensitivity)
+    # Fast attack, slower release
+    if raw > self._smoothed:
+      self._smoothed = raw  # instant attack
+    else:
+      self._smoothed = self._smoothed * 0.85 + raw * 0.15  # smooth release
+
+    # Peak hold
+    if self._smoothed > self._peak:
+      self._peak = self._smoothed
+      self._peak_age = 0
+    self._peak_age += 1
+    if self._peak_age > 20:
+      self._peak = max(0, self._peak - 0.02)
+
+    fill_height = int(self._smoothed * self.height)
+    peak_y = min(int(self._peak * self.height), self.height - 1)
 
     for y in range(fill_height):
       frac = y / self.height
@@ -28,6 +49,10 @@ class VUPulse(Effect):
       else:
         color = (255, 0, 0)
       frame[:, y] = color
+
+    # Peak indicator line
+    if peak_y > 0 and peak_y < self.height:
+      frame[:, peak_y] = (255, 255, 255)
 
     return frame
 
@@ -171,15 +196,14 @@ class SpectralGlow(Effect):
     # Per-column hue
     hue_base = (np.arange(self.width, dtype=np.float64) / self.width + elapsed * 0.05) % 1.0
 
-    # Lit mask: y < fill_height (y=0 is bottom in logical coords, so bars grow up)
+    # Lit mask: bars grow from bottom (high y) — after renderer y-flip, this is physical bottom
     y_grid = np.arange(self.height, dtype=np.int32)[np.newaxis, :]
     fill_grid = fill_heights[:, np.newaxis]
-    lit_mask = y_grid < fill_grid
+    lit_mask = y_grid >= (self.height - fill_grid)
 
-    # Inverted fade: brightest at the TOP of each column (y=height-1 → 1.0),
-    # dimmer near the base (y=0 → 0.5). Fixes perceived upside-down look.
-    y_frac = np.arange(self.height, dtype=np.float64) / self.height
-    fade = 0.5 + y_frac * 0.5
+    # Fade: brightest at the top of each bar (highest lit y), dimmer at base
+    y_from_bottom = np.arange(self.height, dtype=np.float64)
+    fade = 0.5 + (y_from_bottom / self.height) * 0.5
 
     hue_grid = np.broadcast_to(hue_base[:, np.newaxis], (self.width, self.height))
     rgb = _hsv_array_to_rgb(hue_grid, 0.8, 1.0)
