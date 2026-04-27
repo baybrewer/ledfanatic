@@ -928,8 +928,8 @@ class SmokeRings(Effect):
     PARAMS = [
         type('P', (), {'label': 'Jets', 'attr': 'num_jets', 'lo': 1, 'hi': 5,
                         'step': 1, 'default': 2})(),
-        type('P', (), {'label': 'Strength', 'attr': 'strength', 'lo': 10.0, 'hi': 400.0,
-                        'step': 5.0, 'default': 150.0})(),
+        type('P', (), {'label': 'Strength', 'attr': 'strength', 'lo': 50.0, 'hi': 2000.0,
+                        'step': 25.0, 'default': 600.0})(),
         type('P', (), {'label': 'Interval', 'attr': 'interval', 'lo': 1.0, 'hi': 10.0,
                         'step': 0.5, 'default': 3.0})(),
         type('P', (), {'label': 'Ring Size', 'attr': 'ring_size', 'lo': 0.5, 'hi': 4.0,
@@ -1021,17 +1021,16 @@ class SmokeRings(Effect):
             else:
                 self._vortices = np.concatenate([self._vortices, pair])
 
-            # Inject dye blob at source
+            # Inject dye blob at source — wide enough to be visible
             ix = int(jet_x)
-            for dx in range(-2, 3):
-                for dy in range(-3, 1):
-                    px = (ix + dx) % w
-                    py = min(max(h - 1 + dy, 0), h - 1)
-                    dist = (dx * dx + dy * dy) ** 0.5
-                    intensity = max(0, 1.0 - dist / 3.0)
-                    self._dye[px, py, 0] += rv * intensity * 1.5
-                    self._dye[px, py, 1] += gv * intensity * 1.5
-                    self._dye[px, py, 2] += bv * intensity * 1.5
+            dye_color = np.array([rv, gv, bv], dtype=np.float32)
+            for dx_i in range(-3, 4):
+                for dy_i in range(-5, 1):
+                    px = (ix + dx_i) % w
+                    py = min(max(h - 1 + dy_i, 0), h - 1)
+                    dist = (dx_i * dx_i + dy_i * dy_i) ** 0.5
+                    intensity = max(0, 1.0 - dist / 5.0)
+                    self._dye[px, py] += dye_color * intensity * 2.0
 
         v = self._vortices
         max_age = interval * 5
