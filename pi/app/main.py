@@ -283,6 +283,22 @@ def main():
     ),
   ))
 
+  effect_catalog.register_imported('fluid_jets', EffectMeta(
+    name='fluid_jets',
+    label='SR Fluid Jets',
+    group='simulation',
+    description='Colored fluid puffs from all sides — collisions create vortices',
+    imported=True,
+    audio_requires=('level', 'bass', 'mid', 'high', 'beat'),
+    params=(
+      {'name': 'gain', 'label': 'Gain', 'min': 0.5, 'max': 5.0, 'step': 0.1, 'default': 2.0, 'type': 'slider'},
+      {'name': 'force', 'label': 'Jet Force', 'min': 2.0, 'max': 30.0, 'step': 1.0, 'default': 12.0, 'type': 'slider'},
+      {'name': 'pulse_rate', 'label': 'Pulse Rate', 'min': 0.5, 'max': 5.0, 'step': 0.1, 'default': 1.5, 'type': 'slider'},
+      {'name': 'dye_rate', 'label': 'Dye Intensity', 'min': 0.5, 'max': 5.0, 'step': 0.1, 'default': 3.0, 'type': 'slider'},
+      {'name': 'pressure_iters', 'label': 'Pressure Iters', 'min': 1, 'max': 20, 'step': 1, 'default': 2, 'type': 'slider'},
+    ),
+  ))
+
   # Spatial map (optional front-projection geometry)
   spatial_map = load_spatial_map(config_dir)
   if spatial_map:

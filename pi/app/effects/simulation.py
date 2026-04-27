@@ -749,11 +749,164 @@ class Boids(Effect):
 
 
 # ──────────────────────────────────────────────────────────────────────
+#  Fluid Jets — colored puffs creating vortex streets
+# ──────────────────────────────────────────────────────────────────────
+
+class FluidJets(FluidSim):
+    """Colored fluid jets pulsing from multiple directions, creating vortices.
+
+    Inherits Navier-Stokes solver from FluidSim. Multiple injection points
+    fire colored puffs that collide and create turbulent vortex streets.
+    Each jet pulses on its own rhythm; beats trigger extra bursts.
+    """
+
+    CATEGORY = "simulation"
+    DISPLAY_NAME = "SR Fluid Jets"
+    DESCRIPTION = "Colored fluid puffs from all sides — collisions create vortices"
+    PALETTE_SUPPORT = False
+    AUDIO_REQUIRES = ('level', 'bass', 'mid', 'high', 'beat')
+
+    PARAMS = [
+        type('P', (), {'label': 'Gain', 'attr': 'gain', 'lo': 0.5, 'hi': 5.0,
+                        'step': 0.1, 'default': 2.0})(),
+        type('P', (), {'label': 'Jet Force', 'attr': 'force', 'lo': 2.0, 'hi': 30.0,
+                        'step': 1.0, 'default': 12.0})(),
+        type('P', (), {'label': 'Pulse Rate', 'attr': 'pulse_rate', 'lo': 0.5, 'hi': 5.0,
+                        'step': 0.1, 'default': 1.5})(),
+        type('P', (), {'label': 'Dye Intensity', 'attr': 'dye_rate', 'lo': 0.5, 'hi': 5.0,
+                        'step': 0.1, 'default': 3.0})(),
+        type('P', (), {'label': 'Pressure Iters', 'attr': 'pressure_iters', 'lo': 1, 'hi': 20,
+                        'step': 1, 'default': 2})(),
+    ]
+
+    # Jet definitions: (side, position_frac, vx_dir, vy_dir, base_hue)
+    # side: 'bottom', 'top', 'left', 'right'
+    _JET_DEFS = [
+        ('bottom', 0.3, 0.0, -1.0, 0.0),    # red, left-of-center, upward
+        ('bottom', 0.7, 0.0, -1.0, 0.15),    # orange, right-of-center, upward
+        ('top', 0.5, 0.0, 1.0, 0.55),         # cyan, center, downward
+        ('left', 0.4, 1.0, 0.0, 0.3),         # green, upper-mid, rightward
+        ('right', 0.6, -1.0, 0.0, 0.75),      # purple, lower-mid, leftward
+    ]
+
+    def __init__(self, width, height, params=None):
+        super().__init__(width, height, params)
+        # Per-jet pulse timers (staggered starts)
+        self._jet_timers = [i * 0.3 for i in range(len(self._JET_DEFS))]
+        self._jet_hue_offsets = [0.0] * len(self._JET_DEFS)
+        self._pulse_index = 0
+
+    def render(self, t: float, state) -> np.ndarray:
+        if self._last_t is None:
+            self._last_t = t
+        dt = min(t - self._last_t, 0.05)
+        self._last_t = t
+
+        gain = self.params.get('gain', 2.0)
+        force = self.params.get('force', 12.0)
+        pulse_rate = self.params.get('pulse_rate', 1.5)
+        dye_rate = self.params.get('dye_rate', 3.0)
+
+        bass = state.audio_bass * gain
+        mid = state.audio_mid * gain
+        high = state.audio_high * gain
+        beat = state.audio_beat
+        level = state.audio_level * gain
+
+        w, h = self.width, self.height
+        pw, ph = w + 2, h + 2  # padded grid size
+
+        # Advance jet timers and fire pulses
+        for ji, (side, pos_frac, vx_dir, vy_dir, base_hue) in enumerate(self._JET_DEFS):
+            self._jet_timers[ji] -= dt * pulse_rate * (0.5 + level)
+
+            should_fire = self._jet_timers[ji] <= 0
+            if should_fire:
+                self._jet_timers[ji] = np.random.uniform(0.3, 0.8)
+                self._jet_hue_offsets[ji] += 0.12  # shift hue each pulse
+
+            # Also fire on beat for extra energy
+            if beat and ji == (self._pulse_index % len(self._JET_DEFS)):
+                should_fire = True
+                self._pulse_index += 1
+
+            if not should_fire:
+                continue
+
+            # Compute injection position on padded grid
+            hue = (base_hue + self._jet_hue_offsets[ji]) % 1.0
+            intensity = dye_rate * (0.5 + level)
+            jet_force = force * (0.5 + bass * 0.5)
+
+            if side == 'bottom':
+                jx = int(pos_frac * w) + 1
+                jx = max(1, min(jx, pw - 2))
+                rx = slice(max(1, jx - 1), min(jx + 2, pw - 1))
+                ry = slice(max(1, ph - 3), ph - 1)
+                self._vy[rx, ry] += vy_dir * jet_force
+                # Add slight sideways wobble for vortex generation
+                self._vx[rx, ry] += np.random.uniform(-jet_force * 0.3, jet_force * 0.3)
+            elif side == 'top':
+                jx = int(pos_frac * w) + 1
+                jx = max(1, min(jx, pw - 2))
+                rx = slice(max(1, jx - 1), min(jx + 2, pw - 1))
+                ry = slice(1, 3)
+                self._vy[rx, ry] += vy_dir * jet_force
+                self._vx[rx, ry] += np.random.uniform(-jet_force * 0.3, jet_force * 0.3)
+            elif side == 'left':
+                jy = int(pos_frac * h) + 1
+                jy = max(1, min(jy, ph - 2))
+                rx = slice(1, 3)
+                ry = slice(max(1, jy - 1), min(jy + 2, ph - 1))
+                self._vx[rx, ry] += vx_dir * jet_force
+                self._vy[rx, ry] += np.random.uniform(-jet_force * 0.3, jet_force * 0.3)
+            elif side == 'right':
+                jy = int(pos_frac * h) + 1
+                jy = max(1, min(jy, ph - 2))
+                rx = slice(pw - 3, pw - 1)
+                ry = slice(max(1, jy - 1), min(jy + 2, ph - 1))
+                self._vx[rx, ry] += vx_dir * jet_force
+                self._vy[rx, ry] += np.random.uniform(-jet_force * 0.3, jet_force * 0.3)
+
+            # Inject colored dye
+            rv, gv, bv = self._hsv_fast(hue, 1.0, 1.0)
+            self._dye[rx, ry] += np.array([rv, gv, bv], dtype=np.float32) * intensity
+
+        # Run the Navier-Stokes solver (inherited from FluidSim)
+        tmp1, tmp2 = self._tmp1, self._tmp2
+        visc = self.params.get('viscosity', 0.0)
+        if visc > 0.00001:
+            tmp1[:] = self._vx
+            tmp2[:] = self._vy
+            self._diffuse(1, self._vx, tmp1, visc, dt)
+            self._diffuse(2, self._vy, tmp2, visc, dt)
+            self._project(self._vx, self._vy)
+
+        tmp1[:] = self._vx
+        tmp2[:] = self._vy
+        self._advect(1, self._vx, tmp1, tmp1, tmp2, dt)
+        self._advect(2, self._vy, tmp2, tmp1, tmp2, dt)
+        self._project(self._vx, self._vy)
+
+        # Advect dye (batched 3-channel)
+        self._dye_tmp[:] = self._dye
+        self._advect_3d(self._dye, self._dye_tmp, self._vx, self._vy, dt)
+
+        # Slow decay so colors linger and mix
+        self._dye *= 0.992
+
+        # Extract interior and render
+        frame = np.clip(self._dye[1:-1, 1:-1] * 255, 0, 255).astype(np.uint8)
+        return frame
+
+
+# ──────────────────────────────────────────────────────────────────────
 #  Registry
 # ──────────────────────────────────────────────────────────────────────
 
 SIMULATION_EFFECTS = {
     'fluid_sim': FluidSim,
+    'fluid_jets': FluidJets,
     'reaction_diffusion': ReactionDiffusion,
     'wave_equation': WaveEquation,
     'boids': Boids,
