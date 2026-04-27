@@ -928,16 +928,16 @@ class SmokeRings(Effect):
     PARAMS = [
         type('P', (), {'label': 'Jets', 'attr': 'num_jets', 'lo': 1, 'hi': 5,
                         'step': 1, 'default': 2})(),
-        type('P', (), {'label': 'Strength', 'attr': 'strength', 'lo': 10.0, 'hi': 200.0,
-                        'step': 5.0, 'default': 80.0})(),
+        type('P', (), {'label': 'Strength', 'attr': 'strength', 'lo': 10.0, 'hi': 400.0,
+                        'step': 5.0, 'default': 150.0})(),
         type('P', (), {'label': 'Interval', 'attr': 'interval', 'lo': 1.0, 'hi': 10.0,
                         'step': 0.5, 'default': 3.0})(),
         type('P', (), {'label': 'Ring Size', 'attr': 'ring_size', 'lo': 0.5, 'hi': 4.0,
                         'step': 0.1, 'default': 1.5})(),
         type('P', (), {'label': 'Color Cycle', 'attr': 'color_speed', 'lo': 0.0, 'hi': 1.0,
                         'step': 0.05, 'default': 0.15})(),
-        type('P', (), {'label': 'Trail', 'attr': 'trail', 'lo': 0.8, 'hi': 0.99,
-                        'step': 0.01, 'default': 0.95})(),
+        type('P', (), {'label': 'Trail', 'attr': 'trail', 'lo': 0.9, 'hi': 0.999,
+                        'step': 0.001, 'default': 0.998})(),
     ]
 
     def __init__(self, width, height, params=None):
