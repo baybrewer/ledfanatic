@@ -26,7 +26,7 @@ class FluidSim(Effect):
     """
 
     CATEGORY = "simulation"
-    DISPLAY_NAME = "Fluid Dynamics"
+    DISPLAY_NAME = "SR Fluid Dynamics"
     DESCRIPTION = "Navier-Stokes fluid simulation — audio drives the flow"
     PALETTE_SUPPORT = False
     AUDIO_REQUIRES = ('level', 'bass', 'mid', 'high', 'beat')
@@ -440,12 +440,14 @@ class WaveEquation(Effect):
     """
 
     CATEGORY = "simulation"
-    DISPLAY_NAME = "Wave Equation"
+    DISPLAY_NAME = "SR Wave Equation"
     DESCRIPTION = "2D wave simulation — beats create ripples that interfere and decay"
     PALETTE_SUPPORT = False
     AUDIO_REQUIRES = ('level', 'bass', 'beat')
 
     PARAMS = [
+        type('P', (), {'label': 'Gain', 'attr': 'gain', 'lo': 0.5, 'hi': 5.0,
+                        'step': 0.1, 'default': 2.0})(),
         type('P', (), {'label': 'Wave Speed', 'attr': 'wave_speed', 'lo': 0.02, 'hi': 1.0,
                         'step': 0.02, 'default': 0.12})(),
         type('P', (), {'label': 'Damping', 'attr': 'damping', 'lo': 0.9, 'hi': 0.999,
@@ -467,14 +469,15 @@ class WaveEquation(Effect):
         dt = min(t - self._last_t, 0.05)
         self._last_t = t
 
-        c = self.params.get('wave_speed', 0.5)
+        gain = self.params.get('gain', 2.0)
+        c = self.params.get('wave_speed', 0.12)
         damping = self.params.get('damping', 0.985)
         color_speed = self.params.get('color_speed', 0.3)
 
         w, h = self.width, self.height
-        bass = state.audio_bass
+        bass = state.audio_bass * gain
         beat = state.audio_beat
-        level = state.audio_level
+        level = state.audio_level * gain
 
         # Beat: drop a stone at random position
         if beat:
@@ -568,11 +571,14 @@ class Boids(Effect):
     """
 
     CATEGORY = "simulation"
-    DISPLAY_NAME = "Boids Flock"
-    DESCRIPTION = "Emergent flocking — separation, alignment, cohesion create a living swarm"
+    DISPLAY_NAME = "SR Boids Flock"
+    DESCRIPTION = "Emergent flocking — separation, alignment create a living swarm"
     PALETTE_SUPPORT = False
+    AUDIO_REQUIRES = ('level', 'beat')
 
     PARAMS = [
+        type('P', (), {'label': 'Gain', 'attr': 'gain', 'lo': 0.5, 'hi': 5.0,
+                        'step': 0.1, 'default': 2.0})(),
         type('P', (), {'label': 'Count', 'attr': 'count', 'lo': 20, 'hi': 200,
                         'step': 10, 'default': 80})(),
         type('P', (), {'label': 'Speed', 'attr': 'speed', 'lo': 5.0, 'hi': 60.0,
@@ -589,8 +595,10 @@ class Boids(Effect):
         self._n = n
         self._x = np.random.uniform(0, width, n).astype(np.float32)
         self._y = np.random.uniform(0, height, n).astype(np.float32)
-        self._vx = np.random.uniform(-1, 1, n).astype(np.float32)
-        self._vy = np.random.uniform(-1, 1, n).astype(np.float32)
+        init_speed = float(self.params.get('speed', 25.0)) * 0.4
+        angles = np.random.uniform(0, 2 * math.pi, n).astype(np.float32)
+        self._vx = (np.cos(angles) * init_speed).astype(np.float32)
+        self._vy = (np.sin(angles) * init_speed).astype(np.float32)
         self._last_t = None
         self._prev_frame = None
 
@@ -618,13 +626,14 @@ class Boids(Effect):
         dt = min(t - self._last_t, 0.05)
         self._last_t = t
 
+        gain = self.params.get('gain', 2.0)
         speed = self.params.get('speed', 25.0)
         trail = self.params.get('trail', 0.7)
         color_speed = self.params.get('color_speed', 0.2)
 
         n = self._n
         w, h = self.width, self.height
-        level = state.audio_level
+        level = state.audio_level * gain
         beat = state.audio_beat
 
         # Beat: scatter
@@ -640,54 +649,59 @@ class Boids(Effect):
         dist = np.sqrt(dx ** 2 + dy ** 2 + 1e-6)
 
         # Separation: push away from nearby boids (strong, short range)
-        sep_radius = max(w, h) * 0.2
+        sep_radius = h * 0.08
         sep_mask = (dist < sep_radius) & (dist > 0.01)
         sep_x = np.where(sep_mask, -dx / (dist ** 2 + 0.1), 0).sum(axis=1)
         sep_y = np.where(sep_mask, -dy / (dist ** 2 + 0.1), 0).sum(axis=1)
 
-        # Alignment: match velocity of nearby boids (medium range)
-        align_radius = max(w, h) * 0.35
+        # Alignment: match velocity of nearby boids only (no cohesion — it
+        # causes collapse on narrow grids where everyone sees everyone)
+        align_radius = h * 0.15
         align_mask = (dist < align_radius) & (dist > 0.01)
         align_count = align_mask.sum(axis=1).clip(1)
         align_x = (np.where(align_mask, self._vx[np.newaxis, :], 0).sum(axis=1) / align_count) - self._vx
         align_y = (np.where(align_mask, self._vy[np.newaxis, :], 0).sum(axis=1) / align_count) - self._vy
 
-        # Cohesion: steer toward center of nearby boids (weak, prevents collapse)
-        coh_x = (np.where(align_mask, self._x[np.newaxis, :], 0).sum(axis=1) / align_count) - self._x
-        coh_y = (np.where(align_mask, self._y[np.newaxis, :], 0).sum(axis=1) / align_count) - self._y
+        # Apply flocking forces
+        self._vx += sep_x * 4.0 + align_x * 1.0
+        self._vy += sep_y * 4.0 + align_y * 1.0
 
-        # Apply forces — separation dominates to prevent collapse
-        self._vx += sep_x * 3.0 + align_x * 0.8 + coh_x * 0.1
-        self._vy += sep_y * 3.0 + align_y * 0.8 + coh_y * 0.1
+        # Edge avoidance — steer away from top/bottom walls
+        margin = h * 0.15
+        near_top = self._y < margin
+        near_bot = self._y > (h - margin)
+        self._vy[near_top] += speed * 0.15
+        self._vy[near_bot] -= speed * 0.15
 
-        # Add gentle random wandering to prevent stagnation
-        self._vx += np.random.uniform(-0.5, 0.5, n).astype(np.float32)
-        self._vy += np.random.uniform(-0.5, 0.5, n).astype(np.float32)
+        # Random wandering keeps things alive
+        self._vx += np.random.uniform(-1.0, 1.0, n).astype(np.float32)
+        self._vy += np.random.uniform(-1.0, 1.0, n).astype(np.float32)
 
-        # Speed limit with minimum speed (prevents stopping)
+        # Speed limit with minimum speed
         max_speed = speed * (0.5 + level * 1.5)
-        min_speed = speed * 0.15
+        min_speed = speed * 0.3
         v_mag = np.sqrt(self._vx ** 2 + self._vy ** 2 + 1e-6)
         too_fast = v_mag > max_speed
-        scale = max_speed / v_mag
-        self._vx[too_fast] *= scale[too_fast]
-        self._vy[too_fast] *= scale[too_fast]
-        # Boost boids that are too slow
+        self._vx[too_fast] *= (max_speed / v_mag[too_fast])
+        self._vy[too_fast] *= (max_speed / v_mag[too_fast])
         too_slow = v_mag < min_speed
         if too_slow.any():
-            boost = min_speed / v_mag
-            self._vx[too_slow] *= boost[too_slow]
-            self._vy[too_slow] *= boost[too_slow]
+            self._vx[too_slow] *= (min_speed / v_mag[too_slow])
+            self._vy[too_slow] *= (min_speed / v_mag[too_slow])
 
         # Update positions
         self._x += self._vx * dt
         self._y += self._vy * dt
 
-        # Wrap x (cylindrical), reflect y
+        # Wrap x (cylindrical), bounce y
         self._x = self._x % w
+        bounce_top = self._y < 0
+        bounce_bot = self._y >= h
+        self._y[bounce_top] = -self._y[bounce_top]
+        self._vy[bounce_top] = np.abs(self._vy[bounce_top])
+        self._y[bounce_bot] = 2 * (h - 1) - self._y[bounce_bot]
+        self._vy[bounce_bot] = -np.abs(self._vy[bounce_bot])
         self._y = np.clip(self._y, 0, h - 1)
-        bounce = (self._y <= 0.1) | (self._y >= h - 1.1)
-        self._vy[bounce] *= -0.8
 
         # Render — each boid is a point with color based on velocity direction
         elapsed = self.elapsed(t)

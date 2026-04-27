@@ -227,7 +227,7 @@ def main():
   # Register simulation effects in catalog
   effect_catalog.register_imported('fluid_sim', EffectMeta(
     name='fluid_sim',
-    label='Fluid Dynamics',
+    label='SR Fluid Dynamics',
     group='simulation',
     description='Navier-Stokes fluid simulation — audio drives the flow',
     imported=True,
@@ -255,12 +255,13 @@ def main():
   ))
   effect_catalog.register_imported('wave_equation', EffectMeta(
     name='wave_equation',
-    label='Wave Equation',
+    label='SR Wave Equation',
     group='simulation',
     description='2D wave simulation — beats create ripples that interfere and decay',
     imported=True,
     audio_requires=('level', 'bass', 'beat'),
     params=(
+      {'name': 'gain', 'label': 'Gain', 'min': 0.5, 'max': 5.0, 'step': 0.1, 'default': 2.0, 'type': 'slider'},
       {'name': 'wave_speed', 'label': 'Wave Speed', 'min': 0.02, 'max': 1.0, 'step': 0.02, 'default': 0.12, 'type': 'slider'},
       {'name': 'damping', 'label': 'Damping', 'min': 0.9, 'max': 0.999, 'step': 0.001, 'default': 0.985, 'type': 'slider'},
       {'name': 'color_speed', 'label': 'Color Cycle', 'min': 0.0, 'max': 1.0, 'step': 0.05, 'default': 0.3, 'type': 'slider'},
@@ -268,11 +269,13 @@ def main():
   ))
   effect_catalog.register_imported('boids', EffectMeta(
     name='boids',
-    label='Boids Flock',
+    label='SR Boids Flock',
     group='simulation',
-    description='Emergent flocking — separation, alignment, cohesion create a living swarm',
+    description='Emergent flocking — separation, alignment create a living swarm',
     imported=True,
+    audio_requires=('level', 'beat'),
     params=(
+      {'name': 'gain', 'label': 'Gain', 'min': 0.5, 'max': 5.0, 'step': 0.1, 'default': 2.0, 'type': 'slider'},
       {'name': 'count', 'label': 'Count', 'min': 20, 'max': 200, 'step': 10, 'default': 80, 'type': 'slider'},
       {'name': 'speed', 'label': 'Speed', 'min': 5.0, 'max': 60.0, 'step': 1.0, 'default': 25.0, 'type': 'slider'},
       {'name': 'trail', 'label': 'Trail', 'min': 0.0, 'max': 0.95, 'step': 0.05, 'default': 0.7, 'type': 'slider'},
