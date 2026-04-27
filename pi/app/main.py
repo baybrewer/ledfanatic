@@ -276,7 +276,7 @@ def main():
     audio_requires=('level', 'beat'),
     params=(
       {'name': 'gain', 'label': 'Gain', 'min': 0.5, 'max': 5.0, 'step': 0.1, 'default': 2.0, 'type': 'slider'},
-      {'name': 'count', 'label': 'Count', 'min': 20, 'max': 200, 'step': 10, 'default': 80, 'type': 'slider'},
+      {'name': 'count', 'label': 'Count', 'min': 10, 'max': 200, 'step': 10, 'default': 40, 'type': 'slider'},
       {'name': 'speed', 'label': 'Speed', 'min': 5.0, 'max': 60.0, 'step': 1.0, 'default': 25.0, 'type': 'slider'},
       {'name': 'trail', 'label': 'Trail', 'min': 0.0, 'max': 0.95, 'step': 0.05, 'default': 0.7, 'type': 'slider'},
       {'name': 'color_speed', 'label': 'Color Cycle', 'min': 0.0, 'max': 1.0, 'step': 0.05, 'default': 0.2, 'type': 'slider'},

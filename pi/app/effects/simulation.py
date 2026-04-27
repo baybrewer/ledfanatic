@@ -579,8 +579,8 @@ class Boids(Effect):
     PARAMS = [
         type('P', (), {'label': 'Gain', 'attr': 'gain', 'lo': 0.5, 'hi': 5.0,
                         'step': 0.1, 'default': 2.0})(),
-        type('P', (), {'label': 'Count', 'attr': 'count', 'lo': 20, 'hi': 200,
-                        'step': 10, 'default': 80})(),
+        type('P', (), {'label': 'Count', 'attr': 'count', 'lo': 10, 'hi': 200,
+                        'step': 10, 'default': 40})(),
         type('P', (), {'label': 'Speed', 'attr': 'speed', 'lo': 5.0, 'hi': 60.0,
                         'step': 1.0, 'default': 25.0})(),
         type('P', (), {'label': 'Trail', 'attr': 'trail', 'lo': 0.0, 'hi': 0.95,
@@ -596,9 +596,9 @@ class Boids(Effect):
         self._x = np.random.uniform(0, width, n).astype(np.float32)
         self._y = np.random.uniform(0, height, n).astype(np.float32)
         init_speed = float(self.params.get('speed', 25.0)) * 0.4
-        angles = np.random.uniform(0, 2 * math.pi, n).astype(np.float32)
-        self._vx = (np.cos(angles) * init_speed).astype(np.float32)
-        self._vy = (np.sin(angles) * init_speed).astype(np.float32)
+        self._wander_angle = np.random.uniform(0, 2 * math.pi, n).astype(np.float32)
+        self._vx = (np.cos(self._wander_angle) * init_speed).astype(np.float32)
+        self._vy = (np.sin(self._wander_angle) * init_speed).astype(np.float32)
         self._last_t = None
         self._prev_frame = None
 
@@ -636,72 +636,78 @@ class Boids(Effect):
         level = state.audio_level * gain
         beat = state.audio_beat
 
-        # Beat: scatter
+        # Beat: randomize wander angles
         if beat:
-            self._vx += np.random.uniform(-3, 3, n).astype(np.float32)
-            self._vy += np.random.uniform(-3, 3, n).astype(np.float32)
+            self._wander_angle += np.random.uniform(-math.pi, math.pi, n).astype(np.float32)
 
-        # Pairwise distances (vectorized)
+        # Smoothly rotate each boid's wander heading (Brownian-style steering)
+        self._wander_angle += np.random.uniform(-1.5, 1.5, n).astype(np.float32) * dt * 10
+
+        # Primary drive: each boid follows its own wander heading
+        target_speed = speed * (0.5 + level * 1.0)
+        desired_vx = np.cos(self._wander_angle) * target_speed
+        desired_vy = np.sin(self._wander_angle) * target_speed
+
+        # Steer toward desired velocity (smooth, not instant)
+        steer_rate = 3.0 * dt
+        self._vx += (desired_vx - self._vx) * steer_rate
+        self._vy += (desired_vy - self._vy) * steer_rate
+
+        # Separation — only kick in when very close (prevents overlap, not lattice)
         dx = self._x[:, np.newaxis] - self._x[np.newaxis, :]
         dy = self._y[:, np.newaxis] - self._y[np.newaxis, :]
-        dx = dx - w * np.round(dx / w)  # cylindrical wrap
+        dx = dx - w * np.round(dx / w)
         dist = np.sqrt(dx ** 2 + dy ** 2 + 1e-6)
 
-        # Separation — LINEAR falloff so it works at range (not 1/dist²)
-        # Force = (radius - dist) / radius, pointing away
-        sep_radius = h * 0.25
-        sep_strength = (sep_radius - dist) / sep_radius
-        sep_strength = np.clip(sep_strength, 0, 1)
-        np.fill_diagonal(sep_strength, 0)
-        # Direction: normalize dx/dy by dist
-        nx = dx / dist
-        ny = dy / dist
-        np.fill_diagonal(nx, 0)
-        np.fill_diagonal(ny, 0)
-        self._vx += (nx * sep_strength).sum(axis=1) * 8.0
-        self._vy += (ny * sep_strength).sum(axis=1) * 8.0
+        sep_radius = h * 0.08  # small — only very close neighbors
+        close = dist < sep_radius
+        np.fill_diagonal(close, False)
+        sep_strength = np.where(close, (sep_radius - dist) / sep_radius, 0)
+        nx = np.where(close, dx / dist, 0)
+        ny = np.where(close, dy / dist, 0)
+        self._vx += nx.sum(axis=1) * sep_strength.sum(axis=1) * 5.0
+        self._vy += ny.sum(axis=1) * sep_strength.sum(axis=1) * 5.0
 
-        # Weak alignment — only very close neighbors, keeps some flocking feel
+        # Weak alignment — only immediate neighbors, creates sub-flocks
         align_radius = h * 0.06
         align_mask = (dist < align_radius) & (dist > 0.01)
         align_count = align_mask.sum(axis=1).clip(1)
-        align_x = (np.where(align_mask, self._vx[np.newaxis, :], 0).sum(axis=1) / align_count) - self._vx
-        align_y = (np.where(align_mask, self._vy[np.newaxis, :], 0).sum(axis=1) / align_count) - self._vy
-        self._vx += align_x * 0.3
-        self._vy += align_y * 0.3
+        # Align wander angles, not velocities — more organic
+        neighbor_angles = np.where(align_mask, self._wander_angle[np.newaxis, :], 0).sum(axis=1) / align_count
+        angle_diff = neighbor_angles - self._wander_angle
+        # Wrap angle diff to [-pi, pi]
+        angle_diff = (angle_diff + math.pi) % (2 * math.pi) - math.pi
+        self._wander_angle += angle_diff * 0.1
 
-        # Edge avoidance — smooth steering away from walls
-        margin = h * 0.2
-        top_dist = self._y
-        bot_dist = (h - 1) - self._y
-        self._vy += np.where(top_dist < margin, speed * 0.2 * (1 - top_dist / margin), 0)
-        self._vy -= np.where(bot_dist < margin, speed * 0.2 * (1 - bot_dist / margin), 0)
+        # Edge avoidance — steer wander angle away from walls
+        margin = h * 0.15
+        near_top = self._y < margin
+        near_bot = self._y > (h - margin)
+        # Point downward near top, upward near bottom
+        self._wander_angle[near_top] = self._wander_angle[near_top] * 0.8 + (math.pi * 0.5) * 0.2
+        self._wander_angle[near_bot] = self._wander_angle[near_bot] * 0.8 + (-math.pi * 0.5) * 0.2
 
-        # Random wandering — each boid drifts in a slowly-changing direction
-        self._vx += np.random.uniform(-2.0, 2.0, n).astype(np.float32)
-        self._vy += np.random.uniform(-2.0, 2.0, n).astype(np.float32)
-
-        # Speed: clamp to [min_speed, max_speed]
-        max_speed = speed * (0.5 + level * 1.5)
-        min_speed = speed * 0.3
+        # Speed clamp
         v_mag = np.sqrt(self._vx ** 2 + self._vy ** 2 + 1e-6)
+        max_speed = speed * (0.6 + level)
         too_fast = v_mag > max_speed
         self._vx[too_fast] *= (max_speed / v_mag[too_fast])
         self._vy[too_fast] *= (max_speed / v_mag[too_fast])
-        too_slow = v_mag < min_speed
-        if too_slow.any():
-            self._vx[too_slow] *= (min_speed / v_mag[too_slow])
-            self._vy[too_slow] *= (min_speed / v_mag[too_slow])
         v_mag = np.sqrt(self._vx ** 2 + self._vy ** 2 + 1e-6)
 
         # Move
         self._x = (self._x + self._vx * dt) % w
-        self._y = np.clip(self._y + self._vy * dt, 0, h - 1)
+        new_y = self._y + self._vy * dt
         # Bounce off top/bottom
-        bounce_top = self._y <= 0.01
-        bounce_bot = self._y >= h - 1.01
-        self._vy[bounce_top] = abs(self._vy[bounce_top])
-        self._vy[bounce_bot] = -abs(self._vy[bounce_bot])
+        bounce_top = new_y < 0
+        bounce_bot = new_y >= h
+        new_y[bounce_top] *= -1
+        self._vy[bounce_top] *= -1
+        self._wander_angle[bounce_top] *= -1  # flip wander too
+        new_y[bounce_bot] = 2 * (h - 1) - new_y[bounce_bot]
+        self._vy[bounce_bot] *= -1
+        self._wander_angle[bounce_bot] *= -1
+        self._y = np.clip(new_y, 0, h - 1)
 
         # Render — each boid is a point with color based on velocity direction
         elapsed = self.elapsed(t)
