@@ -139,6 +139,8 @@ class RenderContext:
     height: int = 0
     origin: str = "bottom_left"
     logical_led_count: int = 0
+    strip_count: int = 0
+    strip_lengths: list[int] = field(default_factory=list)
 
     # Cached coordinate arrays (set once per layout change)
     x: np.ndarray = field(default_factory=lambda: np.empty(0))       # normalized 0-1
@@ -331,8 +333,6 @@ def fade_buffer(buf: np.ndarray, factor: float):
 
 def additive_blend(dst: np.ndarray, src: np.ndarray):
     """Add src to dst (both uint8), clipping at 255. In-place on dst."""
-    np.add(dst, src, out=dst, casting='unsafe')
-    # The above overflows — use uint16 intermediate
     tmp = dst.astype(np.uint16) + src.astype(np.uint16)
     np.clip(tmp, 0, 255, out=tmp)
     dst[:] = tmp.astype(np.uint8)
@@ -375,19 +375,7 @@ def temporal_blend(current: np.ndarray, previous: np.ndarray, factor: float) -> 
 Run: `cd pi && PYTHONPATH=. pytest tests/test_kernels.py -v`
 Expected: All 8 tests PASS
 
-- [ ] **Step 5: Fix additive_blend (the simple add overflows)**
-
-The initial implementation has a bug — `np.add` with uint8 wraps. Replace:
-
-```python
-def additive_blend(dst: np.ndarray, src: np.ndarray):
-    """Add src to dst (both uint8), clipping at 255. In-place on dst."""
-    tmp = dst.astype(np.uint16) + src.astype(np.uint16)
-    np.clip(tmp, 0, 255, out=tmp)
-    dst[:] = tmp.astype(np.uint8)
-```
-
-- [ ] **Step 6: Commit**
+- [ ] **Step 5: Commit**
 
 ```bash
 git add pi/app/effects/kernels.py pi/tests/test_kernels.py
@@ -515,6 +503,9 @@ class EffectV2(ABC):
     DESCRIPTION: str = ""
     PALETTE_SUPPORT: bool = False
     AUDIO_REQUIRED: bool = False
+    COORDINATE_SPACE: str = "xy_2d"  # xy_2d | index_1d | cylindrical | framebuffer
+    PERSISTENT_STATE: bool = False    # True if effect has internal state that evolves over time
+    SAFE_FOR_PREVIEW: bool = True     # False for effects that need real audio or hardware
     PARAMS: list = []
 
     def __init__(self, width: int, height: int, params: Optional[dict] = None):
@@ -606,6 +597,10 @@ class _RenderStateProxy:
         self.grid_width = ctx.width
         self.grid_height = ctx.height
         self.origin = ctx.origin
+        self.gamma = 2.2
+
+    def update_audio(self, snapshot: dict):
+        self._audio = snapshot
 
     # Audio lock-free dict (accessed directly by imported sound effects)
     @property
@@ -692,21 +687,41 @@ self._render_ctx.update_audio(self.state._audio_lock_free)
 
 - [ ] **Step 3: Support both V1 and V2 effects**
 
-In `_render_frame()`, replace the current effect call:
+In `_render_frame()`, replace the effect rendering block inside the `else` branch (when not blackout and effect exists). The V2 path must still apply brightness, gamma, test patterns, and y-flip — same as V1:
 
 ```python
-# Check if effect is V2 or V1
 from ..effects.base_v2 import EffectV2
+
+t = time.monotonic()
+
+# --- Effect render ---
 if isinstance(self.current_effect, EffectV2):
-    # V2: use constrained lifecycle with renderer-owned buffer
+    # V2: constrained lifecycle, renderer-owned buffer
     logical_frame = np.zeros((w, h, 3), dtype=np.uint8)
     self.current_effect.before_render(self._render_ctx, self._render_ctx.dt)
     self.current_effect.render_pixels(self._render_ctx, logical_frame)
 else:
     # V1: existing path
     internal_frame = self.current_effect.render(t, self.state)
-    # ... existing downsample/etc logic
+    if self.current_effect and getattr(self.current_effect, 'RENDER_SCALE', 1) > 1:
+        from PIL import Image
+        img = Image.fromarray(internal_frame.transpose(1, 0, 2))
+        img = img.resize((w, h), Image.LANCZOS)
+        logical_frame = np.array(img).transpose(1, 0, 2)
+    else:
+        logical_frame = internal_frame
+
+# --- Post-processing (shared by V1 and V2) ---
+# Apply brightness
+effective = self.brightness_engine.get_effective_brightness(datetime.now(timezone.utc))
+logical_frame = (logical_frame * effective).astype(np.uint8)
+# Apply gamma
+logical_frame = self._gamma_lut[logical_frame]
+# Test patterns override (existing code unchanged)
+# ... existing test pattern block ...
 ```
+
+The key point: brightness, gamma, test patterns, y-flip, and packing all remain OUTSIDE the V1/V2 branch — they are renderer responsibilities, not effect responsibilities.
 
 - [ ] **Step 4: Run full test suite**
 
@@ -827,7 +842,25 @@ Co-Authored-By: Claude Opus 4.6 (1M context) <noreply@anthropic.com>"
 
 ---
 
-## Task 6: Performance Benchmark Harness
+## Task 6: Matrix Rain FPS Fix (SoA migration)
+
+**Files:**
+- Modify: `pi/app/effects/imported/ambient_a.py` (MatrixRain class)
+
+Matrix Rain uses fixed-capacity NumPy arrays already (`_drop_x`, `_drop_y`, etc.) but the `_find_free_slot` method does a linear scan every spawn. The render loop also rebuilds `fade_factors` and `pal_colors` every frame. Fix:
+
+- [ ] **Step 1: Cache fade_factors and pal_colors in __init__** (they only change when trail/palette params change)
+- [ ] **Step 2: Replace _find_free_slot linear scan with a free-list index**
+- [ ] **Step 3: Profile before/after with the benchmark harness (Task 7)**
+- [ ] **Step 4: Commit**
+
+```bash
+git commit -m "perf: Matrix Rain — cache fade LUT, optimize free slot scan"
+```
+
+---
+
+## Task 7: Performance Benchmark Harness
 
 **Files:**
 - Create: `pi/tests/test_benchmark.py`
