@@ -308,8 +308,9 @@ class SRMatrixRain(Effect):
 
     # Spawn new drops — density purely sound-driven per column.
     # No sound = no rain. Each band's energy gates its column's spawn rate.
+    num_bands = len(bands)
     for x in range(cols):
-      band_val = float(bands[x]) if x < len(bands) else 0.0
+      band_val = float(bands[x % num_bands])
       # Dead zone: below this, no drops at all
       if band_val < 0.03:
         continue
