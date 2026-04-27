@@ -295,10 +295,9 @@ class SRMatrixRain(Effect):
     base_trail = int(self.params.get("trail", 25))
     pal_idx = _get_pal_idx(self.params, default=3)
 
-    # Per-column band values: 10 bands, bass → left, treble → right
-    bands = np.asarray(audio.bands, dtype=np.float64) if audio.bands is not None else np.zeros(10)
-    if len(bands) < 10:
-      bands = np.pad(bands, (0, 10 - len(bands)))
+    # Resample bands to match grid width — never hardcode column count
+    raw_bands = np.asarray(audio.bands, dtype=np.float64) if audio.bands is not None else np.zeros(10)
+    bands = AudioCompatAdapter.resample_bands(raw_bands, cols)
     trail = int(min(60, base_trail * (1.0 + audio.buildup * gain)))
 
     cols = self.width
@@ -308,9 +307,8 @@ class SRMatrixRain(Effect):
 
     # Spawn new drops — density purely sound-driven per column.
     # No sound = no rain. Each band's energy gates its column's spawn rate.
-    num_bands = len(bands)
     for x in range(cols):
-      band_val = float(bands[x % num_bands])
+      band_val = float(bands[x])
       # Dead zone: below this, no drops at all
       if band_val < 0.03:
         continue
@@ -337,7 +335,7 @@ class SRMatrixRain(Effect):
 
     # Update positions — also modulate live speed by current band at each drop's column
     active = self._active_mask
-    drop_band_mult = 1.0 + bands[np.clip(self._drop_x, 0, len(bands) - 1)] * gain * 2.0
+    drop_band_mult = 1.0 + bands[np.clip(self._drop_x, 0, cols - 1)] * gain * 2.0
     self._drop_y[active] += self._drop_speed[active] * drop_band_mult[active] * dt
 
     # Cull dead drops

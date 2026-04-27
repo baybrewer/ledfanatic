@@ -197,6 +197,25 @@ class AudioCompatAdapter:
       out[i] = float(np.mean(src[lo_i:hi_i])) if hi_i > lo_i else 0.0
     return out
 
+  @staticmethod
+  def resample_bands(bands: np.ndarray, target_width: int) -> np.ndarray:
+    """Resample N bands to any target width via linear interpolation.
+
+    Use this to spread audio bands across the full grid width regardless
+    of how many bands exist. Never hardcode column counts in effects.
+    """
+    n = len(bands)
+    if n == 0:
+      return np.zeros(target_width, dtype=np.float64)
+    if target_width == n:
+      return np.asarray(bands, dtype=np.float64)
+    # Linear interpolation: map target indices to source positions
+    src_pos = np.linspace(0, n - 1, target_width)
+    src_idx = np.clip(src_pos.astype(np.int32), 0, n - 2)
+    frac = src_pos - src_idx
+    bands_f = np.asarray(bands, dtype=np.float64)
+    return bands_f[src_idx] * (1 - frac) + bands_f[np.minimum(src_idx + 1, n - 1)] * frac
+
   def _expand_bands(self, bass: float, mid: float, high: float) -> np.ndarray:
     """Expand 3 bands to 10 via cosine interpolation."""
     # Map: bands 0-2 = bass, 3-6 = mid, 7-9 = high
