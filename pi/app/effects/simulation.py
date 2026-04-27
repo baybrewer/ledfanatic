@@ -604,20 +604,21 @@ class Boids(Effect):
 
     def update_params(self, params: dict):
         super().update_params(params)
-        new_n = int(self.params.get('count', 80))
+        new_n = int(self.params.get('count', 40))
         if new_n != self._n:
-            # Resize arrays
             if new_n > self._n:
                 extra = new_n - self._n
                 self._x = np.concatenate([self._x, np.random.uniform(0, self.width, extra).astype(np.float32)])
                 self._y = np.concatenate([self._y, np.random.uniform(0, self.height, extra).astype(np.float32)])
                 self._vx = np.concatenate([self._vx, np.random.uniform(-1, 1, extra).astype(np.float32)])
                 self._vy = np.concatenate([self._vy, np.random.uniform(-1, 1, extra).astype(np.float32)])
+                self._wander_angle = np.concatenate([self._wander_angle, np.random.uniform(0, 2 * math.pi, extra).astype(np.float32)])
             else:
                 self._x = self._x[:new_n]
                 self._y = self._y[:new_n]
                 self._vx = self._vx[:new_n]
                 self._vy = self._vy[:new_n]
+                self._wander_angle = self._wander_angle[:new_n]
             self._n = new_n
 
     def render(self, t: float, state) -> np.ndarray:
