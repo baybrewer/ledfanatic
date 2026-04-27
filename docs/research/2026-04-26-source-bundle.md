@@ -1,8 +1,18 @@
 # Source Code Bundle for Review
 
 **Project:** pillar-controller
-**Date:** 2026-04-26
+**Date:** 2026-04-26 (revised after Codex round-1 review)
 **Purpose:** Key source files for Codex review of language performance and optimization opportunities
+
+**Layout note:** The checked-in default layout (`pi/config/layout.yaml`) is 10x83 = 830 pixels.
+Layout is dynamic — the Pi's active layout may differ. All performance analysis should specify the active layout.
+
+**Round 1 review findings incorporated:**
+1. Performance baseline now flagged as unmeasured estimates; prerequisite benchmark step added
+2. Effect benchmark harness (`pi/tools/bench_effects.py`) doesn't cover all registered effects — fix required
+3. Media pre-resize corrected: cache must be keyed by (item, width, height, fit) not import-time geometry
+4. Coordinate normalization flagged as needing design work to avoid mixing calibration/rendering/authoring concerns
+5. USB baud rate recommendation replaced with end-to-end transport measurement (USB CDC, not raw UART)
 
 ---
 
@@ -603,6 +613,80 @@ class AuroraBorealis(Effect):
 
 ---
 
+## File 7: pi/tools/bench_effects.py — Benchmark Harness (INCOMPLETE COVERAGE)
+
+**Note:** This harness only covers `EFFECTS`, `AUDIO_EFFECTS`, and `IMPORTED_EFFECTS`.
+Effects registered ad-hoc in main.py (sr_fireworks, tetris, tetris_auto, scrolling_text,
+animation_switcher) are NOT benchmarked. This is a gap that must be fixed.
+
+```python
+from app.effects.generative import EFFECTS
+from app.effects.audio_reactive import AUDIO_EFFECTS
+from app.effects.imported import IMPORTED_EFFECTS
+from app.layout import load_layout, compile_layout, pack_frame
+
+# Loads layout from config/ — uses checked-in layout.yaml (may differ from Pi's active layout)
+_config_dir = Path(__file__).parent.parent / "config"
+_layout_config = load_layout(_config_dir)
+_layout = compile_layout(_layout_config)
+GRID_WIDTH = _layout.width
+GRID_HEIGHT = _layout.height
+
+# Line 126: only these three dicts — missing sr_fireworks, tetris, scrolling_text, etc.
+all_effects = {**EFFECTS, **AUDIO_EFFECTS, **IMPORTED_EFFECTS}
+```
+
+## File 8: pi/app/main.py — Effect Registration (lines 131-149)
+
+```python
+# These three are covered by bench_effects.py:
+for name, cls in EFFECTS.items():
+    renderer.register_effect(name, cls)
+for name, cls in AUDIO_EFFECTS.items():
+    renderer.register_effect(name, cls)
+for name, cls in DIAGNOSTIC_EFFECTS.items():
+    renderer.register_effect(name, cls)
+
+# These are NOT covered by bench_effects.py:
+renderer.register_effect('tetris', Tetris)
+renderer.register_effect('tetris_auto', TetrisAutoplay)
+renderer.register_effect('sr_fireworks', SRFireworks)
+renderer.register_effect('scrolling_text', ScrollingText)
+
+for name, cls in IMPORTED_EFFECTS.items():
+    renderer.register_effect(name, cls)
+renderer.register_effect('animation_switcher', AnimationSwitcher)
+```
+
+## File 9: pi/app/effects/base.py — Effect Base Class
+
+```python
+class Effect(ABC):
+  """Base class for all effects."""
+  NATIVE_WIDTH = None
+  RENDER_SCALE = 1
+
+  def __init__(self, width: int, height: int, params: Optional[dict] = None):
+    self.width = width
+    self.height = height
+    self.params = params or {}
+    self._start_time: Optional[float] = None
+
+  @abstractmethod
+  def render(self, t: float, state) -> np.ndarray:
+    """Returns: np.ndarray of shape (width, height, 3) uint8"""
+    pass
+
+  def update_params(self, params: dict):
+    self.params.update(params)
+```
+
+**Note:** Effects receive width, height, params, and render state. No coordinate grids
+or normalized positions. Any coordinate normalization proposal must decide where
+that abstraction lives without conflicting with the existing setup/geometry UV system.
+
+---
+
 ## Architecture Diagram
 
 ```
@@ -618,18 +702,18 @@ Phone/Browser (WiFi)
        |
        +-- [brightness * gamma LUT]   <-- NumPy array ops (fast)
        |
-       +-- [pack_frame()]             <-- Pure Python loop, 1720 iterations (0.5-1ms)
+       +-- [pack_frame()]             <-- Pure Python loop, N iterations (N = layout pixel count)
        |
        +-- [COBS encode + CRC32]      <-- ~0.3ms
        |
        v
-  [USB Serial]  <-- 115200 baud, asyncio.to_thread
+  [USB CDC Serial]  <-- USB 2.0 FS (baud advisory), asyncio.to_thread
        |
        v
   [Teensy 4.1]  <-- C++ firmware, OctoWS2811 DMA
        |
        v
-  [5 x WS2812B strips]  <-- 1,720 LEDs total
+  [5 x WS2812B strips]  <-- 830 LEDs (default layout; dynamic)
 ```
 
 ---
@@ -642,8 +726,8 @@ Phone/Browser (WiFi)
 | **RAM** | 4-8 GB | 520 KB |
 | **OS** | Linux | None (bare metal) |
 | **Effect language** | Python + NumPy | Custom JS bytecode |
-| **Throughput** | 103,200 px/sec (60fps x 1720) | 48,000 px/sec |
-| **Max pixels** | ~5000 (architecture limit) | 5000 (hardware limit) |
+| **Throughput** | ~49,800 px/sec at default layout (60fps x 830) | 48,000 px/sec |
+| **Max pixels** | Layout-dependent (dynamic) | 5000 (hardware limit) |
 | **Audio** | Full FFT + beat detection | Basic via sensor board |
 | **Media** | Video/image playback | None |
 | **Web UI** | Full control dashboard | Pattern editor |
