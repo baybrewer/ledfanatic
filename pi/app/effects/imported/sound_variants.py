@@ -407,10 +407,10 @@ class SRMoire(Effect):
   PARAMS = [
     _Param("Gain", "gain", 0.2, 5.0, 0.1, 1.0),
     _Param("Speed", "speed", 0.05, 2.0, 0.05, 0.4),
-    _Param("Scale", "scale", 0.3, 3.0, 0.1, 1.0),
+    _Param("Scale", "scale", 0.0, 0.7, 0.07, 0.35),
     _Param("Centers", "centers", 2, 5, 1, 3),
   ]
-  _SCALAR_PARAMS = {"gain": 1.0, "speed": 0.4, "scale": 1.0, "centers": 3, "palette": 0}
+  _SCALAR_PARAMS = {"gain": 1.0, "speed": 0.4, "scale": 0.35, "centers": 3, "palette": 0}
   def __init__(self, width, height, params=None):
     super().__init__(width, height, params)
     self._audio_adapter = AudioCompatAdapter()
