@@ -479,35 +479,40 @@ class WaveEquation(Effect):
         beat = state.audio_beat
         level = state.audio_level * gain
 
-        # Beat: drop a stone at random position
+        # Beat: drop a stone — amplitude scales with level
         if beat:
             cx = np.random.randint(0, w)
             cy = np.random.randint(h // 4, 3 * h // 4)
-            amplitude = 1.0 + level * 2
-            # Gaussian impulse
+            amplitude = 0.5 + level * 3
             x_grid = np.arange(w)[:, np.newaxis]
             y_grid = np.arange(h)[np.newaxis, :]
             dist2 = ((x_grid - cx) % w) ** 2 + (y_grid - cy) ** 2
-            # Wrap distance on x-axis (cylindrical)
             dist2_wrap = np.minimum(dist2, ((x_grid - cx + w) % w) ** 2 + (y_grid - cy) ** 2)
             impulse = amplitude * np.exp(-dist2_wrap / 3.0).astype(np.float32)
             self._u += impulse
 
-        # Auto-drop for non-audio mode
+        # Bass: continuous bottom perturbation — only when bass is present
+        if bass > 0.3:
+            self._u[:, -3:] += (bass - 0.3) * 0.5
+
+        # Mid: occasional side ripple
+        if state.audio_mid * gain > 0.4:
+            side_y = int(h * 0.3 + state.audio_mid * h * 0.4)
+            side_y = min(side_y, h - 1)
+            self._u[0, max(0, side_y - 1):side_y + 2] += state.audio_mid * gain * 0.4
+
+        # Auto-drop ONLY when no audio at all (silent fallback)
+        raw_level = state.audio_level  # before gain
         self._auto_drop_timer -= dt
-        if self._auto_drop_timer <= 0 and level < 0.05:
-            self._auto_drop_timer = np.random.uniform(0.5, 2.0)
+        if self._auto_drop_timer <= 0 and raw_level < 0.02:
+            self._auto_drop_timer = np.random.uniform(1.5, 4.0)
             cx = np.random.randint(0, w)
             cy = np.random.randint(h // 4, 3 * h // 4)
             x_grid = np.arange(w)[:, np.newaxis]
             y_grid = np.arange(h)[np.newaxis, :]
             dist2 = ((x_grid - cx) % w) ** 2 + (y_grid - cy) ** 2
-            impulse = 0.8 * np.exp(-dist2 / 3.0).astype(np.float32)
+            impulse = 0.5 * np.exp(-dist2 / 3.0).astype(np.float32)
             self._u += impulse
-
-        # Bass: continuous bottom perturbation
-        if bass > 0.15:
-            self._u[:, -3:] += bass * 0.3
 
         # Wave equation: u_next = 2*u - u_prev + c^2 * laplacian(u)
         # Cylindrical boundary on x (wrap), reflective on y
