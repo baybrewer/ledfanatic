@@ -50,11 +50,16 @@ class MediaPlayback(Effect):
     else:
       frame_idx = min(frame_idx, self._frame_count - 1)
 
-    # Load from cache or disk
+    # Load from cache or disk — cache stores already-resized frames
     if frame_idx not in self._frame_cache:
-      frame = self.media_manager.load_frame(self._item_id, frame_idx)
-      if frame is not None:
-        self._frame_cache[frame_idx] = frame
+      raw = self.media_manager.load_frame(self._item_id, frame_idx)
+      if raw is not None:
+        # Resize once on cache insert, not on every render call
+        if raw.shape[0] != self.width or raw.shape[1] != self.height:
+          img = Image.fromarray(raw.transpose(1, 0, 2))
+          img = img.resize((self.width, self.height), Image.LANCZOS)
+          raw = np.array(img).transpose(1, 0, 2)
+        self._frame_cache[frame_idx] = raw
         # Keep cache bounded
         if len(self._frame_cache) > 120:
           oldest = min(self._frame_cache.keys())
@@ -63,14 +68,6 @@ class MediaPlayback(Effect):
     frame = self._frame_cache.get(frame_idx)
     if frame is None:
       return np.zeros((self.width, self.height, 3), dtype=np.uint8)
-
-    # Scale frame to fit matrix dimensions
-    # frame is (w, h, 3) — check if it needs resizing
-    if frame.shape[0] != self.width or frame.shape[1] != self.height:
-      # Transpose to PIL (h, w, 3), resize, transpose back
-      img = Image.fromarray(frame.transpose(1, 0, 2))
-      img = img.resize((self.width, self.height), Image.LANCZOS)
-      frame = np.array(img).transpose(1, 0, 2)
 
     return frame
 

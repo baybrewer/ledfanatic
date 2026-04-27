@@ -18,14 +18,11 @@ from .core.brightness import BrightnessEngine
 from .transport.usb import TeensyTransport
 from .media.manager import MediaManager
 from .audio.analyzer import AudioAnalyzer
-from .effects.generative import EFFECTS
-from .effects.audio_reactive import AUDIO_EFFECTS
-from .diagnostics.patterns import DIAGNOSTIC_EFFECTS
+from .effects.registry import ALL_EFFECTS
+from .effects.imported import IMPORTED_EFFECTS
 from .layout import load_layout, compile_layout, validate_layout, output_config_list, CompiledLayout
 from .config.spatial_map import load_spatial_map
 from .preview.service import PreviewService
-from .effects.imported import IMPORTED_EFFECTS
-from .effects.switcher import AnimationSwitcher
 from .effects.catalog import EffectCatalogService, EffectMeta
 
 DEV_MODE = os.environ.get('PILLAR_DEV', '').strip() == '1'
@@ -128,25 +125,9 @@ def main():
   effects_conf = config.get('effects', {})
   renderer.effects_config = effects_conf
 
-  for name, cls in EFFECTS.items():
+  for name, cls in ALL_EFFECTS.items():
     renderer.register_effect(name, cls)
-  for name, cls in AUDIO_EFFECTS.items():
-    renderer.register_effect(name, cls)
-  for name, cls in DIAGNOSTIC_EFFECTS.items():
-    renderer.register_effect(name, cls)
-  from .effects.tetris import Tetris, TetrisAutoplay
-  renderer.register_effect('tetris', Tetris)
-  renderer.register_effect('tetris_auto', TetrisAutoplay)
-  from .effects.fireworks import SRFireworks
-  renderer.register_effect('sr_fireworks', SRFireworks)
-  from .effects.scrolltext import ScrollingText
-  renderer.register_effect('scrolling_text', ScrollingText)
-
-  # Register imported animations into renderer
-  for name, cls in IMPORTED_EFFECTS.items():
-    renderer.register_effect(name, cls)
-  renderer.register_effect('animation_switcher', AnimationSwitcher)
-  logger.info(f"Registered {len(IMPORTED_EFFECTS)} imported effects + animation_switcher")
+  logger.info(f"Registered {len(ALL_EFFECTS)} effects from unified registry")
 
   # Create shared catalog with all effects including imported
   effect_catalog = EffectCatalogService()

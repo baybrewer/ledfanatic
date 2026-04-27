@@ -15,9 +15,7 @@ from unittest.mock import MagicMock
 
 from pathlib import Path
 
-from app.effects.generative import EFFECTS
-from app.effects.audio_reactive import AUDIO_EFFECTS
-from app.effects.imported import IMPORTED_EFFECTS
+from app.effects.registry import ALL_EFFECTS
 from app.layout import load_layout, compile_layout, pack_frame
 from app.core.renderer import _build_gamma_lut
 
@@ -123,9 +121,16 @@ def main():
   parser.add_argument('--csv', action='store_true', help='Output as CSV')
   args = parser.parse_args()
 
-  all_effects = {**EFFECTS, **AUDIO_EFFECTS, **IMPORTED_EFFECTS}
+  all_effects = ALL_EFFECTS
   gamma_lut = _build_gamma_lut(2.2)
   state = _make_state()
+
+  # Report layout info
+  print(f"Layout: {GRID_WIDTH}x{GRID_HEIGHT} grid, "
+        f"{_layout.total_mapped} mapped LEDs, "
+        f"{len(_layout_config.outputs)} outputs")
+  print(f"Effects: {len(all_effects)} registered")
+  print()
 
   if args.effect:
     if args.effect not in all_effects:

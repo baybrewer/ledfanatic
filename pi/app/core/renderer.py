@@ -43,6 +43,8 @@ class RenderState:
     self.frames_dropped: int = 0
     self.last_frame_time_ms: float = 0.0
     self.render_cost_ms: float = 0.0
+    self.effect_render_ms: float = 0.0  # just the effect.render() call
+    self.pack_send_ms: float = 0.0      # pack_frame + transport
 
   def update_audio(self, snapshot: dict):
     """Receive thread-safe audio snapshot."""
@@ -87,6 +89,8 @@ class RenderState:
       'frames_dropped': self.frames_dropped,
       'last_frame_time_ms': round(self.last_frame_time_ms, 2),
       'render_cost_ms': round(self.render_cost_ms, 2),
+      'effect_render_ms': round(self.effect_render_ms, 2),
+      'pack_send_ms': round(self.pack_send_ms, 2),
       'audio_level': round(self.audio_level, 3),
       'audio_bass': round(self.audio_bass, 3),
       'audio_mid': round(self.audio_mid, 3),
@@ -321,9 +325,12 @@ class Renderer:
     if self.state.blackout or self.current_effect is None:
       logical_frame = np.zeros((w, h, 3), dtype=np.uint8)
       self._last_logical_frame = logical_frame
+      self.state.effect_render_ms = 0.0
     else:
       t = time.monotonic()
+      effect_start = time.perf_counter()
       internal_frame = self.current_effect.render(t, self.state)
+      self.state.effect_render_ms = (time.perf_counter() - effect_start) * 1000
 
       # Downsample if effect uses RENDER_SCALE > 1
       if self.current_effect and getattr(self.current_effect, 'RENDER_SCALE', 1) > 1:
@@ -399,6 +406,7 @@ class Renderer:
       logical_frame = logical_frame[:, ::-1, :]
 
     # Pack frame to output bytes and send
+    pack_start = time.perf_counter()
     pixel_bytes = pack_frame(logical_frame, self.layout)
 
     # Probe mode: override the packed buffer to light one LED by wire position
@@ -419,6 +427,7 @@ class Renderer:
       pixel_bytes = bytes(buf)
 
     success = await self.transport.send_frame(pixel_bytes)
+    self.state.pack_send_ms = (time.perf_counter() - pack_start) * 1000
     if success:
       self.state.frames_sent += 1
 
