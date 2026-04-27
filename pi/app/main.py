@@ -236,6 +236,7 @@ def main():
       {'name': 'viscosity', 'label': 'Viscosity', 'min': 0.0, 'max': 0.001, 'step': 0.00005, 'default': 0.0, 'type': 'slider'},
       {'name': 'diffusion', 'label': 'Diffusion', 'min': 0.0, 'max': 0.001, 'step': 0.00005, 'default': 0.0, 'type': 'slider'},
       {'name': 'force', 'label': 'Force', 'min': 1.0, 'max': 20.0, 'step': 0.5, 'default': 8.0, 'type': 'slider'},
+      {'name': 'dye_rate', 'label': 'Dye Rate', 'min': 0.5, 'max': 5.0, 'step': 0.1, 'default': 2.0, 'type': 'slider'},
       {'name': 'pressure_iters', 'label': 'Pressure Iters', 'min': 1, 'max': 20, 'step': 1, 'default': 2, 'type': 'slider'},
     ),
   ))
@@ -260,7 +261,7 @@ def main():
     imported=True,
     audio_requires=('level', 'bass', 'beat'),
     params=(
-      {'name': 'wave_speed', 'label': 'Wave Speed', 'min': 0.1, 'max': 1.0, 'step': 0.05, 'default': 0.5, 'type': 'slider'},
+      {'name': 'wave_speed', 'label': 'Wave Speed', 'min': 0.02, 'max': 1.0, 'step': 0.02, 'default': 0.12, 'type': 'slider'},
       {'name': 'damping', 'label': 'Damping', 'min': 0.9, 'max': 0.999, 'step': 0.001, 'default': 0.985, 'type': 'slider'},
       {'name': 'color_speed', 'label': 'Color Cycle', 'min': 0.0, 'max': 1.0, 'step': 0.05, 'default': 0.3, 'type': 'slider'},
     ),

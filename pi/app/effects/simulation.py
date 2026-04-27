@@ -38,6 +38,8 @@ class FluidSim(Effect):
                         'step': 0.00005, 'default': 0.0})(),
         type('P', (), {'label': 'Force', 'attr': 'force', 'lo': 1.0, 'hi': 20.0,
                         'step': 0.5, 'default': 8.0})(),
+        type('P', (), {'label': 'Dye Rate', 'attr': 'dye_rate', 'lo': 0.5, 'hi': 5.0,
+                        'step': 0.1, 'default': 2.0})(),
         type('P', (), {'label': 'Pressure Iters', 'attr': 'pressure_iters', 'lo': 1, 'hi': 20,
                         'step': 1, 'default': 2})(),
     ]
@@ -60,6 +62,7 @@ class FluidSim(Effect):
         self._grid_i = np.arange(1, h - 1, dtype=np.float32)[np.newaxis, :]
         self._last_t = None
         self._hue_phase = 0.0
+        self._auto_inject_timer = 0.0
 
     def _set_boundary(self, b, x):
         """Set boundary conditions (b=0: scalar, b=1: x-vel, b=2: y-vel)."""
@@ -164,9 +167,10 @@ class FluidSim(Effect):
         dt = min(t - self._last_t, 0.05)
         self._last_t = t
 
-        visc = self.params.get('viscosity', 0.0001)
-        diff = self.params.get('diffusion', 0.0001)
+        visc = self.params.get('viscosity', 0.0)
+        diff = self.params.get('diffusion', 0.0)
         force = self.params.get('force', 8.0)
+        dye_rate = self.params.get('dye_rate', 2.0)
 
         bass = state.audio_bass
         mid = state.audio_mid
@@ -175,6 +179,7 @@ class FluidSim(Effect):
         level = state.audio_level
 
         w, h = self.width, self.height
+        self._hue_phase += dt * 0.3
 
         # Audio-reactive forcing: bass pushes up from bottom, mid from sides
         cx = w // 2 + 1
@@ -186,10 +191,9 @@ class FluidSim(Effect):
             region_x = slice(max(1, cx - 2), min(cx + 3, w + 1))
             region_y = slice(max(1, bottom - 3), bottom + 1)
             self._vy[region_x, region_y] -= bass * force_scale * 3
-            self._hue_phase += dt * 0.3
             hue = self._hue_phase % 1.0
             r, g, b = self._hsv_fast(hue, 1.0, bass)
-            self._dye[region_x, region_y] += np.array([r, g, b], dtype=np.float32) * 2
+            self._dye[region_x, region_y] += np.array([r, g, b], dtype=np.float32) * dye_rate
 
         # Beat burst — inject from random position
         if beat:
@@ -202,7 +206,7 @@ class FluidSim(Effect):
             self._vy[r_burst, c_burst] += math.sin(angle) * force_scale * 5
             hue2 = np.random.random()
             r, g, b = self._hsv_fast(hue2, 1.0, 1.0)
-            self._dye[r_burst, c_burst] += np.array([r, g, b], dtype=np.float32) * 3
+            self._dye[r_burst, c_burst] += np.array([r, g, b], dtype=np.float32) * dye_rate * 1.5
 
         # Mid energy — side injection
         if mid > 0.2:
@@ -211,7 +215,30 @@ class FluidSim(Effect):
             self._vx[-2, side_y - 1:side_y + 2] -= mid * force_scale * 2
             hue3 = (self._hue_phase + 0.33) % 1.0
             r, g, b = self._hsv_fast(hue3, 0.8, mid)
-            self._dye[1, side_y - 1:side_y + 2] += np.array([r, g, b], dtype=np.float32)
+            self._dye[1, side_y - 1:side_y + 2] += np.array([r, g, b], dtype=np.float32) * dye_rate * 0.5
+
+        # Auto-injection: always keep fluid alive even without audio
+        self._auto_inject_timer -= dt
+        if self._auto_inject_timer <= 0:
+            self._auto_inject_timer = np.random.uniform(0.3, 1.0)
+            # Inject from bottom with upward force
+            ix = np.random.randint(1, w + 1)
+            region_x = slice(max(1, ix - 1), min(ix + 2, w + 1))
+            region_y = slice(max(1, bottom - 2), bottom + 1)
+            self._vy[region_x, region_y] -= force * 2
+            hue_auto = self._hue_phase % 1.0
+            r, g, b = self._hsv_fast(hue_auto, 1.0, 0.8)
+            self._dye[region_x, region_y] += np.array([r, g, b], dtype=np.float32) * dye_rate
+            # Also inject from sides occasionally
+            if np.random.random() < 0.4:
+                side = 1 if np.random.random() < 0.5 else w
+                sy = np.random.randint(h // 4 + 1, 3 * h // 4 + 1)
+                region_sy = slice(max(1, sy - 1), min(sy + 2, h + 1))
+                direction = 1.0 if side == 1 else -1.0
+                self._vx[side, region_sy] += direction * force * 1.5
+                hue_side = (self._hue_phase + 0.5) % 1.0
+                r, g, b = self._hsv_fast(hue_side, 0.9, 0.7)
+                self._dye[side, region_sy] += np.array([r, g, b], dtype=np.float32) * dye_rate * 0.8
 
         # Velocity step: diffuse (if needed) → advect → project
         tmp1, tmp2 = self._tmp1, self._tmp2
@@ -419,8 +446,8 @@ class WaveEquation(Effect):
     AUDIO_REQUIRES = ('level', 'bass', 'beat')
 
     PARAMS = [
-        type('P', (), {'label': 'Wave Speed', 'attr': 'wave_speed', 'lo': 0.1, 'hi': 1.0,
-                        'step': 0.05, 'default': 0.5})(),
+        type('P', (), {'label': 'Wave Speed', 'attr': 'wave_speed', 'lo': 0.02, 'hi': 1.0,
+                        'step': 0.02, 'default': 0.12})(),
         type('P', (), {'label': 'Damping', 'attr': 'damping', 'lo': 0.9, 'hi': 0.999,
                         'step': 0.001, 'default': 0.985})(),
         type('P', (), {'label': 'Color Cycle', 'attr': 'color_speed', 'lo': 0.0, 'hi': 1.0,
@@ -612,34 +639,45 @@ class Boids(Effect):
         dx = dx - w * np.round(dx / w)
         dist = np.sqrt(dx ** 2 + dy ** 2 + 1e-6)
 
-        # Separation: push away from nearby boids
-        sep_radius = max(w, h) * 0.15
+        # Separation: push away from nearby boids (strong, short range)
+        sep_radius = max(w, h) * 0.2
         sep_mask = (dist < sep_radius) & (dist > 0.01)
         sep_x = np.where(sep_mask, -dx / (dist ** 2 + 0.1), 0).sum(axis=1)
         sep_y = np.where(sep_mask, -dy / (dist ** 2 + 0.1), 0).sum(axis=1)
 
-        # Alignment: match velocity of nearby boids
-        align_radius = max(w, h) * 0.3
+        # Alignment: match velocity of nearby boids (medium range)
+        align_radius = max(w, h) * 0.35
         align_mask = (dist < align_radius) & (dist > 0.01)
         align_count = align_mask.sum(axis=1).clip(1)
         align_x = (np.where(align_mask, self._vx[np.newaxis, :], 0).sum(axis=1) / align_count) - self._vx
         align_y = (np.where(align_mask, self._vy[np.newaxis, :], 0).sum(axis=1) / align_count) - self._vy
 
-        # Cohesion: steer toward center of nearby boids
+        # Cohesion: steer toward center of nearby boids (weak, prevents collapse)
         coh_x = (np.where(align_mask, self._x[np.newaxis, :], 0).sum(axis=1) / align_count) - self._x
         coh_y = (np.where(align_mask, self._y[np.newaxis, :], 0).sum(axis=1) / align_count) - self._y
 
-        # Apply forces
-        self._vx += sep_x * 2.0 + align_x * 0.5 + coh_x * 0.3
-        self._vy += sep_y * 2.0 + align_y * 0.5 + coh_y * 0.3
+        # Apply forces — separation dominates to prevent collapse
+        self._vx += sep_x * 3.0 + align_x * 0.8 + coh_x * 0.1
+        self._vy += sep_y * 3.0 + align_y * 0.8 + coh_y * 0.1
 
-        # Speed limit
+        # Add gentle random wandering to prevent stagnation
+        self._vx += np.random.uniform(-0.5, 0.5, n).astype(np.float32)
+        self._vy += np.random.uniform(-0.5, 0.5, n).astype(np.float32)
+
+        # Speed limit with minimum speed (prevents stopping)
         max_speed = speed * (0.5 + level * 1.5)
+        min_speed = speed * 0.15
         v_mag = np.sqrt(self._vx ** 2 + self._vy ** 2 + 1e-6)
         too_fast = v_mag > max_speed
         scale = max_speed / v_mag
         self._vx[too_fast] *= scale[too_fast]
         self._vy[too_fast] *= scale[too_fast]
+        # Boost boids that are too slow
+        too_slow = v_mag < min_speed
+        if too_slow.any():
+            boost = min_speed / v_mag
+            self._vx[too_slow] *= boost[too_slow]
+            self._vy[too_slow] *= boost[too_slow]
 
         # Update positions
         self._x += self._vx * dt
