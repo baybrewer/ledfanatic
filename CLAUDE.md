@@ -6,29 +6,38 @@ LED pillar controller: Raspberry Pi + Teensy 4.1 + OctoWS2811.
 - **Pi**: FastAPI backend, phone UI, effects/media/audio, USB frame transport
 - **Teensy**: OctoWS2811 DMA output, packet handling, diagnostics
 - **Protocol**: Binary COBS-framed packets over USB Serial with CRC32
-- **Canvas**: Logical 10x172 RGB -> mapped to 5x344 electrical channels
+- **Layout**: Declarative YAML config → compiled mapping table → fast packer (3-layer architecture)
+- **Canvas**: Logical grid (width × height × RGB) → mapped to physical outputs via layout compiler
 
-## SSOT enforcement
-- `pi/config/pixel_map.yaml` — pixel map geometry SSOT (strips, scanlines, outputs, color order)
-- `pi/app/config/pixel_map.py` — pixel map data model, validation, compilation
-- `pi/config/hardware.yaml` — legacy physical layout reference (kept for Teensy config generation)
-- `teensy/firmware/include/config.h` — Teensy constants (regenerable via `pi/scripts/generate_teensy_config.py`)
-- `pi/app/models/protocol.py` — protocol packet types, payload schemas, constants
-- `pi/config/effects.yaml` — effect defaults and palettes (merged into renderer)
+## Layout system (rewrote 2026-04-26)
+- `pi/config/layout.yaml` — declarative LED geometry SSOT (outputs, segments, directions, offsets)
+- `pi/app/layout/schema.py` — data models: LayoutConfig, OutputConfig, LinearSegment, ExplicitSegment
+- `pi/app/layout/compiler.py` — validates config, compiles to CompiledLayout with forward/reverse LUTs + flat MappingEntry list
+- `pi/app/layout/packer.py` — iterates precomputed entries to build per-output byte buffers (O(pixel_count), no geometry logic at runtime)
+- `pi/app/layout/__init__.py` — public API: load_layout, save_layout, compile_layout, validate_layout, pack_frame, output_config_list
+- Per-segment color_order supported (overrides output-level default)
+- Renderer flips y-axis when origin is "bottom_left" (effects use screen coords, y=0 at top)
 
 ## Key modules
 - `pi/app/main.py` — entry point, lifecycle, startup/shutdown
 - `pi/app/api/server.py` — app factory and router composition
-- `pi/app/api/routes/` — route modules (system, scenes, brightness, media, audio, diagnostics, transport, ws)
+- `pi/app/api/routes/` — route modules (system, scenes, brightness, media, audio, diagnostics, transport, ws, layout, setup)
+- `pi/app/api/routes/layout.py` — layout CRUD, test-segment, segment-identify, strip-identify, LED probe
 - `pi/app/api/schemas.py` — Pydantic request/response models
 - `pi/app/api/auth.py` — centralized Bearer token auth (fail-closed)
-- `pi/app/core/renderer.py` — render loop, scene activation, effects config merge
+- `pi/app/core/renderer.py` — render loop, scene activation, test patterns (segment/strip identify, probe), y-flip for bottom_left origin
 - `pi/app/core/brightness.py` — brightness engine + solar automation (astral)
 - `pi/app/core/state.py` — debounced persistent state (mark_dirty/flush)
-- `pi/app/config/pixel_map.py` — pixel map data model, validation, compilation into LUTs
-- `pi/app/mapping/packer.py` — output packer (reverse LUT + color order swizzle)
 - `pi/app/transport/usb.py` — USB serial transport (lock-protected I/O)
+- `pi/app/effects/` — generative, audio-reactive, imported, tetris, fireworks, scrolltext
+- `pi/app/audio/adapter.py` — AudioCompatAdapter with resample_bands() for width-independent effects
 - `teensy/firmware/src/main.cpp` — Teensy firmware
+
+## Effects rules
+- **Never hardcode grid dimensions** in effects — use self.width/self.height
+- Audio bands must be resampled to grid width via `AudioCompatAdapter.resample_bands(bands, self.width)`
+- Effects render in screen coordinates (y=0 = top) — renderer handles y-flip for physical origin
+- Temporal smoothing (blend with previous frame) for fire/smooth effects
 
 ## Auth
 - Bearer token in `Authorization` header
@@ -55,13 +64,16 @@ code defaults < yaml config files < persisted state (state.json) < live API over
 ## Config files
 - `pi/config/system.yaml.example` — template (tracked, placeholders)
 - `pi/config/system.yaml` — real config (gitignored, contains secrets)
-- `pi/config/pixel_map.yaml` — pixel map geometry SSOT
+- `pi/config/layout.yaml` — LED layout geometry SSOT
 - `pi/config/hardware.yaml` — legacy physical layout reference
 - `pi/config/effects.yaml` — effect defaults, merged into renderer
 
 ## Deployment
 - **ALWAYS deploy after changes** — no local testing; the hardware is on the Pi. Never claim done without deploying first.
+- **NEVER edit Pi config files without explicit user permission** — the user's hardware layout is non-obvious
 - Deploy target: `jim@ledfanatic.local` (run `bash pi/scripts/deploy.sh ledfanatic.local`)
+- Config files live at `/opt/pillar/config/` on Pi — deploy script only copies code, NOT config
+- To push a new config: `scp` or `sudo cp /opt/pillar/src/config/X /opt/pillar/config/X`
 - Canonical source: `/opt/pillar/src/` (both setup.sh and deploy.sh use this)
 - `pip install -e /opt/pillar/src[audio,video]` in `/opt/pillar/venv/`
 - systemd runs `/opt/pillar/venv/bin/pillar` (port 80, not 8000)
@@ -79,7 +91,7 @@ PILLAR_DEV=1 python -m app.main  # starts on :8000
 ```bash
 cd pi
 source .venv/bin/activate
-PYTHONPATH=. pytest tests/ -v  # ~219 tests
+PYTHONPATH=. pytest tests/ -v
 ```
 
 ## Deploying to Pi
@@ -88,13 +100,18 @@ pi/scripts/setup.sh            # first time (creates user, venv, hotspot, sudoer
 pi/scripts/deploy.sh ledfanatic.local  # updates (rsync + pip install + restart)
 ```
 
+## UI pages
+- Main controller: `http://ledfanatic.local/` — tabs: Live, Effects, Media, Audio, Sim, Game, System
+- LED Probe: `http://ledfanatic.local/static/probe.html` — keyboard-driven single-LED test tool
+- Tetris controller: Game tab in main UI (also standalone at `/static/tetris.html`)
+
 ## Rules
 - Pi owns rendering; Teensy owns LED output
-- Never hardcode geometry — use pixel_map.yaml / CompiledPixelMap
+- Never hardcode geometry — use layout.yaml / CompiledLayout
+- Never hardcode audio band count — use resample_bands()
 - 60 FPS default target
 - Scene activation goes through renderer.activate_scene() for all types
 - Serial I/O protected by asyncio.Lock; send_frame uses asyncio.to_thread
 - State saves are debounced (mark_dirty + periodic flush), force_save on shutdown
 - state.json and media metadata.json carry schema_version for migration safety
-- `docs/current-contracts.md` is the canonical human-readable contract reference
-- `docs/MASTER_SPEC.md` is a consolidated copy of planning docs — do not edit independently
+- `_on_teensy_connect` callback references `deps.compiled_layout` (not captured local) so layout API changes propagate to reconnects
