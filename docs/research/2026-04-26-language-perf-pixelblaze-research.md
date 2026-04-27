@@ -1,6 +1,6 @@
 # Research Brief: Language Performance, Pixelblaze Architecture, and Optimization Opportunities
 
-**Date:** 2026-04-26 (revised after Codex review)
+**Date:** 2026-04-26 (rev 3 — incorporating two rounds of Codex review)
 **Project:** pillar-controller (Raspberry Pi 4 + Teensy 4.1 + OctoWS2811)
 **Status:** Research — pending measured benchmarks on live hardware
 
@@ -10,13 +10,22 @@
 
 pillar-controller is a Python 3.14 LED animation system running on Raspberry Pi 4:
 - FastAPI backend, NumPy-vectorized effects, 60 FPS target
-- **Layout is dynamic** — geometry is defined in `layout.yaml`, compiled at startup, and can be changed at runtime via the layout API. All performance figures in this document are layout-dependent.
+- **Layout is dynamic** — geometry is defined in `layout.yaml`, compiled at startup, and can be changed at runtime via the layout API (`pi/app/api/routes/layout.py`). The renderer hot-swaps compiled layouts via `renderer.apply_layout()`.
 - Checked-in default layout: 10x83 = 830 pixels, 5 output channels (`pi/config/layout.yaml`)
 - The Pi's active layout may differ from the checked-in default (persisted via layout API)
-- Transport: USB serial (USB CDC) to Teensy 4.1 for DMA LED output
+- Transport: USB CDC (virtual serial) to Teensy 4.1 for DMA LED output
 - Per-frame budget at 60 FPS: 16.67ms
 
-**Important: Performance numbers in this document are estimates unless marked as "measured."** Before acting on optimization priorities, run `python -m tools.bench_effects` on the Pi with the active layout to get real numbers. See "Prerequisite: Establish Measured Baseline" below.
+### Measurement Disclaimer
+
+**All performance numbers in this document are ESTIMATES unless explicitly labeled "(measured)."** They are based on:
+- General ARM Cortex-A72 benchmark literature for language comparisons (section 1)
+- Code inspection and complexity analysis for per-component estimates (sections 2, roadmap)
+- Pixelblaze throughput claims from manufacturer documentation (section 4)
+
+**None of these numbers were measured on the live Pi with the active layout.** Before acting on any optimization priority, the prerequisite benchmark step must be completed. Estimates marked with `~` are order-of-magnitude guides, not precise measurements.
+
+---
 
 ## Questions for Analysis
 
@@ -26,24 +35,25 @@ pillar-controller is a Python 3.14 LED animation system running on Raspberry Pi 
 
 **Estimated benchmark ratios on RPi 4 (ARM Cortex-A72, 1.5GHz):**
 
+These are literature-derived estimates, not measured on our hardware. Actual ratios will vary with compiler flags, memory layout, and workload shape.
+
 | Workload | Pure Python | NumPy (Python) | C++ (-O2) | Ratio (Python:C++) |
 |----------|------------|----------------|-----------|---------------------|
 | Tight math loop (1M iterations) | ~800ms | N/A | ~5ms | ~160x |
-| Array ops on 830-element buffer | ~1ms | ~0.01ms | ~0.008ms | NumPy ~= C++ |
-| Sine over grid-sized array | ~8ms | ~0.05ms | ~0.04ms | NumPy ~= C++ |
-| Per-pixel loop with branching | ~1.5ms (830px) | Can't vectorize | ~0.01ms | ~150x |
+| Array ops on N-element buffer | ~O(N) ms | ~O(N) us | ~O(N) us | NumPy ~= C++ |
+| Per-pixel loop with branching | ~O(N) ms | Can't vectorize | ~O(N) us | ~150x |
 | Particle update (600 objects) | ~5-8ms | Partial help | ~0.05ms | ~100-160x |
 
 **Key ratios:**
-- Pure Python vs C++: **100-200x slower** for computation-heavy loops
-- NumPy-Python vs C++: **1-2x** (NumPy internals ARE compiled C/Fortran with SIMD)
+- Pure Python vs C++: **~100-200x slower** for computation-heavy loops
+- NumPy-Python vs C++: **~1-2x** (NumPy internals ARE compiled C/Fortran with SIMD)
 - The gap ONLY matters for code that can't be vectorized (particle systems, game logic, per-pixel branching)
 
 **Why this matters for pillar-controller:**
 - Most effects already use NumPy vectorization = already at ~C speed
 - `pack_frame()` is a pure-Python loop over `layout.entries` — cost scales linearly with pixel count
 - Particle effects (fireworks: up to 600 sparks, pure Python loops) have non-vectorized hot paths
-- The web server, config handling, state management — these are NOT bottlenecks regardless of language
+- The web server, config handling, state management — NOT bottlenecks regardless of language
 
 ### 2. How hard would it be to convert this Python project to C++?
 
@@ -54,8 +64,8 @@ pillar-controller is a Python 3.14 LED animation system running on Raspberry Pi 
 | FastAPI web server | ~200 lines | Crow/Drogon (~400 lines) | HIGH | None (not a bottleneck) |
 | asyncio event loop | Built-in | libuv/Boost.Asio | HIGH | None (not a bottleneck) |
 | NumPy effects | ~2000 lines | Eigen/manual SIMD | VERY HIGH | Minimal (NumPy is already C) |
-| pack_frame() | 38 lines | C extension | LOW | Measurable at higher pixel counts |
-| USB CDC transport | 352 lines | libusb/termios | MODERATE | Unlikely (see transport note) |
+| pack_frame() | 38 lines | C extension | LOW | Scales with pixel count |
+| USB CDC transport | 352 lines | libusb/termios | MODERATE | Unlikely meaningful |
 | YAML config/state | 300 lines | yaml-cpp + nlohmann/json | MODERATE | None |
 | Brightness/solar | 232 lines | Manual implementation | MODERATE | None |
 | Effect base classes | 200 lines | Virtual classes + templates | MODERATE | None |
@@ -77,18 +87,13 @@ pillar-controller is a Python 3.14 LED animation system running on Raspberry Pi 
 | **pillar-controller** | Python + NumPy | RPi 4 + Teensy | Split architecture |
 | **FadeCandy** | C (firmware) + any (host) | Teensy 3 | Similar split to ours |
 | **Art-Net/sACN** | Various | Various | Protocol-based, language-agnostic |
-| **LED Lab** | Rust | RPi/Linux | Newer, gaining traction |
 
 **Analysis:**
 - C++ dominates on **microcontrollers** (no OS, direct hardware, tight timing)
-- On a **full Linux SBC like RPi**, the language matters less because:
-  - The OS handles scheduling, I/O, networking
-  - NumPy provides C-speed math
-  - The real bottleneck is I/O and effect complexity, not language overhead
-- **Rust** is viable but the LED ecosystem is small
-- **Python + NumPy** is the sweet spot for RPi when paired with C firmware (Teensy)
+- On a **full Linux SBC like RPi**, the language matters less because the OS handles scheduling/I/O and NumPy provides C-speed math
+- **Python + NumPy** is the pragmatic choice for RPi when paired with C firmware (Teensy)
 
-**Our architecture (Python Pi + C++ Teensy) is the correct split.** The Pi handles orchestration, effects, UI, audio, media. The Teensy handles timing-critical DMA output. This is exactly what FadeCandy and similar projects do.
+**Our architecture (Python Pi + C++ Teensy) follows the same split as FadeCandy and similar projects.** Pi handles orchestration, effects, UI, audio, media. Teensy handles timing-critical DMA output.
 
 ### 4. What does Pixelblaze use?
 
@@ -104,7 +109,6 @@ pillar-controller is a Python 3.14 LED animation system running on Raspberry Pi 
 ```javascript
 // Pixelblaze pattern example
 export function render(index) {
-  // Called once per pixel per frame
   h = index / pixelCount + wave(time(0.1))
   s = 1
   v = wave(index / pixelCount * 2 + time(0.05))
@@ -116,11 +120,12 @@ export function render(index) {
 - `render3D(index, x, y, z)` for 3D mapped installations
 - Built-in functions: `time()`, `wave()`, `triangle()`, `sin()`, `random()`, `hsv()`, `rgb()`
 
-**Performance:**
+**Claimed performance (manufacturer):**
 - 48,000 pixels/sec throughput
-- At 830 pixels (our default layout): ~58 FPS — comparable to ours
+- At 830 pixels: ~58 FPS
 - At 5,000 pixels: ~9.6 FPS
-- At larger layouts our system should pull ahead significantly
+
+**Comparison caveat:** Direct throughput comparisons between Pixelblaze and pillar-controller are approximate. The systems differ in hardware (ESP32 vs RPi 4), programming model (per-pixel bytecode VM vs grid-wide NumPy), workload complexity (simple expressions vs full Python effects), and measurement methodology (manufacturer claim vs our unmeasured estimates). Directionally, pillar-controller should be competitive or faster at moderate pixel counts due to the much more powerful CPU, but this has not been verified with controlled benchmarks.
 
 **Live editing:**
 - Web-based editor with syntax highlighting
@@ -133,41 +138,41 @@ export function render(index) {
 - Patterns receive normalized coordinates (0-1) in render2D/render3D
 - Decouples physical layout from pattern logic
 
-**Key insight:** Pixelblaze achieves a lot on a 240MHz microcontroller with no OS by using a custom bytecode VM. Its strength is simplicity and accessibility, not raw performance.
+### 5. What can we learn from Pixelblaze?
 
-### 5. What can we learn from Pixelblaze to optimize this repo?
+**Rough feature comparison** (not a performance benchmark — different hardware and workloads):
 
-**Applicable Pixelblaze patterns:**
-
-| Pixelblaze Feature | Our Status | Opportunity |
-|-------------------|------------|-------------|
-| Bytecode-compiled effects | NumPy vectorization (faster) | Expression engine for user effects (feature, not perf) |
-| Per-pixel render model | Grid-based NumPy ops (better for Pi) | Already superior |
-| Coordinate mapping | layout.yaml SSOT | Already implemented |
+| Pixelblaze Feature | Our Status | Notes |
+|-------------------|------------|-------|
+| Bytecode-compiled effects | NumPy vectorization | Different approach, both effective for their platforms |
+| Per-pixel render model | Grid-based NumPy ops | Our approach better suited to Pi's SIMD/cache architecture |
+| Coordinate mapping | layout.yaml SSOT | Already implemented, and our layout is runtime-mutable |
 | Live preview | WebSocket frame streaming | Already implemented |
 | Per-effect sliders | PARAMS system per effect | Already implemented |
-| Pattern sharing (.epe) | Not implemented | LOW priority — nice-to-have |
+| Pattern sharing (.epe) | Not implemented | Potential feature |
 | Instant recompilation | Hot reload via API | Could improve dev workflow |
-| Built-in math functions | NumPy + custom helpers | Already have perlin_grid, pal_color_grid |
+| Built-in math functions | NumPy + custom helpers | perlin_grid, pal_color_grid, etc. |
 
-**What Pixelblaze does that we DON'T (and could benefit from):**
+**What Pixelblaze does that we don't (and could benefit from):**
 
 1. **User-editable expression engine** — Let users write simple formulas that generate patterns without Python knowledge. Pixelblaze's killer feature.
 
 2. **Pattern library/export format** — Portable effect definitions that can be shared.
 
-3. **Coordinate-space normalization** — Pixelblaze normalizes all coordinates to 0-1 range. See Priority 5 below for nuances.
+3. **Coordinate-space normalization** — Pixelblaze normalizes all coordinates to 0-1 range. See "Product Ideas" section below for nuances.
 
-**What Pixelblaze does that we already do BETTER:**
+**What we do that Pixelblaze doesn't:**
 
-1. **Audio reactivity** — Pixelblaze has basic sound via sensor board; we have full FFT, beat detection, BPM
-2. **Media playback** — Pixelblaze can't play video/images; we can
-3. **Complex effects** — Particle systems, tetris, fireworks — impossible in Pixelblaze's simple expression model
-4. **Dynamic layout** — Our layout is runtime-configurable via API; Pixelblaze's pixel map is static JSON
+1. **Audio reactivity** — We have full FFT, beat detection, BPM; Pixelblaze has basic sound via sensor board
+2. **Media playback** — Video/image support; Pixelblaze can't play media
+3. **Complex effects** — Particle systems, tetris, fireworks
+4. **Dynamic layout** — Runtime-configurable via API; Pixelblaze's pixel map is static JSON
 
 ---
 
-## Optimization Roadmap
+## Performance Optimization Roadmap
+
+All items in this section are about making existing features faster. Priorities are tentative until the prerequisite baseline is established.
 
 ### Prerequisite: Establish Measured Baseline (MUST DO FIRST)
 
@@ -183,81 +188,100 @@ Before acting on any optimization, we need real numbers from the live hardware w
 
 3. **Report layout in benchmark output.** `bench_effects.py` should print the active layout dimensions and pixel count alongside timing results.
 
+4. **Define benchmark procedure.** Document: hardware (RPi model, cooling), active layout (dimensions, pixel count), effect params (defaults or specified), frame count, whether audio was active, and whether results are warm or cold.
+
 **Effort:** 2-4 hours
 
-### Priority 1: Effect-Level Profiling in the Render Loop (HIGH impact, LOW effort)
+### Priority 1: Effect-Level Profiling in the Render Loop
 
 - **Target:** All effects, live on Pi
 - **Approach:** Add timing measurement around `effect.render()` in `renderer._render_frame()`, expose via render state and the status API
 - **Why:** Can't optimize what you can't measure. The benchmark harness is offline; we also need live per-frame timing to identify real-world bottlenecks (audio interaction, cache misses, etc.)
 - **Effort:** 1-2 hours
 
-### Priority 2: Vectorize Particle Systems (CONDITIONAL — measure first)
+### Priority 2: Vectorize Particle Systems (CONDITIONAL)
 
 - **Target:** SRFireworks, Spark effects
 - **Current:** Python for-loops over up to 600 particle objects
 - **Approach:** Store particles as NumPy structured arrays; update positions/velocities with vectorized ops
-- **Gating condition:** Only pursue if measured render time for these effects exceeds 5ms on the active layout. Codex review measured SRFireworks at only 0.31ms avg on the 10x83 layout — the Python loop overhead may be negligible at 830 pixels. At higher pixel counts or larger particle pools this changes.
+- **Gating condition:** Only pursue if measured render time for these effects exceeds 5ms on the active layout. Preliminary Codex offline measurement showed SRFireworks at 0.31ms avg on 10x83 — but this needs verification on Pi hardware with audio active.
 - **Effort:** 4-8 hours per effect
 
-### Priority 3: Cython pack_frame() (CONDITIONAL — scales with pixel count)
+### Priority 3: Cython pack_frame() (CONDITIONAL)
 
 - **Target:** `pi/app/layout/packer.py`
 - **Current:** Pure Python loop over `layout.entries`
-- **Gating condition:** Cost is ~0.32ms at 830 pixels. At 5,000+ pixels it would be ~2ms+. Only worth doing if targeting larger layouts.
+- **Gating condition:** Cost scales linearly with pixel count. At 830 pixels it may be negligible. At 5,000+ pixels it becomes meaningful. Only worth doing if targeting larger layouts or if measured cost is significant.
 - **Approach:** Cython or ctypes C extension for the tight loop
 - **Effort:** 2-4 hours
 
-### Priority 4: Media Frame Cache Keyed by Geometry (MEDIUM impact, LOW effort)
+### Priority 4: Media Frame Cache Keyed by Geometry
 
 - **Target:** `pi/app/effects/media_playback.py`
-- **Problem (identified by review):** The original proposal ("pre-compute resized frames at import time") is wrong for a dynamic-layout system. `MediaPlayback` is instantiated with the current renderer's width/height, and layout can change at runtime via the setup screen. Pre-computing at import time would cache the wrong geometry.
-- **Correct approach:** Cache resized frames keyed by `(item_id, frame_idx, width, height, fit_mode)`. When layout changes, the effect is recreated with new dimensions and the old cache entries naturally become unused. Do NOT couple cache shape to module import time.
+- **Current behavior:** `MediaPlayback` is instantiated with the current renderer's width/height and resizes frames on cache miss using PIL LANCZOS. Cache is per-instance, bounded to 120 frames.
+- **Correct approach:** Cache resized frames keyed by `(item_id, frame_idx, width, height, fit_mode)`. When layout changes, the effect is recreated with new dimensions and old cache entries naturally become unused. Do NOT couple cache shape to module import time — layout is mutable at runtime.
 - **Effort:** 2-3 hours
 
-### Priority 5: Coordinate Normalization for Effects (FEATURE — needs design)
+### Priority 5: Transport Throughput Measurement (LIKELY NO ACTION)
 
-- **Pixelblaze-inspired:** Normalize coordinates to 0-1 so effects are resolution-independent
-- **Problem (identified by review):** The base `Effect` class doesn't expose coordinates at all — effects receive only `width`, `height`, `params`, and render state. Separately, the setup/geometry pipeline already uses normalized UV coordinates for spatial fitting (`pi/app/setup/geometry.py`). These are different schemas for different concerns (calibration vs. rendering vs. effect authoring).
-- **Required design work:** Define where the canonical coordinate system lives. Options:
-  - A) Base class provides `self.normalized_x` / `self.normalized_y` grids (simple, effects opt in)
-  - B) Effects receive a `CoordinateContext` object with both pixel and normalized coords
-  - C) Renderer pre-computes normalized grids from the compiled layout and passes to effects
-- **Risk:** Mixing physical-layout calibration, logical matrix rendering, and effect authoring into one abstraction. Keep these concerns separate.
-- **Effort:** Needs spec before estimating
-
-### Priority 6: Expression Engine for User Effects (FEATURE, HIGH effort)
-
-- **Pixelblaze-inspired:** Let users write formulas like `hsv(x/width + wave(t), 1, 1)`
-- **Approach:** Sandboxed DSL compiled to NumPy ops (or use `numexpr`)
-- **Expected impact:** New feature, not performance
-- **Effort:** 2-4 weeks
-
-### Priority 7: Transport Throughput Measurement (LOW priority — replaced baud rate)
-
-- **Original proposal was wrong (identified by review):** The brief proposed raising USB "baud rate" from 115200 to 230400 for frame savings. However, the Teensy connection is USB CDC (virtual serial), not a raw UART link. The baud rate parameter passed to `pyserial` may be advisory or irrelevant — USB CDC transfers at USB 2.0 Full Speed (12 Mbps) regardless of the configured baud.
-- **Correct approach:** If transport latency is a concern, measure end-to-end throughput: `frame_packet()` + `serial.write()` + firmware consume time. Profile whether `asyncio.to_thread()` context-switch overhead is significant. Only then decide if transport changes are warranted.
-- **Likely conclusion:** Transport is not a meaningful bottleneck. The ~1-3ms observed includes context-switch overhead and OS scheduling, not wire time.
+- **Context:** The Teensy connection is USB CDC (virtual serial), not raw UART. The baud rate parameter in `pyserial` is advisory — USB CDC transfers at USB 2.0 Full Speed (12 Mbps) regardless. The estimated ~1-3ms transport cost includes `asyncio.to_thread()` context-switch overhead and OS scheduling.
+- **Approach:** If transport appears in profiling as significant, measure end-to-end: `frame_packet()` + `serial.write()` + firmware consume time.
+- **Likely conclusion:** Not a meaningful bottleneck. Measure, then move on.
 - **Effort:** 1 hour to measure; likely no action needed
 
 ### NOT Recommended: Full C++ Rewrite
 - **Effort:** 3-6 person-months
 - **Gain:** Marginal on current layout
 - **Risk:** Lose rapid prototyping, Python ecosystem, ease of adding effects
-- **Verdict:** The current architecture is correct. Optimize hot paths surgically, guided by measurements.
+- **Verdict:** Optimize hot paths surgically, guided by measurements.
 
 ---
 
-## Questions for Codex Review (Round 2)
+## Pixelblaze-Inspired Product Ideas
 
-1. **Effect registry SSOT:** What's the cleanest way to unify effect registration so `main.py`, `bench_effects.py`, and the catalog API all consume the same source? A central `EFFECT_REGISTRY` dict in a dedicated module? Or a decorator-based auto-registration pattern?
+These are new features, not performance work. They belong in a separate decision process (user value, effort, priority against other product work).
 
-2. **For the particle system vectorization:** What's the best NumPy pattern for variable-count particles with per-particle state (position, velocity, color, lifetime)? Structured arrays vs. parallel flat arrays?
+### Idea A: User-Editable Expression Engine
+
+- **Pixelblaze-inspired:** Let users write formulas like `hsv(x/width + wave(t), 1, 1)`
+- **Approach:** Sandboxed DSL compiled to NumPy ops (or use `numexpr`)
+- **Open questions:** Is `numexpr` sufficient or does this need a custom parser/compiler? What's the security model for user-submitted code?
+- **Effort:** 2-4 weeks
+
+### Idea B: Coordinate Normalization for Effects
+
+- **Pixelblaze-inspired:** Effects receive normalized (0-1) coordinates so they are resolution-independent
+- **Status: NEEDS DESIGN SPEC — not actionable as written.**
+- **The problem:** The codebase has three coordinate-related concerns that must not be conflated:
+  1. **Physical layout calibration** — `pi/app/setup/geometry.py` uses normalized UV coordinates for spatial fitting. This is hardware calibration.
+  2. **Logical matrix rendering** — effects currently receive `width` and `height` and construct their own grids. This is the rendering coordinate space.
+  3. **Effect authoring convenience** — Pixelblaze normalizes to 0-1 so patterns work at any resolution. This is an authoring aid.
+- **Required before proceeding:** A design spec that defines:
+  - Which coordinate space is the SSOT for effect rendering
+  - Whether normalization is opt-in (effects that want it construct normalized grids) or opt-out (base class provides normalized grids, effects use raw if they need to)
+  - How this interacts with dynamic layout changes (coordinate grids must update when layout changes)
+  - That calibration UV space (geometry.py) remains separate from rendering coordinate space
+- **Risk:** Mixing these concerns creates an abstraction that serves none of them well.
+
+### Idea C: Pattern Library / Export Format
+
+- **Pixelblaze-inspired:** .epe-like portable effect definitions
+- **Low effort, medium value**
+- **Approach:** JSON format with effect name, params, preview thumbnail
+- **Effort:** 1-2 days
+
+---
+
+## Questions for Codex Review (Round 3)
+
+1. **Effect registry SSOT:** What's the cleanest way to unify effect registration so `main.py`, `bench_effects.py`, and the catalog API all consume the same source?
+
+2. **For the particle system vectorization:** What's the best NumPy pattern for variable-count particles with per-particle state (position, velocity, color, lifetime)?
 
 3. **For pack_frame() optimization:** Cython vs ctypes vs cffi vs a small C extension module — what's the best approach for a single tight loop on RPi 4?
 
-4. **Expression engine:** Is `numexpr` sufficient for a Pixelblaze-style expression language, or does this need a custom parser/compiler? What's the security model for user-submitted code?
+4. **Coordinate normalization design:** Given three existing coordinate concerns (layout calibration, logical matrix, effect authoring), what's the right abstraction boundary?
 
-5. **Coordinate normalization:** Given three existing coordinate concerns (layout calibration, logical matrix, effect authoring), what's the right abstraction boundary? Should effects even know about coordinates, or should the base class just provide normalized grids?
+5. **Scaling to 5,000+ pixels:** Which components hit their scaling limits first?
 
-6. **Scaling to 5,000+ pixels:** What changes would be needed? Which components hit their scaling limits first?
+6. **Are there architectural patterns from WLED or FastLED** (beyond Pixelblaze) worth adopting?
