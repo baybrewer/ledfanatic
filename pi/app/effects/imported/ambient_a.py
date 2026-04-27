@@ -141,12 +141,12 @@ class AuroraBorealis(Effect):
     x_g = np.arange(cols, dtype=np.float64)[:, np.newaxis]  # (cols, 1)
     y_g = np.arange(rows, dtype=np.float64)[np.newaxis, :]  # (1, rows)
 
-    curtain = (perlin_grid(x_g * 0.3, y_g * 0.008 * wave, tt * 0.5) + 1.0) * 0.5
-    w = (np.sin(y_g * 0.02 * wave + tt * 2 + x_g * 0.8) + 1) * 0.5
-    shimmer = (perlin_grid(x_g * 0.5 + 100, y_g * 0.02, tt * 3) + 1.0) * 0.5 * 0.4
+    curtain = (perlin_grid(y_g * 0.3, x_g * 0.008 * wave, tt * 0.5) + 1.0) * 0.5
+    w = (np.sin(x_g * 0.02 * wave + tt * 2 + y_g * 0.8) + 1) * 0.5
+    shimmer = (perlin_grid(y_g * 0.5 + 100, x_g * 0.02, tt * 3) + 1.0) * 0.5 * 0.4
     v = np.clip(curtain * w * bright + shimmer * curtain * bright * 0.5, 0.0, 1.0)
 
-    hue = curtain * 0.8 + 0.1
+    hue = curtain * 0.8 + 0.1  # rotated 90deg: x/y swapped in curtain/wave/shimmer
     rgb = pal_color_grid(pal_idx % NUM_PALETTES, hue)
     self.buf.data = (rgb.astype(np.float32) * v[..., np.newaxis]).clip(0, 255).astype(np.uint8)
 

@@ -34,7 +34,7 @@ DEFAULT_CONFIG = {
     'timezone': 'America/Los_Angeles',
   },
   'solar': {
-    'night_brightness': 0.15,
+    'night_brightness': 0.60,
     'dawn_offset_minutes': 30,
     'dusk_offset_minutes': 30,
   },

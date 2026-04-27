@@ -28,7 +28,7 @@ brightness:
     lon: -122.4194
     timezone: "America/Los_Angeles"
   solar:
-    night_brightness: 0.3
+    night_brightness: 0.6
     dawn_offset_minutes: 30
     dusk_offset_minutes: 30
 
