@@ -641,43 +641,47 @@ class Boids(Effect):
             self._vx += np.random.uniform(-3, 3, n).astype(np.float32)
             self._vy += np.random.uniform(-3, 3, n).astype(np.float32)
 
-        # Compute pairwise distances (vectorized)
-        dx = self._x[:, np.newaxis] - self._x[np.newaxis, :]  # (n, n)
+        # Pairwise distances (vectorized)
+        dx = self._x[:, np.newaxis] - self._x[np.newaxis, :]
         dy = self._y[:, np.newaxis] - self._y[np.newaxis, :]
-        # Wrap x for cylindrical topology
-        dx = dx - w * np.round(dx / w)
+        dx = dx - w * np.round(dx / w)  # cylindrical wrap
         dist = np.sqrt(dx ** 2 + dy ** 2 + 1e-6)
 
-        # Separation: push away from nearby boids (strong, short range)
-        sep_radius = h * 0.08
-        sep_mask = (dist < sep_radius) & (dist > 0.01)
-        sep_x = np.where(sep_mask, -dx / (dist ** 2 + 0.1), 0).sum(axis=1)
-        sep_y = np.where(sep_mask, -dy / (dist ** 2 + 0.1), 0).sum(axis=1)
+        # Separation — LINEAR falloff so it works at range (not 1/dist²)
+        # Force = (radius - dist) / radius, pointing away
+        sep_radius = h * 0.25
+        sep_strength = (sep_radius - dist) / sep_radius
+        sep_strength = np.clip(sep_strength, 0, 1)
+        np.fill_diagonal(sep_strength, 0)
+        # Direction: normalize dx/dy by dist
+        nx = dx / dist
+        ny = dy / dist
+        np.fill_diagonal(nx, 0)
+        np.fill_diagonal(ny, 0)
+        self._vx -= (nx * sep_strength).sum(axis=1) * 8.0
+        self._vy -= (ny * sep_strength).sum(axis=1) * 8.0
 
-        # Alignment: match velocity of nearby boids only (no cohesion — it
-        # causes collapse on narrow grids where everyone sees everyone)
-        align_radius = h * 0.15
+        # Weak alignment — only very close neighbors, keeps some flocking feel
+        align_radius = h * 0.06
         align_mask = (dist < align_radius) & (dist > 0.01)
         align_count = align_mask.sum(axis=1).clip(1)
         align_x = (np.where(align_mask, self._vx[np.newaxis, :], 0).sum(axis=1) / align_count) - self._vx
         align_y = (np.where(align_mask, self._vy[np.newaxis, :], 0).sum(axis=1) / align_count) - self._vy
+        self._vx += align_x * 0.3
+        self._vy += align_y * 0.3
 
-        # Apply flocking forces
-        self._vx += sep_x * 4.0 + align_x * 1.0
-        self._vy += sep_y * 4.0 + align_y * 1.0
+        # Edge avoidance — smooth steering away from walls
+        margin = h * 0.2
+        top_dist = self._y
+        bot_dist = (h - 1) - self._y
+        self._vy += np.where(top_dist < margin, speed * 0.2 * (1 - top_dist / margin), 0)
+        self._vy -= np.where(bot_dist < margin, speed * 0.2 * (1 - bot_dist / margin), 0)
 
-        # Edge avoidance — steer away from top/bottom walls
-        margin = h * 0.15
-        near_top = self._y < margin
-        near_bot = self._y > (h - margin)
-        self._vy[near_top] += speed * 0.15
-        self._vy[near_bot] -= speed * 0.15
+        # Random wandering — each boid drifts in a slowly-changing direction
+        self._vx += np.random.uniform(-2.0, 2.0, n).astype(np.float32)
+        self._vy += np.random.uniform(-2.0, 2.0, n).astype(np.float32)
 
-        # Random wandering keeps things alive
-        self._vx += np.random.uniform(-1.0, 1.0, n).astype(np.float32)
-        self._vy += np.random.uniform(-1.0, 1.0, n).astype(np.float32)
-
-        # Speed limit with minimum speed
+        # Speed: clamp to [min_speed, max_speed]
         max_speed = speed * (0.5 + level * 1.5)
         min_speed = speed * 0.3
         v_mag = np.sqrt(self._vx ** 2 + self._vy ** 2 + 1e-6)
@@ -688,20 +692,16 @@ class Boids(Effect):
         if too_slow.any():
             self._vx[too_slow] *= (min_speed / v_mag[too_slow])
             self._vy[too_slow] *= (min_speed / v_mag[too_slow])
+        v_mag = np.sqrt(self._vx ** 2 + self._vy ** 2 + 1e-6)
 
-        # Update positions
-        self._x += self._vx * dt
-        self._y += self._vy * dt
-
-        # Wrap x (cylindrical), bounce y
-        self._x = self._x % w
-        bounce_top = self._y < 0
-        bounce_bot = self._y >= h
-        self._y[bounce_top] = -self._y[bounce_top]
-        self._vy[bounce_top] = np.abs(self._vy[bounce_top])
-        self._y[bounce_bot] = 2 * (h - 1) - self._y[bounce_bot]
-        self._vy[bounce_bot] = -np.abs(self._vy[bounce_bot])
-        self._y = np.clip(self._y, 0, h - 1)
+        # Move
+        self._x = (self._x + self._vx * dt) % w
+        self._y = np.clip(self._y + self._vy * dt, 0, h - 1)
+        # Bounce off top/bottom
+        bounce_top = self._y <= 0.01
+        bounce_bot = self._y >= h - 1.01
+        self._vy[bounce_top] = abs(self._vy[bounce_top])
+        self._vy[bounce_bot] = -abs(self._vy[bounce_bot])
 
         # Render — each boid is a point with color based on velocity direction
         elapsed = self.elapsed(t)
@@ -769,8 +769,8 @@ class FluidJets(FluidSim):
     PARAMS = [
         type('P', (), {'label': 'Gain', 'attr': 'gain', 'lo': 0.5, 'hi': 5.0,
                         'step': 0.1, 'default': 2.0})(),
-        type('P', (), {'label': 'Jet Force', 'attr': 'force', 'lo': 2.0, 'hi': 30.0,
-                        'step': 1.0, 'default': 12.0})(),
+        type('P', (), {'label': 'Jet Force', 'attr': 'force', 'lo': 5.0, 'hi': 80.0,
+                        'step': 2.0, 'default': 40.0})(),
         type('P', (), {'label': 'Pulse Rate', 'attr': 'pulse_rate', 'lo': 0.5, 'hi': 5.0,
                         'step': 0.1, 'default': 1.5})(),
         type('P', (), {'label': 'Dye Intensity', 'attr': 'dye_rate', 'lo': 0.5, 'hi': 5.0,
@@ -841,32 +841,31 @@ class FluidJets(FluidSim):
             if side == 'bottom':
                 jx = int(pos_frac * w) + 1
                 jx = max(1, min(jx, pw - 2))
-                rx = slice(max(1, jx - 1), min(jx + 2, pw - 1))
-                ry = slice(max(1, ph - 3), ph - 1)
+                rx = slice(max(1, jx - 2), min(jx + 3, pw - 1))
+                ry = slice(max(1, ph - 4), ph - 1)
                 self._vy[rx, ry] += vy_dir * jet_force
-                # Add slight sideways wobble for vortex generation
-                self._vx[rx, ry] += np.random.uniform(-jet_force * 0.3, jet_force * 0.3)
+                self._vx[rx, ry] += np.random.uniform(-jet_force * 0.4, jet_force * 0.4)
             elif side == 'top':
                 jx = int(pos_frac * w) + 1
                 jx = max(1, min(jx, pw - 2))
-                rx = slice(max(1, jx - 1), min(jx + 2, pw - 1))
-                ry = slice(1, 3)
+                rx = slice(max(1, jx - 2), min(jx + 3, pw - 1))
+                ry = slice(1, 4)
                 self._vy[rx, ry] += vy_dir * jet_force
-                self._vx[rx, ry] += np.random.uniform(-jet_force * 0.3, jet_force * 0.3)
+                self._vx[rx, ry] += np.random.uniform(-jet_force * 0.4, jet_force * 0.4)
             elif side == 'left':
                 jy = int(pos_frac * h) + 1
                 jy = max(1, min(jy, ph - 2))
-                rx = slice(1, 3)
-                ry = slice(max(1, jy - 1), min(jy + 2, ph - 1))
+                rx = slice(1, 4)
+                ry = slice(max(1, jy - 2), min(jy + 3, ph - 1))
                 self._vx[rx, ry] += vx_dir * jet_force
-                self._vy[rx, ry] += np.random.uniform(-jet_force * 0.3, jet_force * 0.3)
+                self._vy[rx, ry] += np.random.uniform(-jet_force * 0.4, jet_force * 0.4)
             elif side == 'right':
                 jy = int(pos_frac * h) + 1
                 jy = max(1, min(jy, ph - 2))
-                rx = slice(pw - 3, pw - 1)
-                ry = slice(max(1, jy - 1), min(jy + 2, ph - 1))
+                rx = slice(pw - 4, pw - 1)
+                ry = slice(max(1, jy - 2), min(jy + 3, ph - 1))
                 self._vx[rx, ry] += vx_dir * jet_force
-                self._vy[rx, ry] += np.random.uniform(-jet_force * 0.3, jet_force * 0.3)
+                self._vy[rx, ry] += np.random.uniform(-jet_force * 0.4, jet_force * 0.4)
 
             # Inject colored dye
             rv, gv, bv = self._hsv_fast(hue, 1.0, 1.0)
