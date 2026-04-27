@@ -903,47 +903,58 @@ class FluidJets(FluidSim):
 #  Smoke Rings — continuous upward jets creating vortex pairs
 # ──────────────────────────────────────────────────────────────────────
 
-class SmokeRings(FluidSim):
-    """Continuous upward jets that form vortex rings as they rise.
+class SmokeRings(Effect):
+    """Vortex-particle smoke rings rising from jets at the bottom.
 
-    Each jet injects momentum and dye from the bottom. The velocity
-    shear at the jet edges rolls up into counter-rotating vortex pairs
-    (2D cross-sections of toroidal smoke rings). Jets are evenly spaced
-    and each gets its own slowly-cycling hue.
+    Uses Biot-Savart vortex dynamics: each puff is a counter-rotating
+    vortex pair that self-propels upward. The vortex cores drag dye
+    particles with them, creating visible swirling rings.
+    No Navier-Stokes solver — pure vortex math, always correct.
     """
 
     CATEGORY = "simulation"
     DISPLAY_NAME = "Smoke Rings"
-    DESCRIPTION = "Upward jets that roll into vortex rings as they rise"
+    DESCRIPTION = "Vortex-pair smoke rings rising from bottom jets"
     PALETTE_SUPPORT = False
+
+    # Vortex dtype: position, strength (circulation), color, age
+    _VTX_DTYPE = np.dtype([
+        ('x', np.float32), ('y', np.float32),
+        ('gamma', np.float32),  # circulation: + = CCW, - = CW
+        ('r', np.float32), ('g', np.float32), ('b', np.float32),
+        ('age', np.float32),
+    ])
 
     PARAMS = [
         type('P', (), {'label': 'Jets', 'attr': 'num_jets', 'lo': 1, 'hi': 5,
                         'step': 1, 'default': 2})(),
-        type('P', (), {'label': 'Impulse', 'attr': 'force', 'lo': 5.0, 'hi': 100.0,
-                        'step': 2.0, 'default': 40.0})(),
+        type('P', (), {'label': 'Strength', 'attr': 'strength', 'lo': 5.0, 'hi': 80.0,
+                        'step': 1.0, 'default': 30.0})(),
         type('P', (), {'label': 'Interval', 'attr': 'interval', 'lo': 1.0, 'hi': 10.0,
                         'step': 0.5, 'default': 3.0})(),
-        type('P', (), {'label': 'Dye Intensity', 'attr': 'dye_rate', 'lo': 0.5, 'hi': 5.0,
-                        'step': 0.1, 'default': 2.5})(),
+        type('P', (), {'label': 'Ring Size', 'attr': 'ring_size', 'lo': 0.5, 'hi': 4.0,
+                        'step': 0.1, 'default': 1.5})(),
         type('P', (), {'label': 'Color Cycle', 'attr': 'color_speed', 'lo': 0.0, 'hi': 1.0,
                         'step': 0.05, 'default': 0.15})(),
-        type('P', (), {'label': 'Viscosity', 'attr': 'viscosity', 'lo': 0.0, 'hi': 0.002,
-                        'step': 0.0001, 'default': 0.0005})(),
-        type('P', (), {'label': 'Pressure Iters', 'attr': 'pressure_iters', 'lo': 1, 'hi': 20,
-                        'step': 1, 'default': 2})(),
+        type('P', (), {'label': 'Trail', 'attr': 'trail', 'lo': 0.8, 'hi': 0.99,
+                        'step': 0.01, 'default': 0.95})(),
     ]
 
     def __init__(self, width, height, params=None):
         super().__init__(width, height, params)
+        self._vortices = np.empty(0, dtype=self._VTX_DTYPE)
         self._jet_timers = []
         self._puff_count = 0
+        self._prev_frame = None
         self._rebuild_jets()
+        # Precompute grid coordinates for velocity field
+        self._gx = np.arange(width, dtype=np.float32)[:, np.newaxis]
+        self._gy = np.arange(height, dtype=np.float32)[np.newaxis, :]
+        self._last_t = None
 
     def _rebuild_jets(self):
         n = int(self.params.get('num_jets', 2))
         interval = self.params.get('interval', 3.0)
-        # Stagger timers so jets don't all fire at once
         self._jet_timers = [i * interval / max(n, 1) for i in range(n)]
 
     def update_params(self, params: dict):
@@ -953,80 +964,157 @@ class SmokeRings(FluidSim):
         if new_n != old_n:
             self._rebuild_jets()
 
+    @staticmethod
+    def _hsv_fast(h, s, v):
+        h = h % 1.0
+        i = int(h * 6)
+        f = h * 6 - i
+        p = v * (1 - s)
+        q = v * (1 - s * f)
+        t = v * (1 - s * (1 - f))
+        if i == 0: return v, t, p
+        if i == 1: return q, v, p
+        if i == 2: return p, v, t
+        if i == 3: return p, q, v
+        if i == 4: return t, p, v
+        return v, p, q
+
     def render(self, t: float, state) -> np.ndarray:
         if self._last_t is None:
             self._last_t = t
         dt = min(t - self._last_t, 0.05)
         self._last_t = t
 
-        force = self.params.get('force', 8.0)
+        strength = self.params.get('strength', 30.0)
         interval = self.params.get('interval', 3.0)
-        dye_rate = self.params.get('dye_rate', 2.5)
+        ring_size = self.params.get('ring_size', 1.5)
         color_speed = self.params.get('color_speed', 0.15)
+        trail = self.params.get('trail', 0.95)
         num_jets = int(self.params.get('num_jets', 2))
 
         w, h = self.width, self.height
-        pw, ph = w + 2, h + 2
         elapsed = self.elapsed(t)
 
-        # Each jet fires a single sharp impulse then waits
+        # Fire new vortex pairs from jets
         for ji in range(num_jets):
+            if ji >= len(self._jet_timers):
+                self._jet_timers.append(0.0)
             self._jet_timers[ji] -= dt
             if self._jet_timers[ji] > 0:
                 continue
 
-            # FIRE — one sharp puff
             self._jet_timers[ji] = interval
-
-            jet_x_frac = (ji + 0.5) / num_jets
-            jx = int(jet_x_frac * w) + 1
-            jx = max(2, min(jx, pw - 3))
-
-            # Upward impulse — center column strong, edges weaker (creates shear)
-            ry = slice(ph - 4, ph - 1)
-            self._vy[jx, ry] -= force          # center: strong up
-            self._vy[jx - 1, ry] -= force * 0.3  # left edge: weaker
-            self._vy[jx + 1, ry] -= force * 0.3  # right edge: weaker
-            # Explicit opposite-sign vx on edges to seed vortex pair
-            self._vx[jx - 1, ry] -= force * 0.4
-            self._vx[jx + 1, ry] += force * 0.4
-
-            # Inject dye
             self._puff_count += 1
-            hue = (self._puff_count * 0.15 + ji / max(num_jets, 1) + elapsed * color_speed) % 1.0
+
+            # Jet x position
+            jet_x = (ji + 0.5) / num_jets * w
+
+            # Create vortex pair — left has +gamma (CCW), right has -gamma (CW)
+            # This pair induces upward velocity on each other (Biot-Savart)
+            hue = (self._puff_count * 0.18 + ji / max(num_jets, 1) + elapsed * color_speed) % 1.0
             rv, gv, bv = self._hsv_fast(hue, 0.9, 1.0)
-            rx = slice(jx - 1, jx + 2)
-            self._dye[rx, ry] += np.array([rv, gv, bv], dtype=np.float32) * dye_rate
 
-        # Velocity damping — gentle so puffs travel far but don't accumulate
-        self._vx *= 0.995
-        self._vy *= 0.995
+            pair = np.empty(2, dtype=self._VTX_DTYPE)
+            pair[0] = (jet_x - ring_size, h - 1, strength, rv, gv, bv, 0)
+            pair[1] = (jet_x + ring_size, h - 1, -strength, rv, gv, bv, 0)
 
-        # Navier-Stokes solver
-        tmp1, tmp2 = self._tmp1, self._tmp2
-        visc = self.params.get('viscosity', 0.0005)
-        if visc > 0.00001:
-            tmp1[:] = self._vx
-            tmp2[:] = self._vy
-            self._diffuse(1, self._vx, tmp1, visc, dt)
-            self._diffuse(2, self._vy, tmp2, visc, dt)
-            self._project(self._vx, self._vy)
+            if len(self._vortices) == 0:
+                self._vortices = pair
+            else:
+                self._vortices = np.concatenate([self._vortices, pair])
 
-        tmp1[:] = self._vx
-        tmp2[:] = self._vy
-        self._advect(1, self._vx, tmp1, tmp1, tmp2, dt)
-        self._advect(2, self._vy, tmp2, tmp1, tmp2, dt)
-        self._project(self._vx, self._vy)
+        v = self._vortices
+        if len(v) == 0:
+            frame = np.zeros((w, h, 3), dtype=np.uint8)
+            if self._prev_frame is not None:
+                frame = (self._prev_frame * trail).astype(np.uint8)
+            self._prev_frame = frame
+            return frame
 
-        # Advect dye
-        self._dye_tmp[:] = self._dye
-        self._advect_3d(self._dye, self._dye_tmp, self._vx, self._vy, dt)
+        # Age vortices and remove old ones
+        v['age'] += dt
+        max_age = interval * 4
+        alive = v['age'] < max_age
+        self._vortices = v[alive]
+        v = self._vortices
 
-        # Slow decay
-        self._dye *= 0.996
+        if len(v) == 0:
+            frame = np.zeros((w, h, 3), dtype=np.uint8)
+            if self._prev_frame is not None:
+                frame = (self._prev_frame * trail).astype(np.uint8)
+            self._prev_frame = frame
+            return frame
 
-        frame = np.clip(self._dye[1:-1, 1:-1] * 255, 0, 255).astype(np.uint8)
-        return frame
+        # Advect vortices by velocity induced by ALL other vortices (Biot-Savart)
+        nv = len(v)
+        vx_vel = np.zeros(nv, dtype=np.float32)
+        vy_vel = np.zeros(nv, dtype=np.float32)
+
+        softening = 0.5  # prevents singularity when vortices are close
+        for i in range(nv):
+            dx = v['x'] - v[i]['x']
+            dy = v['y'] - v[i]['y']
+            # Wrap x cylindrically
+            dx = dx - w * np.round(dx / w)
+            r2 = dx ** 2 + dy ** 2 + softening ** 2
+            # Biot-Savart: velocity induced by vortex j on point i
+            # vx = -gamma_j * dy / (2*pi*r²)
+            # vy =  gamma_j * dx / (2*pi*r²)
+            inv_r2 = v['gamma'] / (2 * math.pi * r2)
+            vx_vel[i] = np.sum(-dy * inv_r2) - v[i]['gamma'] * 0  # exclude self
+            vy_vel[i] = np.sum(dx * inv_r2)
+            # Self-contribution is zero (dx=dy=0 → no effect with softening)
+
+        # Move vortices
+        v['x'] += vx_vel * dt
+        v['y'] += vy_vel * dt
+        # Wrap x
+        v['x'] = v['x'] % w
+
+        # Compute velocity field on grid from all vortices for dye visualization
+        # Grid points: self._gx (w,1), self._gy (1,h)
+        field_vx = np.zeros((w, h), dtype=np.float32)
+        field_vy = np.zeros((w, h), dtype=np.float32)
+
+        for i in range(len(v)):
+            dx = self._gx - v[i]['x']
+            dy = self._gy - v[i]['y']
+            dx = dx - w * np.round(dx / w)
+            r2 = dx ** 2 + dy ** 2 + softening ** 2
+            inv = v[i]['gamma'] / (2 * math.pi * r2)
+            field_vx -= dy * inv
+            field_vy += dx * inv
+
+        # Render: draw colored blobs at vortex positions + velocity-based glow
+        frame = np.zeros((w, h, 3), dtype=np.float32)
+
+        # Draw each vortex as a soft gaussian blob
+        fade = 1.0 - np.clip(v['age'] / max_age, 0, 1)
+        for i in range(len(v)):
+            dx = self._gx - v[i]['x']
+            dy = self._gy - v[i]['y']
+            dx = dx - w * np.round(dx / w)
+            r2 = dx ** 2 + dy ** 2
+            blob = np.exp(-r2 / (ring_size * 1.5) ** 2) * fade[i]
+            frame[:, :, 0] += blob * v[i]['r']
+            frame[:, :, 1] += blob * v[i]['g']
+            frame[:, :, 2] += blob * v[i]['b']
+
+        # Add velocity-field visualization (subtle swirl lines)
+        speed = np.sqrt(field_vx ** 2 + field_vy ** 2)
+        swirl = np.clip(speed * 0.02, 0, 0.3)
+        frame[:, :, 0] += swirl * 0.5
+        frame[:, :, 1] += swirl * 0.5
+        frame[:, :, 2] += swirl * 0.7
+
+        result = np.clip(frame * 255, 0, 255).astype(np.uint8)
+
+        # Trail for persistence
+        if self._prev_frame is not None:
+            result = np.maximum(result, (self._prev_frame * trail).astype(np.uint8))
+        self._prev_frame = result.copy()
+
+        return result
 
 
 # ──────────────────────────────────────────────────────────────────────

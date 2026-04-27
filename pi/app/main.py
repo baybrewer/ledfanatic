@@ -307,12 +307,11 @@ def main():
     imported=True,
     params=(
       {'name': 'num_jets', 'label': 'Jets', 'min': 1, 'max': 5, 'step': 1, 'default': 2, 'type': 'slider'},
-      {'name': 'force', 'label': 'Impulse', 'min': 5.0, 'max': 100.0, 'step': 2.0, 'default': 40.0, 'type': 'slider'},
+      {'name': 'strength', 'label': 'Strength', 'min': 5.0, 'max': 80.0, 'step': 1.0, 'default': 30.0, 'type': 'slider'},
       {'name': 'interval', 'label': 'Interval', 'min': 1.0, 'max': 10.0, 'step': 0.5, 'default': 3.0, 'type': 'slider'},
-      {'name': 'dye_rate', 'label': 'Dye Intensity', 'min': 0.5, 'max': 5.0, 'step': 0.1, 'default': 2.5, 'type': 'slider'},
+      {'name': 'ring_size', 'label': 'Ring Size', 'min': 0.5, 'max': 4.0, 'step': 0.1, 'default': 1.5, 'type': 'slider'},
       {'name': 'color_speed', 'label': 'Color Cycle', 'min': 0.0, 'max': 1.0, 'step': 0.05, 'default': 0.15, 'type': 'slider'},
-      {'name': 'viscosity', 'label': 'Viscosity', 'min': 0.0, 'max': 0.002, 'step': 0.0001, 'default': 0.0005, 'type': 'slider'},
-      {'name': 'pressure_iters', 'label': 'Pressure Iters', 'min': 1, 'max': 20, 'step': 1, 'default': 2, 'type': 'slider'},
+      {'name': 'trail', 'label': 'Trail', 'min': 0.8, 'max': 0.99, 'step': 0.01, 'default': 0.95, 'type': 'slider'},
     ),
   ))
 
