@@ -127,8 +127,9 @@ class Spectrum(Effect):
     self._drop_flash *= 0.96
 
     adjusted_gain = gain * (1 + audio.buildup * 0.5)
+    num_bands = len(audio.bands)
     for i in range(cols):
-      target = audio.bands[i] * rows * adjusted_gain
+      target = audio.bands[i % num_bands] * rows * adjusted_gain
       self._heights[i] = max(target, self._heights[i] * decay)
       h = int(self._heights[i])
       if h > self._peaks[i]:
@@ -837,8 +838,9 @@ class Spectrogram(Effect):
       if self._drop_flash > 0.3:
         row = [1.0] * cols  # white flash line on drop
       else:
+        num_bands = len(audio.bands)
         for i in range(cols):
-          row[i] = clampf(audio.bands[i] * adjusted_gain)
+          row[i] = clampf(audio.bands[i % num_bands] * adjusted_gain)
       self._grid.append(row)
 
     # Vectorized render: convert grid to numpy, palette lookup, brightness
