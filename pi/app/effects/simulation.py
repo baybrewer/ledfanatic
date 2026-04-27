@@ -928,8 +928,8 @@ class SmokeRings(Effect):
     PARAMS = [
         type('P', (), {'label': 'Jets', 'attr': 'num_jets', 'lo': 1, 'hi': 5,
                         'step': 1, 'default': 2})(),
-        type('P', (), {'label': 'Strength', 'attr': 'strength', 'lo': 5.0, 'hi': 80.0,
-                        'step': 1.0, 'default': 30.0})(),
+        type('P', (), {'label': 'Strength', 'attr': 'strength', 'lo': 10.0, 'hi': 200.0,
+                        'step': 5.0, 'default': 80.0})(),
         type('P', (), {'label': 'Interval', 'attr': 'interval', 'lo': 1.0, 'hi': 10.0,
                         'step': 0.5, 'default': 3.0})(),
         type('P', (), {'label': 'Ring Size', 'attr': 'ring_size', 'lo': 0.5, 'hi': 4.0,
@@ -1011,10 +1011,11 @@ class SmokeRings(Effect):
             hue = (self._puff_count * 0.18 + ji / max(num_jets, 1) + elapsed * color_speed) % 1.0
             rv, gv, bv = self._hsv_fast(hue, 0.9, 1.0)
 
-            # Create vortex pair
+            # Create vortex pair — left CW (-), right CCW (+)
+            # This induces upward (negative y) velocity on each other
             pair = np.empty(2, dtype=self._VTX_DTYPE)
-            pair[0] = (jet_x - ring_size, h - 1, strength, rv, gv, bv, 0)
-            pair[1] = (jet_x + ring_size, h - 1, -strength, rv, gv, bv, 0)
+            pair[0] = (jet_x - ring_size, h - 1, -strength, rv, gv, bv, 0)
+            pair[1] = (jet_x + ring_size, h - 1, strength, rv, gv, bv, 0)
             if len(self._vortices) == 0:
                 self._vortices = pair
             else:
@@ -1045,7 +1046,7 @@ class SmokeRings(Effect):
         if len(v) > 0:
             # Advect vortices by mutual Biot-Savart induction
             nv = len(v)
-            softening = 0.8
+            softening = 0.2
 
             # Vectorized pairwise: compute all-pairs velocity
             vx_pos = v['x'][:, np.newaxis]  # (nv, 1)
