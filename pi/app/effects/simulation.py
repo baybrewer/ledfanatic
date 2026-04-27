@@ -945,8 +945,9 @@ class SmokeRings(Effect):
         self._vortices = np.empty(0, dtype=self._VTX_DTYPE)
         self._jet_timers = []
         self._puff_count = 0
-        self._prev_frame = None
         self._rebuild_jets()
+        # Dye field advected by vortex velocity
+        self._dye = np.zeros((width, height, 3), dtype=np.float32)
         # Precompute grid coordinates for velocity field
         self._gx = np.arange(width, dtype=np.float32)[:, np.newaxis]
         self._gy = np.arange(height, dtype=np.float32)[np.newaxis, :]
@@ -995,7 +996,7 @@ class SmokeRings(Effect):
         w, h = self.width, self.height
         elapsed = self.elapsed(t)
 
-        # Fire new vortex pairs from jets
+        # Fire new vortex pairs + inject dye at source
         for ji in range(num_jets):
             if ji >= len(self._jet_timers):
                 self._jet_timers.append(0.0)
@@ -1006,115 +1007,103 @@ class SmokeRings(Effect):
             self._jet_timers[ji] = interval
             self._puff_count += 1
 
-            # Jet x position
             jet_x = (ji + 0.5) / num_jets * w
-
-            # Create vortex pair — left has +gamma (CCW), right has -gamma (CW)
-            # This pair induces upward velocity on each other (Biot-Savart)
             hue = (self._puff_count * 0.18 + ji / max(num_jets, 1) + elapsed * color_speed) % 1.0
             rv, gv, bv = self._hsv_fast(hue, 0.9, 1.0)
 
+            # Create vortex pair
             pair = np.empty(2, dtype=self._VTX_DTYPE)
             pair[0] = (jet_x - ring_size, h - 1, strength, rv, gv, bv, 0)
             pair[1] = (jet_x + ring_size, h - 1, -strength, rv, gv, bv, 0)
-
             if len(self._vortices) == 0:
                 self._vortices = pair
             else:
                 self._vortices = np.concatenate([self._vortices, pair])
 
+            # Inject dye blob at source
+            ix = int(jet_x)
+            for dx in range(-2, 3):
+                for dy in range(-3, 1):
+                    px = (ix + dx) % w
+                    py = min(max(h - 1 + dy, 0), h - 1)
+                    dist = (dx * dx + dy * dy) ** 0.5
+                    intensity = max(0, 1.0 - dist / 3.0)
+                    self._dye[px, py, 0] += rv * intensity * 1.5
+                    self._dye[px, py, 1] += gv * intensity * 1.5
+                    self._dye[px, py, 2] += bv * intensity * 1.5
+
         v = self._vortices
-        if len(v) == 0:
-            frame = np.zeros((w, h, 3), dtype=np.uint8)
-            if self._prev_frame is not None:
-                frame = (self._prev_frame * trail).astype(np.uint8)
-            self._prev_frame = frame
-            return frame
+        max_age = interval * 5
 
-        # Age vortices and remove old ones
-        v['age'] += dt
-        max_age = interval * 4
-        alive = v['age'] < max_age
-        self._vortices = v[alive]
-        v = self._vortices
+        if len(v) > 0:
+            # Age and cull
+            v['age'] += dt
+            alive = (v['age'] < max_age) & (v['y'] > -5) & (v['y'] < h + 5)
+            self._vortices = v[alive]
+            v = self._vortices
 
-        if len(v) == 0:
-            frame = np.zeros((w, h, 3), dtype=np.uint8)
-            if self._prev_frame is not None:
-                frame = (self._prev_frame * trail).astype(np.uint8)
-            self._prev_frame = frame
-            return frame
+        if len(v) > 0:
+            # Advect vortices by mutual Biot-Savart induction
+            nv = len(v)
+            softening = 0.8
 
-        # Advect vortices by velocity induced by ALL other vortices (Biot-Savart)
-        nv = len(v)
-        vx_vel = np.zeros(nv, dtype=np.float32)
-        vy_vel = np.zeros(nv, dtype=np.float32)
-
-        softening = 0.5  # prevents singularity when vortices are close
-        for i in range(nv):
-            dx = v['x'] - v[i]['x']
-            dy = v['y'] - v[i]['y']
-            # Wrap x cylindrically
+            # Vectorized pairwise: compute all-pairs velocity
+            vx_pos = v['x'][:, np.newaxis]  # (nv, 1)
+            vy_pos = v['y'][:, np.newaxis]
+            dx = vx_pos - v['x'][np.newaxis, :]  # (nv, nv)
+            dy = vy_pos - v['y'][np.newaxis, :]
             dx = dx - w * np.round(dx / w)
             r2 = dx ** 2 + dy ** 2 + softening ** 2
-            # Biot-Savart: velocity induced by vortex j on point i
-            # vx = -gamma_j * dy / (2*pi*r²)
-            # vy =  gamma_j * dx / (2*pi*r²)
-            inv_r2 = v['gamma'] / (2 * math.pi * r2)
-            vx_vel[i] = np.sum(-dy * inv_r2) - v[i]['gamma'] * 0  # exclude self
-            vy_vel[i] = np.sum(dx * inv_r2)
-            # Self-contribution is zero (dx=dy=0 → no effect with softening)
+            inv = v['gamma'][np.newaxis, :] / (2 * math.pi * r2)
+            np.fill_diagonal(inv, 0)  # no self-induction
+            vel_x = (-dy * inv).sum(axis=1)
+            vel_y = (dx * inv).sum(axis=1)
 
-        # Move vortices
-        v['x'] += vx_vel * dt
-        v['y'] += vy_vel * dt
-        # Wrap x
-        v['x'] = v['x'] % w
+            v['x'] = (v['x'] + vel_x * dt) % w
+            v['y'] += vel_y * dt
 
-        # Compute velocity field on grid from all vortices for dye visualization
-        # Grid points: self._gx (w,1), self._gy (1,h)
-        field_vx = np.zeros((w, h), dtype=np.float32)
-        field_vy = np.zeros((w, h), dtype=np.float32)
+            # Compute velocity field on grid
+            field_vx = np.zeros((w, h), dtype=np.float32)
+            field_vy = np.zeros((w, h), dtype=np.float32)
 
-        for i in range(len(v)):
-            dx = self._gx - v[i]['x']
-            dy = self._gy - v[i]['y']
-            dx = dx - w * np.round(dx / w)
-            r2 = dx ** 2 + dy ** 2 + softening ** 2
-            inv = v[i]['gamma'] / (2 * math.pi * r2)
-            field_vx -= dy * inv
-            field_vy += dx * inv
+            for i in range(len(v)):
+                dx_g = self._gx - v[i]['x']
+                dy_g = self._gy - v[i]['y']
+                dx_g = dx_g - w * np.round(dx_g / w)
+                r2_g = dx_g ** 2 + dy_g ** 2 + softening ** 2
+                inv_g = v[i]['gamma'] / (2 * math.pi * r2_g)
+                field_vx -= dy_g * inv_g
+                field_vy += dx_g * inv_g
 
-        # Render: draw colored blobs at vortex positions + velocity-based glow
-        frame = np.zeros((w, h, 3), dtype=np.float32)
+            # Semi-Lagrangian advect dye by velocity field
+            # Trace each grid point backward through velocity
+            src_x = self._gx - field_vx * dt
+            src_y = self._gy - field_vy * dt
 
-        # Draw each vortex as a soft gaussian blob
-        fade = 1.0 - np.clip(v['age'] / max_age, 0, 1)
-        for i in range(len(v)):
-            dx = self._gx - v[i]['x']
-            dy = self._gy - v[i]['y']
-            dx = dx - w * np.round(dx / w)
-            r2 = dx ** 2 + dy ** 2
-            blob = np.exp(-r2 / (ring_size * 1.5) ** 2) * fade[i]
-            frame[:, :, 0] += blob * v[i]['r']
-            frame[:, :, 1] += blob * v[i]['g']
-            frame[:, :, 2] += blob * v[i]['b']
+            # Clamp and wrap
+            src_x = src_x % w
+            src_y = np.clip(src_y, 0, h - 1.001)
 
-        # Add velocity-field visualization (subtle swirl lines)
-        speed = np.sqrt(field_vx ** 2 + field_vy ** 2)
-        swirl = np.clip(speed * 0.02, 0, 0.3)
-        frame[:, :, 0] += swirl * 0.5
-        frame[:, :, 1] += swirl * 0.5
-        frame[:, :, 2] += swirl * 0.7
+            # Bilinear interpolation
+            x0 = src_x.astype(np.int32) % w
+            y0 = src_y.astype(np.int32)
+            x1 = (x0 + 1) % w
+            y1 = np.clip(y0 + 1, 0, h - 1)
+            fx = src_x - src_x.astype(np.int32)
+            fy = src_y - y0
 
-        result = np.clip(frame * 255, 0, 255).astype(np.uint8)
+            fx3 = fx[:, :, np.newaxis]
+            fy3 = fy[:, :, np.newaxis]
+            old_dye = self._dye.copy()
+            self._dye = (
+                (1 - fx3) * ((1 - fy3) * old_dye[x0, y0] + fy3 * old_dye[x0, y1]) +
+                fx3 * ((1 - fy3) * old_dye[x1, y0] + fy3 * old_dye[x1, y1])
+            )
 
-        # Trail for persistence
-        if self._prev_frame is not None:
-            result = np.maximum(result, (self._prev_frame * trail).astype(np.uint8))
-        self._prev_frame = result.copy()
+        # Gentle decay
+        self._dye *= trail
 
-        return result
+        return np.clip(self._dye * 255, 0, 255).astype(np.uint8)
 
 
 # ──────────────────────────────────────────────────────────────────────
