@@ -212,7 +212,7 @@ def frame_packet(data: bytes) -> bytes:
   return cobs_encode(data) + b'\x00'
 
 
-def build_hello_payload(app_name: str = "pillar-pi", app_version: str = "1.0.0") -> bytes:
+def build_hello_payload(app_name: str = "ledfanatic-pi", app_version: str = "1.0.0") -> bytes:
   name_bytes = app_name.encode('utf-8')[:32].ljust(32, b'\x00')
   ver_bytes = app_version.encode('utf-8')[:16].ljust(16, b'\x00')
   return name_bytes + ver_bytes

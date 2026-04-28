@@ -1,6 +1,6 @@
-# Pillar Controller
+# LED Fanatic
 
-LED pillar controller: Raspberry Pi + Teensy 4.1 + OctoWS2811.
+LED controller: Raspberry Pi + Teensy 4.1 + OctoWS2811.
 
 ## Architecture
 - **Pi**: FastAPI backend, phone UI, effects/media/audio, USB frame transport
@@ -81,11 +81,11 @@ code defaults < yaml config files < persisted state (state.json) < live API over
 - **ALWAYS deploy after changes** — no local testing; the hardware is on the Pi. Never claim done without deploying first.
 - **NEVER edit Pi config files without explicit user permission** — the user's hardware layout is non-obvious
 - Deploy target: `jim@ledfanatic.local` (run `bash pi/scripts/deploy.sh ledfanatic.local`)
-- Config files live at `/opt/pillar/config/` on Pi — deploy script only copies code, NOT config
-- To push a new config: `scp` or `sudo cp /opt/pillar/src/config/X /opt/pillar/config/X`
-- Canonical source: `/opt/pillar/src/` (both setup.sh and deploy.sh use this)
-- `pip install -e /opt/pillar/src[audio,video]` in `/opt/pillar/venv/`
-- systemd runs `/opt/pillar/venv/bin/pillar` (port 80, not 8000)
+- Config files live at `/opt/ledfanatic/config/` on Pi — deploy script only copies code, NOT config
+- To push a new config: `scp` or `sudo cp /opt/ledfanatic/src/config/X /opt/ledfanatic/config/X`
+- Canonical source: `/opt/ledfanatic/src/` (both setup.sh and deploy.sh use this)
+- ``pip install -e /opt/ledfanatic/src[audio,video]`` in `/opt/ledfanatic/venv/`
+- systemd runs `/opt/ledfanatic/venv/bin/ledfanatic` (port 80, not 8000)
 - Hotspot provisioned by setup.sh from system.yaml network config
 
 ## Running locally (dev)
@@ -93,7 +93,7 @@ code defaults < yaml config files < persisted state (state.json) < live API over
 cd pi
 python -m venv .venv && source .venv/bin/activate
 pip install -e ".[dev]"
-PILLAR_DEV=1 python -m app.main  # starts on :8000
+LEDFANATIC_DEV=1 python -m app.main  # starts on :8000
 ```
 
 ## Running tests

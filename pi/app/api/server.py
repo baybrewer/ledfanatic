@@ -43,7 +43,7 @@ def create_app(
     config_dir=None,
 ) -> FastAPI:
 
-    app = FastAPI(title="Pillar Controller", version="1.0.0")
+    app = FastAPI(title="LED Fanatic", version="1.0.0")
 
     max_upload_bytes = (
         config.get('transport', {}).get('max_upload_mb', 50) * 1024 * 1024

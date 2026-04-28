@@ -3,9 +3,9 @@ requires = ["setuptools>=68.0", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "pillar-controller"
+name = "ledfanatic"
 version = "1.1.0"
-description = "LED Pillar Controller — Raspberry Pi application"
+description = "LED Fanatic — Raspberry Pi LED controller"
 requires-python = ">=3.11"
 dependencies = [
   "fastapi>=0.104",
@@ -28,4 +28,4 @@ dev = ["pytest>=7.0", "pytest-asyncio>=0.23", "httpx>=0.25"]
 include = ["app*"]
 
 [project.scripts]
-pillar = "app.main:main"
+ledfanatic = "app.main:main"

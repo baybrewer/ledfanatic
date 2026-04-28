@@ -126,7 +126,7 @@ class BrightnessEngine:
   def _get_location_info(self) -> LocationInfo:
     loc = self._config['location']
     return LocationInfo(
-      name="pillar",
+      name="ledfanatic",
       region="",
       timezone=loc['timezone'],
       latitude=loc['lat'],

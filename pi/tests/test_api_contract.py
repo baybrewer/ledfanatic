@@ -339,7 +339,7 @@ class TestAuthenticatedBehavior:
         with patch('subprocess.Popen') as mock_popen:
             resp = client.post("/api/system/restart-app", headers=auth_header)
             assert resp.status_code == 200
-            mock_popen.assert_called_with(["sudo", "systemctl", "restart", "pillar"])
+            mock_popen.assert_called_with(["sudo", "systemctl", "restart", "ledfanatic"])
 
     def test_media_play_not_found(self, client, auth_header):
         resp = client.post("/api/media/play/nonexistent", headers=auth_header)

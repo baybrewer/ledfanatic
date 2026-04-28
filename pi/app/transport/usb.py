@@ -95,7 +95,7 @@ class TeensyTransport:
     self._last_config_ack = None  # Force CONFIG resend on next connect
 
   async def _handshake(self) -> bool:
-    hello_payload = build_hello_payload("pillar-pi", "1.0.0")
+    hello_payload = build_hello_payload("ledfanatic-pi", "1.0.0")
     packet = build_packet(PacketType.HELLO, hello_payload)
     framed = frame_packet(packet)
 

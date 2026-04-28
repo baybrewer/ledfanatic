@@ -6,7 +6,7 @@ set -euo pipefail
 
 PI_HOST="${1:-ledfanatic.local}"
 PI_USER="jim"
-PI_PATH="/opt/pillar"
+PI_PATH="/opt/ledfanatic"
 SRC_PATH="${PI_PATH}/src"
 REPO_DIR="$(cd "$(dirname "$0")/../.." && pwd)"
 
@@ -25,6 +25,6 @@ rsync -avz --delete \
 # Reinstall package and restart
 ssh "${PI_USER}@${PI_HOST}" "\
   ${PI_PATH}/venv/bin/pip install -e ${SRC_PATH}[audio,video] && \
-  sudo systemctl restart pillar"
+  sudo systemctl restart ledfanatic"
 
 echo "Deployed and restarted."

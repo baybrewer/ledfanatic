@@ -1,5 +1,5 @@
 """
-Main entry point for the Pillar Controller application.
+Main entry point for the LED Fanatic application.
 """
 
 import asyncio
@@ -25,19 +25,19 @@ from .config.spatial_map import load_spatial_map
 from .preview.service import PreviewService
 from .effects.catalog import EffectCatalogService, EffectMeta
 
-DEV_MODE = os.environ.get('PILLAR_DEV', '').strip() == '1'
+DEV_MODE = os.environ.get('LEDFANATIC_DEV', '').strip() == '1'
 
 
 def _resolve_paths():
   """Return (config_dir, media_dir, cache_dir, log_dir) based on environment."""
-  if DEV_MODE or not Path("/opt/pillar").exists():
+  if DEV_MODE or not Path("/opt/ledfanatic").exists():
     base = Path(__file__).parent.parent
     return base / "config", base / "media", base / "cache", base / "logs"
   return (
-    Path("/opt/pillar/config"),
-    Path("/opt/pillar/media"),
-    Path("/opt/pillar/cache"),
-    Path("/opt/pillar/logs"),
+    Path("/opt/ledfanatic/config"),
+    Path("/opt/ledfanatic/media"),
+    Path("/opt/ledfanatic/cache"),
+    Path("/opt/ledfanatic/logs"),
   )
 
 
@@ -48,7 +48,7 @@ def _setup_logging(log_dir: Path):
     format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
     handlers=[
       logging.StreamHandler(sys.stdout),
-      logging.FileHandler(log_dir / "pillar.log"),
+      logging.FileHandler(log_dir / "ledfanatic.log"),
     ],
   )
 
@@ -71,7 +71,7 @@ def main():
   config_dir, media_dir, cache_dir, log_dir = _resolve_paths()
   _setup_logging(log_dir)
   logger = logging.getLogger(__name__)
-  logger.info(f"Starting Pillar Controller (dev={DEV_MODE})")
+  logger.info(f"Starting LED Fanatic (dev={DEV_MODE})")
 
   config = _load_config(config_dir)
   sys_conf = config.get('system', {})
@@ -196,7 +196,7 @@ def main():
     name='scrolling_text',
     label='Scrolling Text',
     group='generative',
-    description='Scroll a message up the pillar',
+    description='Scroll a message across the display',
     imported=True,
     params=(
       {'name': 'speed', 'label': 'Speed', 'min': 0.1, 'max': 5.0, 'step': 0.1, 'default': 1.0, 'type': 'slider'},

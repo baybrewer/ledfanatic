@@ -20,7 +20,7 @@ class ScrollingText(Effect):
 
     CATEGORY = "generative"
     DISPLAY_NAME = "Scrolling Text"
-    DESCRIPTION = "Scroll a message up the pillar with smooth antialiased text"
+    DESCRIPTION = "Scroll a message across the display with smooth antialiased text"
     PALETTE_SUPPORT = False
 
     PARAMS = [

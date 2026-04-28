@@ -25,7 +25,7 @@ def create_router(deps, require_auth) -> APIRouter:
 
     @router.post("/restart-app", dependencies=[Depends(require_auth)])
     async def restart_app():
-        subprocess.Popen(["sudo", "systemctl", "restart", "pillar"])
+        subprocess.Popen(["sudo", "systemctl", "restart", "ledfanatic"])
         return {"status": "restarting"}
 
     return router

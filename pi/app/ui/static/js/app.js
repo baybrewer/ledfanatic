@@ -7,11 +7,11 @@ let state = {};
 // --- Auth ---
 
 function getToken() {
-  return localStorage.getItem('pillar_token') || '';
+  return localStorage.getItem('ledfanatic_token') || '';
 }
 
 function setToken(token) {
-  localStorage.setItem('pillar_token', token);
+  localStorage.setItem('ledfanatic_token', token);
 }
 
 function authHeaders() {
