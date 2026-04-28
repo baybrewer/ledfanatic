@@ -8,7 +8,7 @@
 
 **Tech Stack:** Python 3.13 / NumPy / FastAPI / Pydantic
 
-**Codex Review:** Rev 7 addressed 22 total findings across 7 rounds.
+**Codex Review:** Rev 8 addressed 25 total findings across 8 rounds.
 
 Round 1 (6 findings):
 - R1-H1: Added state.json schema_version v2 migration + persistent layer storage
@@ -45,6 +45,11 @@ Round 7 (4 findings):
 - R7-2: STATE_SCHEMA_VERSION bumped to 2; new state files include current_layers in defaults
 - R7-3: Boot restore clears render_state.current_scene + state_manager single-effect fields
 - R7-4: Fixed attribute name _data → _state in migration snippet and test to match actual code
+
+Round 8 (3 findings):
+- R8-1: Restructured _render_frame() to 4-way branch (blackout/compositor/single-effect/none) — compositor unreachable with old guard
+- R8-2: state_manager stored on renderer at init — activate_scene always clears layers without callers passing it
+- R8-3: /layers/add validates effect_name exists in registry and rejects media: scenes with 422
 
 ---
 
@@ -863,18 +868,37 @@ paths (scenes, media, diagnostics, startup) properly exit compositor mode.
 
 In `pi/app/core/renderer.py`, modify `activate_scene()`:
 ```python
-def activate_scene(self, scene_name, params=None, media_manager=None,
-                    state_manager=None) -> bool:
-    """Unified scene activation. Clears compositor on success (R6-H2)."""
+**R8-2 fix:** Store `state_manager` on the renderer at init time so `activate_scene()`
+can always clear persisted layers without callers needing to pass it.
+
+In `Renderer.__init__`, add:
+```python
+self.state_manager = None  # Set by main.py after construction
+```
+
+In `main.py`, after creating renderer:
+```python
+renderer.state_manager = state_manager
+```
+
+Then in `Renderer.activate_scene()`:
+```python
+def activate_scene(self, scene_name, params=None, media_manager=None) -> bool:
+    """Unified scene activation. Clears compositor on success."""
     # ... existing activation logic ...
     if success:
-        # R4-H1 + R5-H1 + R6-H2 + R7-1: centralized compositor teardown
+        # R4-H1 + R5-H1 + R6-H2 + R7-1 + R8-2: centralized teardown
         if self.compositor:
             self.compositor = None
-        # R7-1: clear persisted layers so they don't resurrect on reboot
-        if state_manager:
-            state_manager.current_layers = []
+        # Clear persisted layers — renderer owns state_manager reference
+        if self.state_manager:
+            self.state_manager.current_layers = []
     return success
+```
+
+No changes needed to any callers — all existing `activate_scene()` call sites
+(scenes.py, media.py, diagnostics.py, main.py startup) automatically get
+compositor teardown because it's inside the method, not per-route.
 ```
 
 The route no longer needs mode-exit logic — `renderer.activate_scene()` handles it.
@@ -897,6 +921,12 @@ async def get_layers():
 @router.post("/layers/add", dependencies=[Depends(require_auth)])
 async def add_layer(req: LayerAddRequest):
     from app.core.compositor import Layer, Compositor
+    from fastapi import HTTPException
+    # R8-3: validate effect_name exists and is compositable
+    if req.effect_name not in deps.renderer.effect_registry:
+        raise HTTPException(status_code=422, detail=f"Unknown effect: {req.effect_name}")
+    if req.effect_name.startswith('media:'):
+        raise HTTPException(status_code=422, detail="Media scenes cannot be used as layers")
     if deps.renderer.compositor is None:
         # R4-H2 fix: bootstrap compositor from current scene so we don't drop it
         deps.renderer.compositor = Compositor(
@@ -987,9 +1017,18 @@ In `Renderer.__init__`:
 self.compositor = None  # Optional — set when using layers
 ```
 
-In `Renderer._render_frame()`, before the current effect render block:
+**R8-1 fix:** Restructure the render decision tree in `_render_frame()`. The existing
+code has `if self.state.blackout or self.current_effect is None: → black`. This must
+change to a 4-way branch so compositor mode is reachable when `current_effect is None`:
+
 ```python
-    if self.compositor and self.compositor.layers:
+    if self.state.blackout:
+        logical_frame = np.zeros((w, h, 3), dtype=np.uint8)
+        self._last_logical_frame = logical_frame
+        self.state.effect_render_ms = 0.0
+        self.state.compositor_ms = 0.0
+    elif self.compositor and self.compositor.layers:
+        # Compositor mode — render layer stack
         effect_start = time.perf_counter()
         try:
             internal_frame = self.compositor.render(t, self.state)
@@ -998,8 +1037,23 @@ In `Renderer._render_frame()`, before the current effect render block:
             internal_frame = np.zeros((w, h, 3), dtype=np.uint8)
         self.state.effect_render_ms = (time.perf_counter() - effect_start) * 1000
         self.state.compositor_ms = self.compositor.compositor_ms
+        # ... rest of brightness/gamma/test-pattern pipeline ...
     elif self.current_effect is not None:
-        # existing single-effect path with error isolation
+        # Single-effect mode — existing path with error isolation
+        effect_start = time.perf_counter()
+        try:
+            internal_frame = self.current_effect.render(t, self.state)
+        except Exception as e:
+            logger.error(f"Effect '{self.state.current_scene}' crashed: {e}", exc_info=True)
+            internal_frame = np.zeros((w, h, 3), dtype=np.uint8)
+        self.state.effect_render_ms = (time.perf_counter() - effect_start) * 1000
+        self.state.compositor_ms = 0.0
+        # ... rest of brightness/gamma/test-pattern pipeline ...
+    else:
+        logical_frame = np.zeros((w, h, 3), dtype=np.uint8)
+        self._last_logical_frame = logical_frame
+        self.state.effect_render_ms = 0.0
+        self.state.compositor_ms = 0.0
 ```
 
 In `Renderer.apply_layout()`, add:
