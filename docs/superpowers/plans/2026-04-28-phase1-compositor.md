@@ -8,7 +8,7 @@
 
 **Tech Stack:** Python 3.13 / NumPy / FastAPI / Pydantic
 
-**Codex Review:** Rev 6 addressed 18 total findings across 6 rounds.
+**Codex Review:** Rev 7 addressed 22 total findings across 7 rounds.
 
 Round 1 (6 findings):
 - R1-H1: Added state.json schema_version v2 migration + persistent layer storage
@@ -38,7 +38,13 @@ Round 5 (2 findings):
 
 Round 6 (2 findings):
 - R6-H1: Entering compositor clears current_scene/current_params; leaving clears all stale state
-- R6-H2: Mode-switch centralized in Renderer.activate_scene() — all activation paths (scenes, media, diagnostics, startup) exit compositor automatically
+- R6-H2: Mode-switch centralized in Renderer.activate_scene() — all activation paths exit compositor
+
+Round 7 (4 findings):
+- R7-1: activate_scene clears persisted current_layers so old layers don't resurrect on reboot
+- R7-2: STATE_SCHEMA_VERSION bumped to 2; new state files include current_layers in defaults
+- R7-3: Boot restore clears render_state.current_scene + state_manager single-effect fields
+- R7-4: Fixed attribute name _data → _state in migration snippet and test to match actual code
 
 ---
 
@@ -727,34 +733,49 @@ git commit -m "feat: expose compositor_ms in RenderState and system API"
 
 **Codex H1 fix:** state.json schema_version v2 stores layer stack. v1→v2 migration preserves single-effect scenes.
 
-- [ ] **Step 1: Add layers property to StateManager**
+- [ ] **Step 1: Bump STATE_SCHEMA_VERSION and add layers property**
 
 ```python
-# In StateManager, add property:
+# At top of pi/app/core/state.py, change:
+STATE_SCHEMA_VERSION = 2  # R7-2: bumped from 1 for layer support
+
+# In StateManager.__init__, add 'current_layers' to defaults:
+self._state: dict = {
+    'schema_version': STATE_SCHEMA_VERSION,
+    'current_scene': None,
+    'current_params': {},
+    'current_layers': [],  # NEW: persisted layer stack
+    'blackout': False,
+    'scenes': {},
+    'playlists': {},
+    'last_updated': None,
+}
+
+# Add property:
 @property
 def current_layers(self) -> list[dict]:
-    return self._data.get('current_layers', [])
+    return self._state.get('current_layers', [])
 
 @current_layers.setter
 def current_layers(self, layers: list[dict]):
-    self._data['current_layers'] = layers
+    self._state['current_layers'] = layers
     self.mark_dirty()
 ```
 
 - [ ] **Step 2: Add v1→v2 migration**
 
 ```python
-def _migrate(self, data: dict) -> dict:
-    version = data.get('schema_version', 0)
+def _migrate(self, state: dict) -> dict:
+    version = state.get('schema_version', 0)
     if version < 1:
         # ... existing v0→v1 migration ...
-        data['schema_version'] = 1
+        state['schema_version'] = 1
     if version < 2:
         # v1→v2: convert single scene to layer format
-        scene = data.get('current_scene')
-        params = data.get('current_params', {})
+        scene = state.get('current_scene')
+        params = state.get('current_params', {})
         if scene:
-            data['current_layers'] = [{
+            state['current_layers'] = [{
                 'effect_name': scene,
                 'params': params,
                 'opacity': 1.0,
@@ -762,9 +783,9 @@ def _migrate(self, data: dict) -> dict:
                 'enabled': True,
             }]
         else:
-            data['current_layers'] = []
-        data['schema_version'] = 2
-    return data
+            state['current_layers'] = []
+        state['schema_version'] = 2
+    return state
 ```
 
 - [ ] **Step 3: Write test for migration**
@@ -774,16 +795,16 @@ def _migrate(self, data: dict) -> dict:
 def test_v1_to_v2_migration():
     from app.core.state import StateManager
     sm = StateManager(config_dir=Path("/tmp/test_state"))
-    sm._data = {
+    sm._state = {
         'schema_version': 1,
         'current_scene': 'rainbow_rotate',
         'current_params': {'speed': 0.5},
     }
-    sm._migrate(sm._data)
-    assert sm._data['schema_version'] == 2
-    assert len(sm._data['current_layers']) == 1
-    assert sm._data['current_layers'][0]['effect_name'] == 'rainbow_rotate'
-    assert sm._data['current_layers'][0]['opacity'] == 1.0
+    sm._migrate(sm._state)
+    assert sm._state['schema_version'] == 2
+    assert len(sm._state['current_layers']) == 1
+    assert sm._state['current_layers'][0]['effect_name'] == 'rainbow_rotate'
+    assert sm._state['current_layers'][0]['opacity'] == 1.0
 ```
 
 - [ ] **Step 4: Run tests**
@@ -842,16 +863,17 @@ paths (scenes, media, diagnostics, startup) properly exit compositor mode.
 
 In `pi/app/core/renderer.py`, modify `activate_scene()`:
 ```python
-def activate_scene(self, scene_name, params=None, media_manager=None) -> bool:
+def activate_scene(self, scene_name, params=None, media_manager=None,
+                    state_manager=None) -> bool:
     """Unified scene activation. Clears compositor on success (R6-H2)."""
     # ... existing activation logic ...
     if success:
-        # R4-H1 + R5-H1 + R6-H2: centralized compositor teardown on any
-        # successful single-effect activation — no route-level patching needed
+        # R4-H1 + R5-H1 + R6-H2 + R7-1: centralized compositor teardown
         if self.compositor:
             self.compositor = None
-        # R6-H1: clear stale single-effect fields are updated by _set_scene
-        # so current_scene/current_params always reflect the active state
+        # R7-1: clear persisted layers so they don't resurrect on reboot
+        if state_manager:
+            state_manager.current_layers = []
     return success
 ```
 
@@ -1003,8 +1025,11 @@ In `pi/app/main.py`, REPLACE the existing startup scene block (the `# Startup sc
           renderer.effect_registry,
           effects_config=effects_conf,
       )
-      # R5-M2 fix: clear current_effect so it doesn't linger behind compositor
+      # R5-M2 + R7-3 fix: clear ALL single-effect state
       renderer.current_effect = None
+      render_state.current_scene = None
+      state_manager.current_scene = None
+      state_manager.current_params = None
       logger.info(f"Restored {len(saved_layers)} layer(s) from state.json")
   else:
       # Legacy: no layers persisted, use current_scene
