@@ -1189,13 +1189,16 @@ class ExplicitSegment:
     brightness_cal: BrightnessCal = field(default_factory=BrightnessCal)
 ```
 
-In `parse_layout()`, parse the cal data for each segment:
+In `parse_layout()`, construct `BrightnessCal` from raw dict (R16-H1 fix):
 
 ```python
 # After other segment fields, add:
-brightness_cal = seg_raw.get('brightness_cal', {
-    'r': [1.0, 1.0, 1.0], 'g': [1.0, 1.0, 1.0], 'b': [1.0, 1.0, 1.0],
-})
+cal_raw = seg_raw.get('brightness_cal', {})
+brightness_cal = BrightnessCal(
+    r=tuple(cal_raw.get('r', [1.0, 1.0, 1.0])),
+    g=tuple(cal_raw.get('g', [1.0, 1.0, 1.0])),
+    b=tuple(cal_raw.get('b', [1.0, 1.0, 1.0])),
+)
 ```
 
 Pass `brightness_cal=brightness_cal` to both LinearSegment and ExplicitSegment constructors.
@@ -1249,11 +1252,14 @@ for e in entries:
         seg_id_to_idx[e.segment_id] = len(seg_ids_ordered)
         seg_ids_ordered.append(e.segment_id)
 
-# Build LUTs
-cal_luts = np.stack([
-    _build_segment_lut(segment_cal_map.get(sid, BrightnessCal()))
-    for sid in seg_ids_ordered
-])  # (n_segments, 3, 256)
+# Build LUTs (R16-M3: guard empty layouts)
+if seg_ids_ordered:
+    cal_luts = np.stack([
+        _build_segment_lut(segment_cal_map.get(sid, BrightnessCal()))
+        for sid in seg_ids_ordered
+    ])  # (n_segments, 3, 256)
+else:
+    cal_luts = np.empty((0, 3, 256), dtype=np.uint8)
 
 # Per-entry segment index
 cal_seg_idx = np.array([seg_id_to_idx[e.segment_id] for e in entries], dtype=np.int32)
@@ -1285,21 +1291,43 @@ def pack_frame(frame: np.ndarray, layout: CompiledLayout) -> bytes:
     raw = flat[layout.pack_src]  # (n_entries * 3,) uint8
 
     # Apply per-segment brightness correction via LUT lookup
+    # R16-H2 fix: LUTs are indexed by LOGICAL channel (R=0, G=1, B=2),
+    # but pack_src already swizzles into wire order. cal_logical_ch maps
+    # each packed byte back to its logical RGB channel for correct LUT lookup.
     if layout.cal_luts.shape[0] > 0:
-        # For each pixel, look up its corrected value from its segment's LUT
-        # This is O(n) with no float math — pure integer indexing
-        n = len(layout.entries)
-        for ch in range(3):
-            ch_indices = np.arange(n) * 3 + ch  # indices into raw for this channel
-            seg_indices = layout.cal_seg_idx     # which segment LUT to use
-            raw[ch_indices] = layout.cal_luts[seg_indices, ch, raw[ch_indices]]
+        raw = layout.cal_luts[layout.cal_seg_idx_expanded, layout.cal_logical_ch, raw]
 
     buf[layout.pack_dst] = raw
     return buf.tobytes()
 ```
 
-The LUT lookup is integer-only (no float math), same cost as the original
-pack_frame plus one array gather per channel. At 830 pixels: ~0.3ms total.
+Where `cal_seg_idx_expanded` (n_entries*3,) repeats each segment index 3x,
+and `cal_logical_ch` (n_entries*3,) maps each packed byte to its logical
+R/G/B channel (0/1/2), computed at compile time from swizzle info:
+
+```python
+# In compile_layout(), after building cal_luts and cal_seg_idx:
+cal_seg_idx_expanded = np.repeat(cal_seg_idx, 3)  # (n*3,)
+cal_logical_ch = np.empty(n * 3, dtype=np.int32)
+for i, e in enumerate(entries):
+    i3 = i * 3
+    # swizzle[0] tells which logical channel goes to wire byte 0
+    # We need the REVERSE: for wire byte 0, which logical channel is it?
+    # pack_src already picks frame[x,y,swizzle[j]], so byte j in output
+    # came from logical channel swizzle[j]. That's the LUT channel to use.
+    cal_logical_ch[i3] = e.swizzle[0]
+    cal_logical_ch[i3 + 1] = e.swizzle[1]
+    cal_logical_ch[i3 + 2] = e.swizzle[2]
+```
+
+Add to CompiledLayout:
+```python
+cal_seg_idx_expanded: np.ndarray = field(default_factory=lambda: np.empty(0, dtype=np.int32))
+cal_logical_ch: np.ndarray = field(default_factory=lambda: np.empty(0, dtype=np.int32))
+```
+
+This is fully vectorized — one `cal_luts[seg, ch, val]` fancy-index op,
+no Python loops in the hot path. Cost: ~0.05ms on 830 pixels.
 
 - [ ] **Step 6: Run tests**
 
