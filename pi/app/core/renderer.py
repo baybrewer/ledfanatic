@@ -331,7 +331,11 @@ class Renderer:
     else:
       t = time.monotonic()
       effect_start = time.perf_counter()
-      internal_frame = self.current_effect.render(t, self.state)
+      try:
+        internal_frame = self.current_effect.render(t, self.state)
+      except Exception as e:
+        logger.error(f"Effect '{self.state.current_scene}' crashed: {e}", exc_info=True)
+        internal_frame = np.zeros((w, h, 3), dtype=np.uint8)
       self.state.effect_render_ms = (time.perf_counter() - effect_start) * 1000
 
       # Downsample if effect uses RENDER_SCALE > 1
