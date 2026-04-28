@@ -8,7 +8,7 @@
 
 **Tech Stack:** Python 3.13 / NumPy / FastAPI / Pydantic
 
-**Codex Review:** Rev 11 addressed 31 total findings across 11 rounds.
+**Codex Review:** Rev 12 addressed 32 total findings across 12 rounds.
 
 Round 1 (6 findings):
 - R1-H1: Added state.json schema_version v2 migration + persistent layer storage
@@ -62,6 +62,9 @@ Round 10 (3 findings):
 
 Round 11 (1 finding):
 - R11-M1: /layers/{index}/remove resets render_mode to 'single' when last layer deleted
+
+Round 12 (1 finding):
+- R12-H1: Bootstrap layer 0 only from registry-backed effects — skip media: scenes (not compositable)
 
 ---
 
@@ -965,10 +968,12 @@ async def add_layer(req: LayerAddRequest):
             deps.compiled_layout.width, deps.compiled_layout.height,
             deps.renderer.effect_registry,
             effects_config=deps.renderer.effects_config)
-        # Seed layer 0 from the currently active single-effect scene
-        if deps.render_state.current_scene:
+        # Seed layer 0 from current scene — only if it's a registry-backed effect
+        # R12-H1: skip media: scenes and unknown effects (not compositable)
+        current = deps.render_state.current_scene
+        if current and current in deps.renderer.effect_registry:
             base_layer = Layer(
-                effect_name=deps.render_state.current_scene,
+                effect_name=current,
                 params=deps.state_manager.current_params or {},
             )
             deps.renderer.compositor.add_layer(base_layer)
