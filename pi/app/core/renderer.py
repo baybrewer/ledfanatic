@@ -47,6 +47,8 @@ class RenderState:
     self.pack_ms: float = 0.0           # pack_frame only
     self.send_ms: float = 0.0           # transport.send_frame only
     self.compositor_ms: float = 0.0      # compositor blend pass
+    self._compositor_active: bool = False
+    self._compositor_layers: list = []
 
   def update_audio(self, snapshot: dict):
     """Receive thread-safe audio snapshot."""

@@ -363,7 +363,7 @@ def main():
     renderer.current_effect = None
     render_state.current_scene = None
     state_manager.current_scene = None
-    state_manager.current_params = None
+    state_manager.current_params = {}
     logger.info(f"Restored {len(saved_layers)} layer(s) from state.json")
   else:
     startup = state_manager.current_scene or display_conf.get('startup_scene', 'rainbow_rotate')
