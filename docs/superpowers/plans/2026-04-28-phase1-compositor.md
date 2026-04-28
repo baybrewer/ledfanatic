@@ -2,11 +2,19 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Add effect error isolation and a layer-based compositor so multiple effects can be blended into a single output frame.
+**Goal:** Add effect error isolation and a layer-based compositor so multiple effects can be blended into a single output frame, with persistent scene storage and layout hot-swap support.
 
 **Architecture:** The compositor sits between effects and the renderer. It manages a list of Layer objects, each with its own effect instance. On each frame, it renders all enabled layers, blends them using the specified blend mode, and returns a single (width, height, 3) uint8 frame. The renderer calls the compositor instead of a single effect.
 
-**Tech Stack:** Python 3.13 / NumPy / FastAPI
+**Tech Stack:** Python 3.13 / NumPy / FastAPI / Pydantic
+
+**Codex Review:** Rev 1 addressed 6 findings (3 high, 3 medium). Changes from original:
+- H1: Added state.json schema_version v2 migration + persistent layer storage
+- H2: Fixed blend mode opacity — all modes use canonical `mode(base, top)` then `alpha_blend(base, result, opacity)`
+- H3: Error isolation test now exercises `_render_frame()` with mocked transport
+- M4: Added Pydantic request models, reorder endpoint
+- M5: Added `compositor.apply_layout()` for layout hot-swap
+- M6: Wired `compositor_ms` into RenderState and system API
 
 ---
 
@@ -14,133 +22,32 @@
 
 | Action | File | Responsibility |
 |--------|------|---------------|
-| Create | `pi/app/core/compositor.py` | Layer model, blend modes, compositor class |
-| Create | `pi/tests/test_compositor.py` | Unit tests for compositor and blend modes |
-| Modify | `pi/app/core/renderer.py:320-340` | Wrap effect.render() in try/except, use compositor |
-| Modify | `pi/app/api/routes/scenes.py` | Add layer CRUD endpoints |
-| Modify | `pi/app/api/schemas.py` | Add LayerRequest/SceneRequest models |
-| Create | `pi/tests/test_error_isolation.py` | Prove crashing effect doesn't kill render loop |
+| Create | `pi/app/core/compositor.py` | Layer model, blend modes, compositor class, layout rebind |
+| Create | `pi/tests/test_compositor.py` | Unit tests for compositor, blend modes (incl. opacity for all modes) |
+| Create | `pi/tests/test_error_isolation.py` | Integration test: crashing effect in `_render_frame()` |
+| Modify | `pi/app/core/renderer.py:320-340` | Error isolation, compositor integration, compositor_ms |
+| Modify | `pi/app/core/renderer.py:RenderState` | Add compositor_ms field + to_dict() |
+| Modify | `pi/app/core/state.py` | schema_version v2, persist layers, v1→v2 migration |
+| Modify | `pi/app/api/routes/scenes.py` | Layer CRUD + reorder endpoints with Pydantic models |
 
 ---
 
-### Task 1: Effect Error Isolation in Renderer
-
-**Files:**
-- Modify: `pi/app/core/renderer.py:320-340`
-- Create: `pi/tests/test_error_isolation.py`
-
-- [ ] **Step 1: Write failing test — crashing effect doesn't kill renderer**
-
-```python
-# pi/tests/test_error_isolation.py
-import numpy as np
-from unittest.mock import MagicMock
-from app.effects.base import Effect
-
-
-class CrashingEffect(Effect):
-    def render(self, t, state):
-        raise RuntimeError("Effect exploded")
-
-
-class WorkingEffect(Effect):
-    def render(self, t, state):
-        frame = np.zeros((self.width, self.height, 3), dtype=np.uint8)
-        frame[:, :, 1] = 128  # green
-        return frame
-
-
-def test_crashing_effect_returns_black_frame():
-    """A crashing effect should return a black frame, not propagate."""
-    from app.core.renderer import Renderer, RenderState
-    from app.core.brightness import BrightnessEngine
-    from app.layout import load_layout, compile_layout
-    from pathlib import Path
-
-    layout_config = load_layout(Path("config"))
-    layout = compile_layout(layout_config)
-    state = RenderState()
-    brightness = BrightnessEngine({})
-    renderer = Renderer(MagicMock(), state, brightness, layout)
-
-    # Set crashing effect
-    renderer.current_effect = CrashingEffect(layout.width, layout.height)
-    state.current_scene = "crasher"
-
-    # Render should not raise — it should catch and return black
-    import asyncio
-    loop = asyncio.new_event_loop()
-
-    # We can't easily test _render_frame directly (it's async and sends),
-    # so test the isolation logic directly
-    import time
-    t = time.monotonic()
-    try:
-        frame = renderer.current_effect.render(t, state)
-        assert False, "Should have raised"
-    except RuntimeError:
-        pass  # Expected — but renderer should catch this
-
-
-def test_working_effect_after_crash():
-    """After a crash, switching to a working effect should work."""
-    eff = WorkingEffect(10, 83)
-    frame = eff.render(0, MagicMock())
-    assert frame.shape == (10, 83, 3)
-    assert frame[0, 0, 1] == 128
-```
-
-- [ ] **Step 2: Run test to verify it demonstrates the problem**
-
-Run: `cd pi && PYTHONPATH=. pytest tests/test_error_isolation.py -v`
-Expected: Tests pass (they document current behavior)
-
-- [ ] **Step 3: Add error isolation in renderer._render_frame()**
-
-In `pi/app/core/renderer.py`, wrap the effect.render() call:
-
-```python
-# Replace this (around line 332-335):
-#   effect_start = time.perf_counter()
-#   internal_frame = self.current_effect.render(t, self.state)
-#   self.state.effect_render_ms = (time.perf_counter() - effect_start) * 1000
-
-# With this:
-      effect_start = time.perf_counter()
-      try:
-          internal_frame = self.current_effect.render(t, self.state)
-      except Exception as e:
-          logger.error(f"Effect '{self.state.current_scene}' crashed: {e}", exc_info=True)
-          internal_frame = np.zeros((w, h, 3), dtype=np.uint8)
-      self.state.effect_render_ms = (time.perf_counter() - effect_start) * 1000
-```
-
-- [ ] **Step 4: Run tests**
-
-Run: `cd pi && PYTHONPATH=. pytest tests/test_error_isolation.py tests/ -v --tb=short`
-Expected: All pass, no regressions
-
-- [ ] **Step 5: Commit**
-
-```bash
-git add pi/app/core/renderer.py pi/tests/test_error_isolation.py
-git commit -m "feat: isolate effect render errors — crash returns black frame"
-```
-
----
-
-### Task 2: Blend Mode Functions
+### Task 1: Blend Mode Functions (Correct Opacity Semantics)
 
 **Files:**
 - Create: `pi/app/core/compositor.py`
 - Create: `pi/tests/test_compositor.py`
 
-- [ ] **Step 1: Write failing tests for blend modes**
+**Codex H2 fix:** All blend modes follow the canonical rule:
+`final = alpha_blend(base, mode_fn(base, top), opacity)`
+This means opacity controls how much of the blended result shows, consistently across all modes.
+
+- [ ] **Step 1: Write failing tests for blend modes (including opacity for every mode)**
 
 ```python
 # pi/tests/test_compositor.py
 import numpy as np
-from app.core.compositor import blend_normal, blend_add, blend_screen, blend_multiply, blend_max
+from app.core.compositor import blend, BLEND_MODES
 
 
 def _frame(r, g, b, w=4, h=4):
@@ -150,61 +57,66 @@ def _frame(r, g, b, w=4, h=4):
 
 
 class TestBlendModes:
-    def test_blend_normal_full_opacity(self):
-        base = _frame(255, 0, 0)
-        top = _frame(0, 0, 255)
-        result = blend_normal(base, top, 1.0)
-        assert np.array_equal(result, top)
+    def test_normal_full_opacity(self):
+        result = blend(_frame(255, 0, 0), _frame(0, 0, 255), 1.0, 'normal')
+        assert np.array_equal(result[0, 0], [0, 0, 255])
 
-    def test_blend_normal_half_opacity(self):
-        base = _frame(200, 0, 0)
-        top = _frame(0, 0, 200)
-        result = blend_normal(base, top, 0.5)
-        assert result[0, 0, 0] == 100  # 200 * 0.5
-        assert result[0, 0, 2] == 100  # 200 * 0.5
+    def test_normal_half_opacity(self):
+        result = blend(_frame(200, 0, 0), _frame(0, 0, 200), 0.5, 'normal')
+        assert result[0, 0, 0] == 100
+        assert result[0, 0, 2] == 100
 
-    def test_blend_normal_zero_opacity(self):
+    def test_normal_zero_opacity(self):
         base = _frame(255, 0, 0)
-        top = _frame(0, 0, 255)
-        result = blend_normal(base, top, 0.0)
+        result = blend(base, _frame(0, 0, 255), 0.0, 'normal')
         assert np.array_equal(result, base)
 
-    def test_blend_add(self):
-        a = _frame(100, 50, 0)
-        b = _frame(100, 50, 200)
-        result = blend_add(a, b, 1.0)
+    def test_add_full_opacity(self):
+        result = blend(_frame(100, 50, 0), _frame(100, 50, 200), 1.0, 'add')
         assert result[0, 0, 0] == 200
-        assert result[0, 0, 1] == 100
         assert result[0, 0, 2] == 200
 
-    def test_blend_add_clamps(self):
-        a = _frame(200, 0, 0)
-        b = _frame(200, 0, 0)
-        result = blend_add(a, b, 1.0)
-        assert result[0, 0, 0] == 255  # clamped
+    def test_add_clamps(self):
+        result = blend(_frame(200, 0, 0), _frame(200, 0, 0), 1.0, 'add')
+        assert result[0, 0, 0] == 255
 
-    def test_blend_screen(self):
-        a = _frame(128, 0, 0)
-        b = _frame(128, 0, 0)
-        result = blend_screen(a, b, 1.0)
-        # screen: 1 - (1-a)(1-b) = 1 - 0.498*0.498 = 0.752 → 192
+    def test_add_half_opacity(self):
+        # add(100, 100) = 200, then alpha_blend(100, 200, 0.5) = 150
+        result = blend(_frame(100, 0, 0), _frame(100, 0, 0), 0.5, 'add')
+        assert 148 <= result[0, 0, 0] <= 152
+
+    def test_screen_full_opacity(self):
+        result = blend(_frame(128, 0, 0), _frame(128, 0, 0), 1.0, 'screen')
+        # screen: 1 - (1-0.502)(1-0.502) = 0.752 → 192
         assert 190 <= result[0, 0, 0] <= 194
 
-    def test_blend_multiply(self):
-        a = _frame(128, 255, 0)
-        b = _frame(128, 128, 0)
-        result = blend_multiply(a, b, 1.0)
-        # multiply: a*b/255 = 128*128/255 ≈ 64
-        assert 63 <= result[0, 0, 0] <= 65
-        assert 127 <= result[0, 0, 1] <= 129  # 255*128/255 = 128
+    def test_screen_half_opacity(self):
+        # screen(128,128) ≈ 192, alpha_blend(128, 192, 0.5) ≈ 160
+        result = blend(_frame(128, 0, 0), _frame(128, 0, 0), 0.5, 'screen')
+        assert 158 <= result[0, 0, 0] <= 162
 
-    def test_blend_max(self):
-        a = _frame(100, 200, 50)
-        b = _frame(200, 100, 50)
-        result = blend_max(a, b, 1.0)
+    def test_multiply_full_opacity(self):
+        result = blend(_frame(128, 255, 0), _frame(128, 128, 0), 1.0, 'multiply')
+        assert 63 <= result[0, 0, 0] <= 65  # 128*128/255 ≈ 64
+
+    def test_multiply_half_opacity(self):
+        # multiply(128,128) ≈ 64, alpha_blend(128, 64, 0.5) ≈ 96
+        result = blend(_frame(128, 0, 0), _frame(128, 0, 0), 0.5, 'multiply')
+        assert 94 <= result[0, 0, 0] <= 98
+
+    def test_max_full_opacity(self):
+        result = blend(_frame(100, 200, 50), _frame(200, 100, 50), 1.0, 'max')
         assert result[0, 0, 0] == 200
         assert result[0, 0, 1] == 200
-        assert result[0, 0, 2] == 50
+
+    def test_max_half_opacity(self):
+        # max(100, 200) = 200, alpha_blend(100, 200, 0.5) = 150
+        result = blend(_frame(100, 0, 0), _frame(200, 0, 0), 0.5, 'max')
+        assert 148 <= result[0, 0, 0] <= 152
+
+    def test_unknown_mode_falls_back_to_normal(self):
+        result = blend(_frame(255, 0, 0), _frame(0, 0, 255), 1.0, 'bogus')
+        assert np.array_equal(result[0, 0], [0, 0, 255])
 ```
 
 - [ ] **Step 2: Run tests to verify they fail**
@@ -212,62 +124,73 @@ class TestBlendModes:
 Run: `cd pi && PYTHONPATH=. pytest tests/test_compositor.py -v`
 Expected: ImportError — compositor.py doesn't exist yet
 
-- [ ] **Step 3: Implement blend mode functions**
+- [ ] **Step 3: Implement blend mode functions with canonical opacity rule**
 
 ```python
 # pi/app/core/compositor.py
 """
 Compositor — layer-based effect compositing with blend modes.
 
-Manages an ordered stack of layers, each with its own effect instance.
-Renders all enabled layers and blends them into a single output frame.
+All blend modes follow the canonical opacity rule:
+  result = alpha_blend(base, mode_fn(base, top), opacity)
+This ensures consistent opacity behavior across all modes.
 """
+
+import logging
+import time
+from dataclasses import dataclass, field
+from typing import Optional
 
 import numpy as np
 
+logger = logging.getLogger(__name__)
 
-def blend_normal(base: np.ndarray, top: np.ndarray, opacity: float) -> np.ndarray:
-    """Standard alpha blend."""
+
+def _alpha_blend(base: np.ndarray, result: np.ndarray, opacity: float) -> np.ndarray:
+    """Apply opacity: mix base and result by opacity factor."""
     if opacity >= 1.0:
-        return top.copy()
+        return result
     if opacity <= 0.0:
         return base.copy()
-    return (base.astype(np.float32) * (1 - opacity) + top.astype(np.float32) * opacity).astype(np.uint8)
+    return (base.astype(np.float32) * (1 - opacity) + result.astype(np.float32) * opacity).astype(np.uint8)
 
 
-def blend_add(base: np.ndarray, top: np.ndarray, opacity: float) -> np.ndarray:
-    """Additive blend — adds light contributions."""
-    scaled = (top.astype(np.float32) * opacity)
-    return np.clip(base.astype(np.float32) + scaled, 0, 255).astype(np.uint8)
+def _mode_normal(base: np.ndarray, top: np.ndarray) -> np.ndarray:
+    return top
 
 
-def blend_screen(base: np.ndarray, top: np.ndarray, opacity: float) -> np.ndarray:
-    """Screen blend — brightens without washing out."""
+def _mode_add(base: np.ndarray, top: np.ndarray) -> np.ndarray:
+    return np.clip(base.astype(np.uint16) + top.astype(np.uint16), 0, 255).astype(np.uint8)
+
+
+def _mode_screen(base: np.ndarray, top: np.ndarray) -> np.ndarray:
     a = base.astype(np.float32) / 255.0
-    b = top.astype(np.float32) / 255.0 * opacity
-    result = 1.0 - (1.0 - a) * (1.0 - b)
-    return (result * 255).astype(np.uint8)
+    b = top.astype(np.float32) / 255.0
+    return ((1.0 - (1.0 - a) * (1.0 - b)) * 255).astype(np.uint8)
 
 
-def blend_multiply(base: np.ndarray, top: np.ndarray, opacity: float) -> np.ndarray:
-    """Multiply blend — darkens/modulates."""
-    mult = (base.astype(np.float32) * top.astype(np.float32) / 255.0)
-    return blend_normal(base, mult.astype(np.uint8), opacity)
+def _mode_multiply(base: np.ndarray, top: np.ndarray) -> np.ndarray:
+    return (base.astype(np.float32) * top.astype(np.float32) / 255.0).astype(np.uint8)
 
 
-def blend_max(base: np.ndarray, top: np.ndarray, opacity: float) -> np.ndarray:
-    """Max blend — take brightest RGB per pixel."""
-    scaled = blend_normal(np.zeros_like(top), top, opacity)
-    return np.maximum(base, scaled)
+def _mode_max(base: np.ndarray, top: np.ndarray) -> np.ndarray:
+    return np.maximum(base, top)
 
 
 BLEND_MODES = {
-    'normal': blend_normal,
-    'add': blend_add,
-    'screen': blend_screen,
-    'multiply': blend_multiply,
-    'max': blend_max,
+    'normal': _mode_normal,
+    'add': _mode_add,
+    'screen': _mode_screen,
+    'multiply': _mode_multiply,
+    'max': _mode_max,
 }
+
+
+def blend(base: np.ndarray, top: np.ndarray, opacity: float, mode: str = 'normal') -> np.ndarray:
+    """Apply blend mode then opacity. Canonical rule for all modes."""
+    mode_fn = BLEND_MODES.get(mode, _mode_normal)
+    blended = mode_fn(base, top)
+    return _alpha_blend(base, blended, opacity)
 ```
 
 - [ ] **Step 4: Run tests**
@@ -279,12 +202,12 @@ Expected: All pass
 
 ```bash
 git add pi/app/core/compositor.py pi/tests/test_compositor.py
-git commit -m "feat: add blend mode functions (normal, add, screen, multiply, max)"
+git commit -m "feat: add blend mode functions with canonical opacity semantics"
 ```
 
 ---
 
-### Task 3: Layer Model and Compositor Class
+### Task 2: Layer Model and Compositor Class
 
 **Files:**
 - Modify: `pi/app/core/compositor.py`
@@ -296,6 +219,19 @@ git commit -m "feat: add blend mode functions (normal, add, screen, multiply, ma
 # Append to pi/tests/test_compositor.py
 from unittest.mock import MagicMock
 from app.core.compositor import Layer, Compositor
+
+
+def _make_effect_cls(r, g, b):
+    """Create a simple effect class that fills with a solid color."""
+    class SolidEffect:
+        def __init__(self, width, height, params=None):
+            self.width = width
+            self.height = height
+        def render(self, t, state):
+            return np.full((self.width, self.height, 3), [r, g, b], dtype=np.uint8)
+        def update_params(self, p):
+            pass
+    return SolidEffect
 
 
 class TestLayer:
@@ -316,21 +252,13 @@ class TestLayer:
 
 class TestCompositor:
     def _make_compositor(self, width=10, height=20):
-        effect_registry = {
-            'solid_red': type('E', (), {
-                '__init__': lambda self, w, h, params=None: setattr(self, 'w', w) or setattr(self, 'h', h),
-                'render': lambda self, t, state: np.full((self.w, self.h, 3), [255, 0, 0], dtype=np.uint8),
-                'update_params': lambda self, p: None,
-            }),
-            'solid_blue': type('E', (), {
-                '__init__': lambda self, w, h, params=None: setattr(self, 'w', w) or setattr(self, 'h', h),
-                'render': lambda self, t, state: np.full((self.w, self.h, 3), [0, 0, 255], dtype=np.uint8),
-                'update_params': lambda self, p: None,
-            }),
+        registry = {
+            'solid_red': _make_effect_cls(255, 0, 0),
+            'solid_blue': _make_effect_cls(0, 0, 255),
         }
-        return Compositor(width, height, effect_registry)
+        return Compositor(width, height, registry)
 
-    def test_empty_compositor_returns_black(self):
+    def test_empty_returns_black(self):
         comp = self._make_compositor()
         frame = comp.render(0, MagicMock())
         assert frame.shape == (10, 20, 3)
@@ -340,53 +268,85 @@ class TestCompositor:
         comp = self._make_compositor()
         comp.add_layer(Layer(effect_name='solid_red'))
         frame = comp.render(0, MagicMock())
-        assert frame[0, 0, 0] == 255  # red
+        assert frame[0, 0, 0] == 255
         assert frame[0, 0, 2] == 0
 
-    def test_two_layers_add_blend(self):
+    def test_two_layers_add(self):
         comp = self._make_compositor()
         comp.add_layer(Layer(effect_name='solid_red'))
         comp.add_layer(Layer(effect_name='solid_blue', blend_mode='add'))
         frame = comp.render(0, MagicMock())
-        assert frame[0, 0, 0] == 255  # red from base
-        assert frame[0, 0, 2] == 255  # blue added
+        assert frame[0, 0, 0] == 255
+        assert frame[0, 0, 2] == 255
 
     def test_disabled_layer_skipped(self):
         comp = self._make_compositor()
         comp.add_layer(Layer(effect_name='solid_red'))
         comp.add_layer(Layer(effect_name='solid_blue', enabled=False))
         frame = comp.render(0, MagicMock())
-        assert frame[0, 0, 0] == 255  # red only
-        assert frame[0, 0, 2] == 0    # blue disabled
+        assert frame[0, 0, 0] == 255
+        assert frame[0, 0, 2] == 0
 
     def test_opacity(self):
         comp = self._make_compositor()
         comp.add_layer(Layer(effect_name='solid_red'))
         comp.add_layer(Layer(effect_name='solid_blue', opacity=0.5))
         frame = comp.render(0, MagicMock())
-        assert 120 <= frame[0, 0, 0] <= 130  # red * 0.5
-        assert 120 <= frame[0, 0, 2] <= 130  # blue * 0.5
+        # normal blend at 0.5: red*0.5 + blue*0.5
+        assert 125 <= frame[0, 0, 0] <= 130
+        assert 125 <= frame[0, 0, 2] <= 130
 
     def test_remove_layer(self):
         comp = self._make_compositor()
-        layer = Layer(effect_name='solid_red')
-        comp.add_layer(layer)
+        comp.add_layer(Layer(effect_name='solid_red'))
         assert len(comp.layers) == 1
         comp.remove_layer(0)
         assert len(comp.layers) == 0
 
+    def test_reorder_layer(self):
+        comp = self._make_compositor()
+        comp.add_layer(Layer(effect_name='solid_red'))
+        comp.add_layer(Layer(effect_name='solid_blue'))
+        comp.move_layer(1, 0)
+        assert comp.layers[0].effect_name == 'solid_blue'
+        assert comp.layers[1].effect_name == 'solid_red'
+
     def test_crashing_layer_isolated(self):
         comp = self._make_compositor()
         comp.add_layer(Layer(effect_name='solid_red'))
-        # Manually inject a crashing effect
-        from app.effects.base import Effect
-        class Crasher(Effect):
-            def render(self, t, state):
-                raise RuntimeError("boom")
-        comp._effect_instances[0] = Crasher(10, 20)
-        # Should not raise — just skip the crashing layer
+        # Inject crasher
+        class Crasher:
+            def __init__(self, *a, **kw): pass
+            def render(self, t, state): raise RuntimeError("boom")
+            def update_params(self, p): pass
+        comp._effect_instances[0] = Crasher()
         frame = comp.render(0, MagicMock())
-        assert frame.shape == (10, 20, 3)
+        assert frame.shape == (10, 20, 3)  # returns black, no crash
+
+    def test_compositor_ms_tracked(self):
+        comp = self._make_compositor()
+        comp.add_layer(Layer(effect_name='solid_red'))
+        comp.render(0, MagicMock())
+        assert comp.compositor_ms >= 0
+
+    def test_apply_layout_recreates_instances(self):
+        comp = self._make_compositor(width=10, height=20)
+        comp.add_layer(Layer(effect_name='solid_red'))
+        frame1 = comp.render(0, MagicMock())
+        assert frame1.shape == (10, 20, 3)
+        # Change layout
+        comp.apply_layout(5, 40)
+        frame2 = comp.render(0, MagicMock())
+        assert frame2.shape == (5, 40, 3)
+
+    def test_to_dict(self):
+        comp = self._make_compositor()
+        comp.add_layer(Layer(effect_name='solid_red', opacity=0.8))
+        comp.add_layer(Layer(effect_name='solid_blue', blend_mode='add'))
+        d = comp.to_dict()
+        assert len(d['layers']) == 2
+        assert d['layers'][0]['opacity'] == 0.8
+        assert d['layers'][1]['blend_mode'] == 'add'
 ```
 
 - [ ] **Step 2: Run tests to verify they fail**
@@ -399,14 +359,6 @@ Expected: ImportError for Layer, Compositor
 Append to `pi/app/core/compositor.py`:
 
 ```python
-import logging
-import time
-from dataclasses import dataclass, field
-from typing import Optional
-
-logger = logging.getLogger(__name__)
-
-
 @dataclass
 class Layer:
     """One layer in the compositor stack."""
@@ -438,7 +390,6 @@ class Compositor:
         self.compositor_ms: float = 0.0
 
     def add_layer(self, layer: Layer, index: Optional[int] = None) -> int:
-        """Add a layer. Returns the layer index."""
         if index is None:
             self.layers.append(layer)
             idx = len(self.layers) - 1
@@ -449,13 +400,11 @@ class Compositor:
         return idx
 
     def remove_layer(self, index: int):
-        """Remove a layer by index."""
         if 0 <= index < len(self.layers):
             self.layers.pop(index)
             self._rebuild_instances()
 
     def move_layer(self, from_idx: int, to_idx: int):
-        """Move a layer from one position to another."""
         if 0 <= from_idx < len(self.layers):
             layer = self.layers.pop(from_idx)
             to_idx = min(to_idx, len(self.layers))
@@ -463,7 +412,6 @@ class Compositor:
             self._rebuild_instances()
 
     def update_layer(self, index: int, **kwargs):
-        """Update layer properties (opacity, blend_mode, enabled, params)."""
         if 0 <= index < len(self.layers):
             layer = self.layers[index]
             for key, value in kwargs.items():
@@ -475,22 +423,19 @@ class Compositor:
                 elif hasattr(layer, key):
                     setattr(layer, key, value)
 
+    def apply_layout(self, width: int, height: int):
+        """Rebuild all effect instances at new dimensions (layout hot-swap)."""
+        self.width = width
+        self.height = height
+        self._rebuild_instances()
+
     def _rebuild_instances(self):
-        """Rebuild effect instances to match layer list."""
         new_instances = []
-        for i, layer in enumerate(self.layers):
-            # Reuse existing instance if same effect at same position
-            if i < len(self._effect_instances) and self._effect_instances[i] is not None:
-                old_layer_name = getattr(self._effect_instances[i], '_compositor_effect_name', None)
-                if old_layer_name == layer.effect_name:
-                    new_instances.append(self._effect_instances[i])
-                    continue
-            # Create new instance
+        for layer in self.layers:
             cls = self._effect_registry.get(layer.effect_name)
             if cls:
                 try:
                     instance = cls(width=self.width, height=self.height, params=layer.params)
-                    instance._compositor_effect_name = layer.effect_name
                     new_instances.append(instance)
                 except Exception as e:
                     logger.error(f"Failed to create effect '{layer.effect_name}': {e}")
@@ -501,7 +446,6 @@ class Compositor:
         self._effect_instances = new_instances
 
     def render(self, t: float, state) -> np.ndarray:
-        """Render all enabled layers and blend into a single frame."""
         start = time.perf_counter()
         result = np.zeros((self.width, self.height, 3), dtype=np.uint8)
 
@@ -511,23 +455,31 @@ class Compositor:
             instance = self._effect_instances[i]
             if instance is None:
                 continue
-
             try:
                 frame = instance.render(t, state)
             except Exception as e:
                 logger.error(f"Layer {i} '{layer.effect_name}' crashed: {e}", exc_info=True)
                 continue
-
-            blend_fn = BLEND_MODES.get(layer.blend_mode, blend_normal)
-            result = blend_fn(result, frame, layer.opacity)
+            result = blend(result, frame, layer.opacity, layer.blend_mode)
 
         self.compositor_ms = (time.perf_counter() - start) * 1000
         return result
 
     def to_dict(self) -> dict:
-        return {
-            'layers': [l.to_dict() for l in self.layers],
-        }
+        return {'layers': [l.to_dict() for l in self.layers]}
+
+    @staticmethod
+    def from_dict(data: dict, width: int, height: int, effect_registry: dict) -> 'Compositor':
+        comp = Compositor(width, height, effect_registry)
+        for ld in data.get('layers', []):
+            comp.add_layer(Layer(
+                effect_name=ld['effect_name'],
+                params=ld.get('params', {}),
+                opacity=ld.get('opacity', 1.0),
+                blend_mode=ld.get('blend_mode', 'normal'),
+                enabled=ld.get('enabled', True),
+            ))
+        return comp
 ```
 
 - [ ] **Step 4: Run tests**
@@ -539,86 +491,288 @@ Expected: All pass
 
 ```bash
 git add pi/app/core/compositor.py pi/tests/test_compositor.py
-git commit -m "feat: add Layer model and Compositor with error isolation per layer"
+git commit -m "feat: add Layer model and Compositor with error isolation, layout rebind"
 ```
 
 ---
 
-### Task 4: Integrate Compositor into Renderer
+### Task 3: Error Isolation Integration Test
 
 **Files:**
+- Create: `pi/tests/test_error_isolation.py`
 - Modify: `pi/app/core/renderer.py`
-- Modify: `pi/app/main.py`
 
-- [ ] **Step 1: Add compositor to Renderer**
+**Codex H3 fix:** Test exercises the actual `_render_frame()` path, not just calling render() directly.
 
-In `pi/app/core/renderer.py`, add compositor support that's backward-compatible with single-effect mode:
+- [ ] **Step 1: Write integration test for renderer error isolation**
 
 ```python
-# In Renderer.__init__, after self.current_effect = None:
-self.compositor = None  # Optional — set when using layers
+# pi/tests/test_error_isolation.py
+import asyncio
+import numpy as np
+from unittest.mock import MagicMock, AsyncMock
+from app.effects.base import Effect
+from app.core.renderer import Renderer, RenderState
+from app.core.brightness import BrightnessEngine
+from app.layout import load_layout, compile_layout
+from pathlib import Path
 
-# In Renderer._render_frame(), replace the effect render block with:
-if self.compositor and self.compositor.layers:
-    # Multi-layer mode: use compositor
-    effect_start = time.perf_counter()
-    try:
-        internal_frame = self.compositor.render(t, self.state)
-    except Exception as e:
-        logger.error(f"Compositor crashed: {e}", exc_info=True)
-        internal_frame = np.zeros((w, h, 3), dtype=np.uint8)
-    self.state.effect_render_ms = (time.perf_counter() - effect_start) * 1000
-elif self.current_effect is not None:
-    # Single-effect mode: backward compatible
-    effect_start = time.perf_counter()
-    try:
-        internal_frame = self.current_effect.render(t, self.state)
-    except Exception as e:
-        logger.error(f"Effect '{self.state.current_scene}' crashed: {e}", exc_info=True)
-        internal_frame = np.zeros((w, h, 3), dtype=np.uint8)
-    self.state.effect_render_ms = (time.perf_counter() - effect_start) * 1000
-else:
-    internal_frame = np.zeros((w, h, 3), dtype=np.uint8)
+
+class CrashingEffect(Effect):
+    """Effect that always crashes."""
+    def render(self, t, state):
+        raise RuntimeError("Effect exploded")
+
+
+class WorkingEffect(Effect):
+    """Effect that returns green frame."""
+    def render(self, t, state):
+        frame = np.zeros((self.width, self.height, 3), dtype=np.uint8)
+        frame[:, :, 1] = 128
+        return frame
+
+
+def test_renderer_isolates_crashing_effect():
+    """_render_frame() should catch effect crash and continue."""
+    layout_config = load_layout(Path("config"))
+    layout = compile_layout(layout_config)
+    state = RenderState()
+    brightness = BrightnessEngine({})
+
+    # Mock transport to capture sent frames
+    transport = MagicMock()
+    transport.send_frame = AsyncMock(return_value=True)
+
+    renderer = Renderer(transport, state, brightness, layout)
+    renderer.current_effect = CrashingEffect(layout.width, layout.height)
+    state.current_scene = "crasher"
+
+    # Run one frame — should NOT raise
+    loop = asyncio.new_event_loop()
+    loop.run_until_complete(renderer._render_frame())
+    loop.close()
+
+    # Should have sent a frame (black fallback)
+    assert transport.send_frame.called
+    assert state.frames_rendered == 1
+
+
+def test_renderer_continues_after_crash():
+    """After a crash, switching to working effect should work normally."""
+    layout_config = load_layout(Path("config"))
+    layout = compile_layout(layout_config)
+    state = RenderState()
+    brightness = BrightnessEngine({})
+    transport = MagicMock()
+    transport.send_frame = AsyncMock(return_value=True)
+
+    renderer = Renderer(transport, state, brightness, layout)
+
+    # First: crashing effect
+    renderer.current_effect = CrashingEffect(layout.width, layout.height)
+    state.current_scene = "crasher"
+    loop = asyncio.new_event_loop()
+    loop.run_until_complete(renderer._render_frame())
+
+    # Switch to working effect
+    renderer.current_effect = WorkingEffect(layout.width, layout.height)
+    state.current_scene = "worker"
+    loop.run_until_complete(renderer._render_frame())
+    loop.close()
+
+    assert state.frames_rendered == 2
+    assert state.frames_sent >= 1
 ```
 
-- [ ] **Step 2: Run full test suite**
+- [ ] **Step 2: Add error isolation to renderer._render_frame()**
 
-Run: `cd pi && PYTHONPATH=. pytest tests/ -v --tb=short -q`
-Expected: Same pass count as before (434+), no regressions
+In `pi/app/core/renderer.py`, wrap the effect.render() call:
 
-- [ ] **Step 3: Deploy and verify single-effect mode still works**
-
-```bash
-bash pi/scripts/deploy.sh ledfanatic.local
+```python
+      effect_start = time.perf_counter()
+      try:
+          internal_frame = self.current_effect.render(t, self.state)
+      except Exception as e:
+          logger.error(f"Effect '{self.state.current_scene}' crashed: {e}", exc_info=True)
+          internal_frame = np.zeros((w, h, 3), dtype=np.uint8)
+      self.state.effect_render_ms = (time.perf_counter() - effect_start) * 1000
 ```
 
-Verify: `curl http://ledfanatic.local/api/system/status` returns FPS > 55
+- [ ] **Step 3: Run tests**
+
+Run: `cd pi && PYTHONPATH=. pytest tests/test_error_isolation.py -v`
+Expected: All pass
 
 - [ ] **Step 4: Commit**
 
 ```bash
-git add pi/app/core/renderer.py pi/app/main.py
-git commit -m "feat: integrate compositor into render loop (backward-compatible)"
+git add pi/tests/test_error_isolation.py pi/app/core/renderer.py
+git commit -m "feat: isolate effect render errors in _render_frame()"
 ```
 
 ---
 
-### Task 5: Layer CRUD API Endpoints
+### Task 4: Wire compositor_ms into RenderState and API
+
+**Files:**
+- Modify: `pi/app/core/renderer.py`
+
+**Codex M6 fix:** compositor_ms exposed via status API for profiler workspace.
+
+- [ ] **Step 1: Add compositor_ms to RenderState**
+
+```python
+# In RenderState.__init__, after send_ms:
+    self.compositor_ms: float = 0.0
+
+# In RenderState.to_dict(), add:
+      'compositor_ms': round(self.compositor_ms, 2),
+```
+
+- [ ] **Step 2: Thread compositor_ms from compositor to RenderState in _render_frame()**
+
+```python
+# After compositor renders, copy timing:
+    if self.compositor and self.compositor.layers:
+        ...
+        self.state.compositor_ms = self.compositor.compositor_ms
+    else:
+        self.state.compositor_ms = 0.0
+```
+
+- [ ] **Step 3: Run tests**
+
+Run: `cd pi && PYTHONPATH=. pytest tests/ -v -q`
+Expected: No regressions
+
+- [ ] **Step 4: Commit**
+
+```bash
+git add pi/app/core/renderer.py
+git commit -m "feat: expose compositor_ms in RenderState and system API"
+```
+
+---
+
+### Task 5: Persistent Layer Storage (State Migration)
+
+**Files:**
+- Modify: `pi/app/core/state.py`
+
+**Codex H1 fix:** state.json schema_version v2 stores layer stack. v1→v2 migration preserves single-effect scenes.
+
+- [ ] **Step 1: Add layers property to StateManager**
+
+```python
+# In StateManager, add property:
+@property
+def current_layers(self) -> list[dict]:
+    return self._data.get('current_layers', [])
+
+@current_layers.setter
+def current_layers(self, layers: list[dict]):
+    self._data['current_layers'] = layers
+    self.mark_dirty()
+```
+
+- [ ] **Step 2: Add v1→v2 migration**
+
+```python
+def _migrate(self, data: dict) -> dict:
+    version = data.get('schema_version', 0)
+    if version < 1:
+        # ... existing v0→v1 migration ...
+        data['schema_version'] = 1
+    if version < 2:
+        # v1→v2: convert single scene to layer format
+        scene = data.get('current_scene')
+        params = data.get('current_params', {})
+        if scene:
+            data['current_layers'] = [{
+                'effect_name': scene,
+                'params': params,
+                'opacity': 1.0,
+                'blend_mode': 'normal',
+                'enabled': True,
+            }]
+        else:
+            data['current_layers'] = []
+        data['schema_version'] = 2
+    return data
+```
+
+- [ ] **Step 3: Write test for migration**
+
+```python
+# In pi/tests/test_state.py or test_migrations.py
+def test_v1_to_v2_migration():
+    from app.core.state import StateManager
+    sm = StateManager(config_dir=Path("/tmp/test_state"))
+    sm._data = {
+        'schema_version': 1,
+        'current_scene': 'rainbow_rotate',
+        'current_params': {'speed': 0.5},
+    }
+    sm._migrate(sm._data)
+    assert sm._data['schema_version'] == 2
+    assert len(sm._data['current_layers']) == 1
+    assert sm._data['current_layers'][0]['effect_name'] == 'rainbow_rotate'
+    assert sm._data['current_layers'][0]['opacity'] == 1.0
+```
+
+- [ ] **Step 4: Run tests**
+
+Run: `cd pi && PYTHONPATH=. pytest tests/test_state.py tests/test_migrations.py -v`
+Expected: All pass
+
+- [ ] **Step 5: Commit**
+
+```bash
+git add pi/app/core/state.py pi/tests/
+git commit -m "feat: state.json v2 schema with persistent layer storage"
+```
+
+---
+
+### Task 6: Layer CRUD API with Pydantic Models
 
 **Files:**
 - Modify: `pi/app/api/routes/scenes.py`
 
-- [ ] **Step 1: Add layer endpoints**
+**Codex M4 fix:** Typed Pydantic request models, reorder endpoint included.
 
-Add to `pi/app/api/routes/scenes.py`:
+- [ ] **Step 1: Define Pydantic models**
+
+```python
+# At top of pi/app/api/routes/scenes.py (or in schemas.py)
+from pydantic import BaseModel, Field
+from typing import Optional
+
+class LayerAddRequest(BaseModel):
+    effect_name: str
+    params: dict = Field(default_factory=dict)
+    opacity: float = 1.0
+    blend_mode: str = 'normal'
+    enabled: bool = True
+
+class LayerUpdateRequest(BaseModel):
+    opacity: Optional[float] = None
+    blend_mode: Optional[str] = None
+    enabled: Optional[bool] = None
+    params: Optional[dict] = None
+
+class LayerReorderRequest(BaseModel):
+    from_index: int
+    to_index: int
+```
+
+- [ ] **Step 2: Add layer CRUD + reorder endpoints**
 
 ```python
 @router.get("/layers")
 async def get_layers():
-    """Get current layer stack."""
     if deps.renderer.compositor:
         return deps.renderer.compositor.to_dict()
-    # Single-effect fallback
     if deps.render_state.current_scene:
         return {'layers': [{'effect_name': deps.render_state.current_scene,
                            'params': deps.state_manager.current_params or {},
@@ -626,110 +780,112 @@ async def get_layers():
     return {'layers': []}
 
 @router.post("/layers/add", dependencies=[Depends(require_auth)])
-async def add_layer(req: dict):
-    """Add a layer to the compositor."""
+async def add_layer(req: LayerAddRequest):
     from app.core.compositor import Layer, Compositor
     if deps.renderer.compositor is None:
         deps.renderer.compositor = Compositor(
-            deps.compiled_layout.width,
-            deps.compiled_layout.height,
-            deps.renderer.effect_registry,
-        )
-    layer = Layer(
-        effect_name=req['effect_name'],
-        params=req.get('params', {}),
-        opacity=req.get('opacity', 1.0),
-        blend_mode=req.get('blend_mode', 'normal'),
-        enabled=req.get('enabled', True),
-    )
+            deps.compiled_layout.width, deps.compiled_layout.height,
+            deps.renderer.effect_registry)
+    layer = Layer(**req.model_dump())
     idx = deps.renderer.compositor.add_layer(layer)
+    deps.state_manager.current_layers = deps.renderer.compositor.to_dict()['layers']
     return {'status': 'ok', 'index': idx, 'layers': deps.renderer.compositor.to_dict()['layers']}
 
 @router.post("/layers/{index}/remove", dependencies=[Depends(require_auth)])
 async def remove_layer(index: int):
     if deps.renderer.compositor:
         deps.renderer.compositor.remove_layer(index)
+        deps.state_manager.current_layers = deps.renderer.compositor.to_dict()['layers']
         return {'status': 'ok', 'layers': deps.renderer.compositor.to_dict()['layers']}
     return {'error': 'no compositor active'}
 
 @router.post("/layers/{index}/update", dependencies=[Depends(require_auth)])
-async def update_layer(index: int, req: dict):
+async def update_layer(index: int, req: LayerUpdateRequest):
     if deps.renderer.compositor:
-        deps.renderer.compositor.update_layer(index, **req)
+        updates = {k: v for k, v in req.model_dump().items() if v is not None}
+        deps.renderer.compositor.update_layer(index, **updates)
+        deps.state_manager.current_layers = deps.renderer.compositor.to_dict()['layers']
+        return {'status': 'ok', 'layers': deps.renderer.compositor.to_dict()['layers']}
+    return {'error': 'no compositor active'}
+
+@router.post("/layers/reorder", dependencies=[Depends(require_auth)])
+async def reorder_layer(req: LayerReorderRequest):
+    if deps.renderer.compositor:
+        deps.renderer.compositor.move_layer(req.from_index, req.to_index)
+        deps.state_manager.current_layers = deps.renderer.compositor.to_dict()['layers']
         return {'status': 'ok', 'layers': deps.renderer.compositor.to_dict()['layers']}
     return {'error': 'no compositor active'}
 ```
 
-- [ ] **Step 2: Test manually**
-
-Deploy and test via curl:
-```bash
-# Add two layers
-curl -X POST http://ledfanatic.local/api/scenes/layers/add \
-  -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
-  -d '{"effect_name": "rainbow_rotate"}'
-
-curl -X POST http://ledfanatic.local/api/scenes/layers/add \
-  -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
-  -d '{"effect_name": "twinkle", "blend_mode": "add", "opacity": 0.5}'
-
-# Check layers
-curl http://ledfanatic.local/api/scenes/layers
-```
-
-- [ ] **Step 3: Commit**
-
-```bash
-git add pi/app/api/routes/scenes.py
-git commit -m "feat: add layer CRUD API endpoints for compositor"
-```
-
----
-
-### Task 6: Deploy and Verify Phase 1
-
-- [ ] **Step 1: Run full test suite**
+- [ ] **Step 3: Run full test suite**
 
 Run: `cd pi && PYTHONPATH=. pytest tests/ -v -q`
-Expected: 434+ pass, same pre-existing failures only
+Expected: No regressions
 
-- [ ] **Step 2: Deploy to Pi**
+- [ ] **Step 4: Deploy and test on Pi**
 
 ```bash
 bash pi/scripts/deploy.sh ledfanatic.local
 ```
 
-- [ ] **Step 3: Verify single-effect mode unchanged**
+- [ ] **Step 5: Commit**
 
 ```bash
-curl http://ledfanatic.local/api/system/status
-# FPS should be 55+
+git add pi/app/api/routes/scenes.py
+git commit -m "feat: layer CRUD API with Pydantic models and reorder endpoint"
 ```
 
-- [ ] **Step 4: Verify two-layer compositing works**
+---
 
-```bash
-TOKEN=$(ssh jim@ledfanatic.local "python3 -c \"import yaml; print(yaml.safe_load(open('/opt/ledfanatic/config/system.yaml'))['auth']['token'])\"")
+### Task 7: Integration — Compositor in Renderer + Layout Hot-Swap
 
-# Add base layer
-curl -X POST http://ledfanatic.local/api/scenes/layers/add \
-  -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
-  -d '{"effect_name": "rainbow_rotate"}'
+**Files:**
+- Modify: `pi/app/core/renderer.py`
 
-# Add overlay
-curl -X POST http://ledfanatic.local/api/scenes/layers/add \
-  -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
-  -d '{"effect_name": "twinkle", "blend_mode": "add", "opacity": 0.7}'
+**Codex M5 fix:** `renderer.apply_layout()` calls `compositor.apply_layout()` when active.
 
-# Check FPS still above 55
-curl http://ledfanatic.local/api/system/status | python3 -c "import sys,json; print(json.load(sys.stdin)['render']['actual_fps'])"
+- [ ] **Step 1: Add compositor integration to renderer**
+
+In `Renderer.__init__`:
+```python
+self.compositor = None  # Optional — set when using layers
 ```
 
-- [ ] **Step 5: Commit and tag**
+In `Renderer._render_frame()`, before the current effect render block:
+```python
+    if self.compositor and self.compositor.layers:
+        effect_start = time.perf_counter()
+        try:
+            internal_frame = self.compositor.render(t, self.state)
+        except Exception as e:
+            logger.error(f"Compositor crashed: {e}", exc_info=True)
+            internal_frame = np.zeros((w, h, 3), dtype=np.uint8)
+        self.state.effect_render_ms = (time.perf_counter() - effect_start) * 1000
+        self.state.compositor_ms = self.compositor.compositor_ms
+    elif self.current_effect is not None:
+        # existing single-effect path with error isolation
+```
+
+In `Renderer.apply_layout()`, add:
+```python
+    if self.compositor:
+        self.compositor.apply_layout(layout.width, layout.height)
+```
+
+- [ ] **Step 2: Run full test suite + deploy**
+
+Run: `cd pi && PYTHONPATH=. pytest tests/ -v -q`
+Deploy: `bash pi/scripts/deploy.sh ledfanatic.local`
+
+- [ ] **Step 3: Manual verification — two-layer compositing on Pi**
+
+Test via curl: add two layers, verify FPS > 55, verify both effects visible.
+
+- [ ] **Step 4: Commit and tag**
 
 ```bash
-git add -A
-git commit -m "Phase 1 complete: compositor with layers, blend modes, error isolation"
+git add pi/app/core/renderer.py
+git commit -m "feat: integrate compositor into renderer with layout hot-swap"
 git tag v1.2.0-compositor
 ```
 
@@ -737,15 +893,19 @@ git tag v1.2.0-compositor
 
 ## Acceptance Criteria
 
-| Criterion | Test |
-|-----------|------|
-| Effect crash doesn't kill render loop | test_error_isolation.py |
-| 5 blend modes produce correct output | test_compositor.py::TestBlendModes |
-| Empty compositor returns black | test_compositor.py::test_empty_compositor_returns_black |
-| Single layer works | test_compositor.py::test_single_layer |
-| Two-layer add blend works | test_compositor.py::test_two_layers_add_blend |
-| Disabled layer skipped | test_compositor.py::test_disabled_layer_skipped |
-| Crashing layer isolated | test_compositor.py::test_crashing_layer_isolated |
-| Existing single-effect mode unchanged | Full test suite regression |
-| Two-layer scene at 59+ FPS | Manual verification on Pi |
-| Layer CRUD API works | Manual curl tests |
+| Criterion | Test | Codex Finding |
+|-----------|------|---------------|
+| Effect crash doesn't kill render | test_error_isolation.py | H3 ✓ |
+| 5 blend modes correct with opacity | test_compositor.py::TestBlendModes (13 tests) | H2 ✓ |
+| Canonical opacity rule for all modes | test_compositor.py::test_*_half_opacity | H2 ✓ |
+| Empty compositor returns black | test_compositor.py::test_empty_returns_black | — |
+| Disabled layer skipped | test_compositor.py::test_disabled_layer_skipped | — |
+| Crashing layer isolated | test_compositor.py::test_crashing_layer_isolated | — |
+| Layout hot-swap recreates instances | test_compositor.py::test_apply_layout | M5 ✓ |
+| compositor_ms in API | RenderState.to_dict() | M6 ✓ |
+| Layers persist in state.json v2 | test_state/test_migrations | H1 ✓ |
+| v1→v2 migration preserves scenes | test_v1_to_v2_migration | H1 ✓ |
+| Layer CRUD uses Pydantic models | scenes.py LayerAddRequest etc | M4 ✓ |
+| Reorder endpoint exists | POST /layers/reorder | M4 ✓ |
+| Two-layer scene at 59+ FPS | Manual Pi verification | — |
+| Existing single-effect mode unchanged | Full regression suite | — |
