@@ -8,7 +8,7 @@
 
 **Tech Stack:** Python 3.13 / NumPy / FastAPI / Pydantic
 
-**Codex Review:** Rev 10 addressed 30 total findings across 10 rounds.
+**Codex Review:** Rev 11 addressed 31 total findings across 11 rounds.
 
 Round 1 (6 findings):
 - R1-H1: Added state.json schema_version v2 migration + persistent layer storage
@@ -59,6 +59,9 @@ Round 10 (3 findings):
 - R10-H1: Migration does NOT convert single-scene to layers; explicit render_mode flag gates compositor restore
 - R10-M2: /layers/reorder validates both from_index AND to_index
 - R10-M3: blend() moved inside per-layer try block — bad shape/dtype can't crash compositor
+
+Round 11 (1 finding):
+- R11-M1: /layers/{index}/remove resets render_mode to 'single' when last layer deleted
 
 ---
 
@@ -995,6 +998,8 @@ async def remove_layer(index: int):
         deps.renderer.compositor = None
         deps.state_manager.current_scene = None
         deps.state_manager.current_params = None
+        deps.state_manager._state['render_mode'] = 'single'
+        deps.state_manager.mark_dirty()
     return {'status': 'ok', 'layers': layers}
 
 @router.post("/layers/{index}/update", dependencies=[Depends(require_auth)])
