@@ -84,6 +84,12 @@ Round 13 (3 findings):
 | Modify | `pi/app/core/renderer.py:RenderState` | Add compositor_ms field + to_dict() |
 | Modify | `pi/app/core/state.py` | schema_version v2, persist layers, v1→v2 migration |
 | Modify | `pi/app/api/routes/scenes.py` | Layer CRUD + reorder endpoints with Pydantic models |
+| Modify | `pi/app/layout/schema.py` | Add brightness_cal to segments |
+| Modify | `pi/app/layout/compiler.py` | Precompute per-pixel correction array |
+| Modify | `pi/app/layout/packer.py` | Apply corrections during vectorized pack |
+| Create | `pi/app/ui/static/calibrate.html` | Keyboard-driven brightness calibration tool |
+| Modify | `pi/app/api/routes/layout.py` | Calibration preview + save endpoints |
+| Create | `pi/tests/test_brightness_cal.py` | Calibration schema, compiler, pack tests |
 
 ---
 
@@ -1061,7 +1067,274 @@ git commit -m "feat: layer CRUD API with Pydantic models and reorder endpoint"
 
 ---
 
-### Task 7: Integration — Compositor in Renderer + Layout Hot-Swap + Boot Restore
+### Task 7: Per-Segment Brightness Calibration (Core Component)
+
+**Files:**
+- Modify: `pi/app/layout/schema.py` — add `brightness_cal` field to segments
+- Modify: `pi/app/layout/compiler.py` — precompute per-pixel correction arrays
+- Modify: `pi/app/layout/packer.py` — apply corrections during pack
+- Create: `pi/app/ui/static/calibrate.html` — keyboard-driven calibration tool
+- Modify: `pi/app/api/routes/layout.py` — save calibration data endpoint
+- Create: `pi/tests/test_brightness_cal.py` — unit tests
+
+**Why core:** Different LED segments display different brightness at the same
+input value. Without per-segment correction, the panel looks uneven. This must
+be baked into the pack pipeline so every frame is automatically corrected.
+
+**Data model:** Per-segment, per-channel (R/G/B), 3-point correction curve at
+brightness levels 0.2, 0.5, 0.8. Stored in layout.yaml alongside each segment.
+Defaults to 1.0 (no correction). At runtime, corrections are precomputed into
+a per-pixel multiplier array and applied in pack_frame via vectorized multiply.
+
+- [ ] **Step 1: Write failing test for calibration data in schema**
+
+```python
+# pi/tests/test_brightness_cal.py
+from app.layout.schema import LinearSegment, parse_layout
+import numpy as np
+
+
+def test_segment_has_default_brightness_cal():
+    """Segments should have brightness_cal defaulting to neutral (1.0)."""
+    seg = LinearSegment(id='s1', start=(0, 0), direction='+y', length=10, physical_offset=0)
+    assert seg.brightness_cal == {'r': [1.0, 1.0, 1.0], 'g': [1.0, 1.0, 1.0], 'b': [1.0, 1.0, 1.0]}
+
+
+def test_parse_layout_with_brightness_cal():
+    """Layout YAML with brightness_cal should parse correctly."""
+    raw = {
+        'version': 1,
+        'matrix': {'width': 2, 'height': 5},
+        'outputs': [{
+            'id': 'out0', 'channel': 0,
+            'segments': [{
+                'id': 'seg0', 'type': 'linear',
+                'start': {'x': 0, 'y': 0}, 'direction': '+y', 'length': 5,
+                'physical_offset': 0,
+                'brightness_cal': {
+                    'r': [0.8, 0.9, 1.0],
+                    'g': [1.0, 1.0, 1.0],
+                    'b': [0.7, 0.85, 1.0],
+                },
+            }],
+        }],
+    }
+    config = parse_layout(raw)
+    seg = config.outputs[0].segments[0]
+    assert seg.brightness_cal['r'] == [0.8, 0.9, 1.0]
+    assert seg.brightness_cal['b'][0] == 0.7
+
+
+def test_compiled_layout_has_correction_array():
+    """CompiledLayout should have precomputed per-pixel RGB correction."""
+    from app.layout.compiler import compile_layout
+    raw = {
+        'version': 1,
+        'matrix': {'width': 1, 'height': 5},
+        'outputs': [{
+            'id': 'out0', 'channel': 0,
+            'segments': [{
+                'id': 'seg0', 'type': 'linear',
+                'start': {'x': 0, 'y': 0}, 'direction': '+y', 'length': 5,
+                'physical_offset': 0,
+                'brightness_cal': {
+                    'r': [0.5, 0.75, 1.0],
+                    'g': [1.0, 1.0, 1.0],
+                    'b': [1.0, 1.0, 1.0],
+                },
+            }],
+        }],
+    }
+    config = parse_layout(raw)
+    layout = compile_layout(config)
+    # Should have a correction array (n_entries * 3,) matching pack_src/pack_dst
+    assert hasattr(layout, 'pack_correction')
+    assert layout.pack_correction.shape == layout.pack_src.shape
+    # Red channel corrections should be < 1.0 (segment has r=[0.5, 0.75, 1.0])
+    # At default brightness, interpolation gives a single multiplier per segment
+```
+
+- [ ] **Step 2: Run test — verify it fails**
+
+Run: `cd pi && PYTHONPATH=. pytest tests/test_brightness_cal.py -v`
+Expected: AttributeError — brightness_cal not in schema yet
+
+- [ ] **Step 3: Add brightness_cal to segment schema**
+
+In `pi/app/layout/schema.py`, add to both segment dataclasses:
+
+```python
+# Default: neutral correction (1.0 at all 3 test levels for all 3 channels)
+_DEFAULT_CAL = {'r': [1.0, 1.0, 1.0], 'g': [1.0, 1.0, 1.0], 'b': [1.0, 1.0, 1.0]}
+
+@dataclass(frozen=True)
+class LinearSegment:
+    # ... existing fields ...
+    brightness_cal: dict = field(default_factory=lambda: dict(_DEFAULT_CAL))
+
+@dataclass(frozen=True)
+class ExplicitSegment:
+    # ... existing fields ...
+    brightness_cal: dict = field(default_factory=lambda: dict(_DEFAULT_CAL))
+```
+
+In `parse_layout()`, parse the cal data for each segment:
+
+```python
+# After other segment fields, add:
+brightness_cal = seg_raw.get('brightness_cal', {
+    'r': [1.0, 1.0, 1.0], 'g': [1.0, 1.0, 1.0], 'b': [1.0, 1.0, 1.0],
+})
+```
+
+Pass `brightness_cal=brightness_cal` to both LinearSegment and ExplicitSegment constructors.
+
+- [ ] **Step 4: Precompute correction array in compiler**
+
+In `pi/app/layout/compiler.py`, after building pack_src/pack_dst, build a
+correction array that matches the same layout:
+
+```python
+# For each entry, compute a per-channel correction multiplier.
+# The 3-point cal curve (at 0.2, 0.5, 0.8 brightness) is averaged to a
+# single multiplier per channel. This is a simple first-pass — future
+# versions can interpolate per-pixel based on actual brightness.
+correction = np.ones(n * 3, dtype=np.float32)
+for i, e in enumerate(entries):
+    # Find which segment this entry belongs to
+    seg_cal = segment_cal_map.get(e.segment_id, _DEFAULT_CAL)
+    i3 = i * 3
+    # Average the 3 calibration points per channel as a single multiplier
+    # Swizzle-aware: correction[i3+0] maps to the R output byte, etc.
+    r_mul = sum(seg_cal.get('r', [1, 1, 1])) / 3.0
+    g_mul = sum(seg_cal.get('g', [1, 1, 1])) / 3.0
+    b_mul = sum(seg_cal.get('b', [1, 1, 1])) / 3.0
+    muls = [r_mul, g_mul, b_mul]
+    correction[i3] = muls[e.swizzle[0]]
+    correction[i3 + 1] = muls[e.swizzle[1]]
+    correction[i3 + 2] = muls[e.swizzle[2]]
+```
+
+Add `pack_correction` to CompiledLayout:
+
+```python
+pack_correction: np.ndarray = field(default_factory=lambda: np.ones(0, dtype=np.float32))
+```
+
+To build `segment_cal_map`, track segment_id on MappingEntry:
+
+```python
+@dataclass
+class MappingEntry:
+    x: int
+    y: int
+    channel: int
+    pixel_index: int
+    swizzle: tuple[int, int, int]
+    segment_id: str = ""  # NEW: for calibration lookup
+```
+
+- [ ] **Step 5: Apply corrections in pack_frame**
+
+In `pi/app/layout/packer.py`, apply the correction during packing:
+
+```python
+def pack_frame(frame: np.ndarray, layout: CompiledLayout) -> bytes:
+    if layout.pack_buf_size == 0:
+        return b''
+    buf = np.zeros(layout.pack_buf_size, dtype=np.uint8)
+    flat = frame.ravel()
+    # Apply per-segment brightness correction (vectorized multiply)
+    corrected = (flat[layout.pack_src].astype(np.float32) * layout.pack_correction)
+    buf[layout.pack_dst] = np.clip(corrected, 0, 255).astype(np.uint8)
+    return buf.tobytes()
+```
+
+This adds one float32 multiply + clip per pixel — negligible cost on 830 pixels.
+
+- [ ] **Step 6: Run tests**
+
+Run: `cd pi && PYTHONPATH=. pytest tests/test_brightness_cal.py tests/test_layout_packer.py -v`
+Expected: All pass
+
+- [ ] **Step 7: Create calibration UI tool**
+
+Create `pi/app/ui/static/calibrate.html` — keyboard-driven calibration page:
+
+```
+Workflow:
+1. Page shows all segments lit at one color/level (e.g., Red @ 0.2)
+2. Current segment highlighted with a border/indicator
+3. Keyboard controls:
+   - Left/Right: select segment
+   - Up/Down: adjust brightness multiplier (±0.01)
+   - Shift+Up/Down: coarse adjust (±0.05)
+   - Enter: advance to next level (0.2 → 0.5 → 0.8) then next color (R → G → B)
+   - Escape: cancel without saving
+   - S: save calibration to layout.yaml
+4. Display: current segment ID, current color, current level, current multiplier value
+5. API calls:
+   - POST /api/layout/calibrate/preview — sets all segments to test color/level
+   - POST /api/layout/calibrate/save — writes brightness_cal to layout.yaml
+```
+
+The calibration preview uses the existing test-pattern overlay in the renderer
+(similar to segment-identify but with a solid color at a specific brightness).
+
+- [ ] **Step 8: Add calibration API endpoints**
+
+In `pi/app/api/routes/layout.py`, add:
+
+```python
+@router.post("/calibrate/preview", dependencies=[Depends(require_auth)])
+async def calibrate_preview(req: dict):
+    """Set all segments to a test color at a specific brightness level."""
+    color = req.get('color', 'r')  # 'r', 'g', 'b'
+    level = req.get('level', 0.5)  # 0.2, 0.5, 0.8
+    multipliers = req.get('multipliers', {})  # segment_id -> float
+    # Build a solid-color frame with per-segment multipliers applied
+    # ... (uses renderer test pattern mechanism)
+    return {'status': 'ok'}
+
+@router.post("/calibrate/save", dependencies=[Depends(require_auth)])
+async def calibrate_save(req: dict):
+    """Save brightness_cal data to layout.yaml."""
+    cal_data = req.get('calibration', {})  # segment_id -> {r: [...], g: [...], b: [...]}
+    # Load layout.yaml, update brightness_cal per segment, save
+    # ... (uses save_layout from layout module)
+    # Recompile layout to update pack_correction
+    return {'status': 'ok'}
+```
+
+- [ ] **Step 9: Run full test suite**
+
+Run: `cd pi && PYTHONPATH=. pytest tests/ -v -q`
+Expected: No regressions, calibration tests pass
+
+- [ ] **Step 10: Deploy and test on Pi**
+
+```bash
+bash pi/scripts/deploy.sh ledfanatic.local
+```
+
+Open `http://ledfanatic.local/static/calibrate.html` and verify:
+- Segments light up at specified color/level
+- Keyboard navigation works
+- Multiplier adjustments are visible in real-time
+- Save persists to layout.yaml
+
+- [ ] **Step 11: Commit**
+
+```bash
+git add pi/app/layout/schema.py pi/app/layout/compiler.py pi/app/layout/packer.py \
+  pi/app/ui/static/calibrate.html pi/app/api/routes/layout.py \
+  pi/tests/test_brightness_cal.py
+git commit -m "feat: per-segment brightness calibration — 3-point RGB correction curves"
+```
+
+---
+
+### Task 8: Integration — Compositor in Renderer + Layout Hot-Swap + Boot Restore
 
 **Files:**
 - Modify: `pi/app/core/renderer.py`
@@ -1232,4 +1505,8 @@ git tag v1.2.0-compositor
 | Single-layer with opacity restores correctly | Reboot with opacity=0.5 layer, verify dim | R4-M3 ✓ |
 | Mode switch centralized in activate_scene | Media/diag/startup all exit compositor | R6-H2 ✓ |
 | No stale state after mode transitions | Enter layers, exit, verify clean state | R6-H1 ✓ |
+| Per-segment brightness_cal in schema | test_brightness_cal.py | — |
+| Correction applied during pack_frame | test_brightness_cal.py | — |
+| Calibration UI navigable with keyboard | Manual test on Pi | — |
+| Calibration saves to layout.yaml | Manual test on Pi | — |
 | Existing single-effect mode unchanged | Full regression suite | — |
