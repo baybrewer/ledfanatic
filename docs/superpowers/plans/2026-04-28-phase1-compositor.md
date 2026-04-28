@@ -8,13 +8,20 @@
 
 **Tech Stack:** Python 3.13 / NumPy / FastAPI / Pydantic
 
-**Codex Review:** Rev 1 addressed 6 findings (3 high, 3 medium). Changes from original:
+**Codex Review:** Rev 2 addressed 9 total findings across 2 rounds.
+
+Round 1 (6 findings):
 - H1: Added state.json schema_version v2 migration + persistent layer storage
-- H2: Fixed blend mode opacity — all modes use canonical `mode(base, top)` then `alpha_blend(base, result, opacity)`
-- H3: Error isolation test now exercises `_render_frame()` with mocked transport
+- H2: Fixed blend mode opacity — canonical `mode(base, top)` then `alpha_blend(base, result, opacity)`
+- H3: Error isolation test exercises `_render_frame()` with mocked transport
 - M4: Added Pydantic request models, reorder endpoint
 - M5: Added `compositor.apply_layout()` for layout hot-swap
 - M6: Wired `compositor_ms` into RenderState and system API
+
+Round 2 (3 findings):
+- H1: Compositor now uses shared `_create_effect()` that honors RENDER_SCALE, YAML param merging, and animation_switcher wiring — same contract as renderer._set_scene()
+- M2: Crash isolation test now has healthy + crashing + healthy layers, proves healthy layers survive
+- M3: Pydantic models use `Field(ge=0.0, le=1.0)` for opacity, `Literal` for blend_mode, `Field(ge=0)` for indices
 
 ---
 
@@ -311,17 +318,24 @@ class TestCompositor:
         assert comp.layers[0].effect_name == 'solid_blue'
         assert comp.layers[1].effect_name == 'solid_red'
 
-    def test_crashing_layer_isolated(self):
+    def test_crashing_layer_isolated_other_layers_survive(self):
+        """A crashing layer must not prevent healthy layers from rendering."""
         comp = self._make_compositor()
-        comp.add_layer(Layer(effect_name='solid_red'))
-        # Inject crasher
+        comp.add_layer(Layer(effect_name='solid_red'))          # layer 0: healthy
+        comp.add_layer(Layer(effect_name='solid_blue'))         # layer 1: will crash
+        comp.add_layer(Layer(effect_name='solid_red', blend_mode='add'))  # layer 2: healthy
+        # Inject crasher into layer 1 only
         class Crasher:
             def __init__(self, *a, **kw): pass
             def render(self, t, state): raise RuntimeError("boom")
             def update_params(self, p): pass
-        comp._effect_instances[0] = Crasher()
+        comp._effect_instances[1] = Crasher()
         frame = comp.render(0, MagicMock())
-        assert frame.shape == (10, 20, 3)  # returns black, no crash
+        assert frame.shape == (10, 20, 3)
+        # Layer 0 (red) + layer 2 (red, add) should produce red=255
+        # Layer 1 crash is skipped, blue absent
+        assert frame[0, 0, 0] == 255  # red from layers 0+2
+        assert frame[0, 0, 2] == 0    # no blue — crasher skipped
 
     def test_compositor_ms_tracked(self):
         comp = self._make_compositor()
@@ -381,10 +395,12 @@ class Layer:
 class Compositor:
     """Renders a stack of layers with blend modes into a single frame."""
 
-    def __init__(self, width: int, height: int, effect_registry: dict):
+    def __init__(self, width: int, height: int, effect_registry: dict,
+                 effects_config: Optional[dict] = None):
         self.width = width
         self.height = height
         self._effect_registry = effect_registry
+        self._effects_config = effects_config or {}
         self.layers: list[Layer] = []
         self._effect_instances: list[Optional[object]] = []
         self.compositor_ms: float = 0.0
@@ -429,21 +445,46 @@ class Compositor:
         self.height = height
         self._rebuild_instances()
 
+    def _create_effect(self, effect_name: str, params: dict) -> Optional[object]:
+        """Create an effect instance honoring RENDER_SCALE, YAML param merge,
+        and animation_switcher's _effect_registry injection — same contract as
+        renderer._set_scene() so layered mode preserves all existing behavior."""
+        cls = self._effect_registry.get(effect_name)
+        if cls is None:
+            logger.warning(f"Unknown effect: {effect_name}")
+            return None
+        try:
+            # Merge: YAML config defaults < caller params (mirrors renderer._set_scene)
+            merged = dict(params)
+            if self._effects_config:
+                for section in ('effects', 'audio_effects'):
+                    section_data = self._effects_config.get(section, {})
+                    if effect_name in section_data:
+                        yaml_params = section_data[effect_name].get('params', {})
+                        merged = {**yaml_params, **params}
+                        break
+            # AnimationSwitcher needs effect_registry
+            if effect_name == 'animation_switcher':
+                merged['_effect_registry'] = self._effect_registry
+            # Honor RENDER_SCALE
+            width = self.width
+            height = self.height
+            render_scale = getattr(cls, 'RENDER_SCALE', 1)
+            if render_scale > 1:
+                width *= render_scale
+                height *= render_scale
+            instance = cls(width=width, height=height, params=merged)
+            instance._compositor_render_scale = render_scale
+            return instance
+        except Exception as e:
+            logger.error(f"Failed to create effect '{effect_name}': {e}")
+            return None
+
     def _rebuild_instances(self):
-        new_instances = []
-        for layer in self.layers:
-            cls = self._effect_registry.get(layer.effect_name)
-            if cls:
-                try:
-                    instance = cls(width=self.width, height=self.height, params=layer.params)
-                    new_instances.append(instance)
-                except Exception as e:
-                    logger.error(f"Failed to create effect '{layer.effect_name}': {e}")
-                    new_instances.append(None)
-            else:
-                logger.warning(f"Unknown effect: {layer.effect_name}")
-                new_instances.append(None)
-        self._effect_instances = new_instances
+        self._effect_instances = [
+            self._create_effect(layer.effect_name, layer.params)
+            for layer in self.layers
+        ]
 
     def render(self, t: float, state) -> np.ndarray:
         start = time.perf_counter()
@@ -457,6 +498,13 @@ class Compositor:
                 continue
             try:
                 frame = instance.render(t, state)
+                # Downsample if effect uses RENDER_SCALE > 1
+                scale = getattr(instance, '_compositor_render_scale', 1)
+                if scale > 1:
+                    from PIL import Image
+                    img = Image.fromarray(frame.transpose(1, 0, 2))
+                    img = img.resize((self.width, self.height), Image.LANCZOS)
+                    frame = np.array(img).transpose(1, 0, 2)
             except Exception as e:
                 logger.error(f"Layer {i} '{layer.effect_name}' crashed: {e}", exc_info=True)
                 continue
@@ -746,24 +794,26 @@ git commit -m "feat: state.json v2 schema with persistent layer storage"
 ```python
 # At top of pi/app/api/routes/scenes.py (or in schemas.py)
 from pydantic import BaseModel, Field
-from typing import Optional
+from typing import Optional, Literal
+
+BlendMode = Literal['normal', 'add', 'screen', 'multiply', 'max']
 
 class LayerAddRequest(BaseModel):
     effect_name: str
     params: dict = Field(default_factory=dict)
-    opacity: float = 1.0
-    blend_mode: str = 'normal'
+    opacity: float = Field(default=1.0, ge=0.0, le=1.0)
+    blend_mode: BlendMode = 'normal'
     enabled: bool = True
 
 class LayerUpdateRequest(BaseModel):
-    opacity: Optional[float] = None
-    blend_mode: Optional[str] = None
+    opacity: Optional[float] = Field(default=None, ge=0.0, le=1.0)
+    blend_mode: Optional[BlendMode] = None
     enabled: Optional[bool] = None
     params: Optional[dict] = None
 
 class LayerReorderRequest(BaseModel):
-    from_index: int
-    to_index: int
+    from_index: int = Field(ge=0)
+    to_index: int = Field(ge=0)
 ```
 
 - [ ] **Step 2: Add layer CRUD + reorder endpoints**
@@ -900,7 +950,7 @@ git tag v1.2.0-compositor
 | Canonical opacity rule for all modes | test_compositor.py::test_*_half_opacity | H2 ✓ |
 | Empty compositor returns black | test_compositor.py::test_empty_returns_black | — |
 | Disabled layer skipped | test_compositor.py::test_disabled_layer_skipped | — |
-| Crashing layer isolated | test_compositor.py::test_crashing_layer_isolated | — |
+| Crashing layer isolated, others survive | test_compositor.py::test_crashing_layer_isolated_other_layers_survive | R2-M2 ✓ |
 | Layout hot-swap recreates instances | test_compositor.py::test_apply_layout | M5 ✓ |
 | compositor_ms in API | RenderState.to_dict() | M6 ✓ |
 | Layers persist in state.json v2 | test_state/test_migrations | H1 ✓ |
@@ -908,4 +958,7 @@ git tag v1.2.0-compositor
 | Layer CRUD uses Pydantic models | scenes.py LayerAddRequest etc | M4 ✓ |
 | Reorder endpoint exists | POST /layers/reorder | M4 ✓ |
 | Two-layer scene at 59+ FPS | Manual Pi verification | — |
+| RENDER_SCALE honored in layers | Manual test with supersampled effect | R2-H1 ✓ |
+| YAML param defaults merged in layers | Code review of _create_effect | R2-H1 ✓ |
+| Pydantic rejects invalid opacity/blend | 422 on bad request | R2-M3 ✓ |
 | Existing single-effect mode unchanged | Full regression suite | — |
