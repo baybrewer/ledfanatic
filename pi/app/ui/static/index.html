@@ -42,11 +42,9 @@
 
     <!-- Tab navigation -->
     <nav id="tabs" role="tablist" aria-label="Main navigation">
-      <button id="tab-live" class="tab active" data-tab="live" role="tab" aria-selected="true" aria-controls="panel-live" tabindex="0">Live</button>
-      <button id="tab-effects" class="tab" data-tab="effects" role="tab" aria-selected="false" aria-controls="panel-effects" tabindex="-1">Effects</button>
+      <button id="tab-effects" class="tab active" data-tab="effects" role="tab" aria-selected="true" aria-controls="panel-effects" tabindex="0">Effects</button>
       <button id="tab-media" class="tab" data-tab="media" role="tab" aria-selected="false" aria-controls="panel-media" tabindex="-1">Media</button>
       <button id="tab-audio" class="tab" data-tab="audio" role="tab" aria-selected="false" aria-controls="panel-audio" tabindex="-1">Audio</button>
-      <button id="tab-sim" class="tab" data-tab="sim" role="tab" aria-selected="false" aria-controls="panel-sim" tabindex="-1">Sim</button>
       <button id="tab-game" class="tab" data-tab="game" role="tab" aria-selected="false" aria-controls="panel-game" tabindex="-1">Game</button>
       <button id="tab-system" class="tab" data-tab="system" role="tab" aria-selected="false" aria-controls="panel-system" tabindex="-1">System</button>
     </nav>
@@ -55,7 +53,7 @@
     <main id="panels">
 
       <!-- LIVE -->
-      <section id="panel-live" class="panel active" role="tabpanel" aria-labelledby="tab-live">
+      <section id="panel-live" class="panel" role="tabpanel" aria-labelledby="tab-live" hidden>
         <div class="help-panel collapsed" data-tab="live">
           <button class="help-toggle" aria-expanded="false">
             <span class="help-icon">?</span> How to use this page
@@ -74,7 +72,7 @@
       </section>
 
       <!-- EFFECTS -->
-      <section id="panel-effects" class="panel" role="tabpanel" aria-labelledby="tab-effects">
+      <section id="panel-effects" class="panel active" role="tabpanel" aria-labelledby="tab-effects">
         <div class="effects-layout">
           <!-- Left side: category filters + effect grid + controls -->
           <div class="effects-main">
@@ -207,7 +205,7 @@
       <!-- DIAGNOSTICS -->
 
       <!-- SIMULATOR -->
-      <section id="panel-sim" class="panel" role="tabpanel" aria-labelledby="tab-sim">
+      <section id="panel-sim" class="panel" role="tabpanel" aria-labelledby="tab-sim" hidden>
         <div class="help-panel collapsed" data-tab="sim">
           <button class="help-toggle" aria-expanded="false">
             <span class="help-icon">?</span> How to use this page
@@ -360,11 +358,17 @@
               <div class="pm-actions">
                 <button id="pm-test-segments-btn" class="action-btn secondary" title="Each segment a unique color">Identify Segments</button>
                 <button id="pm-test-strips-btn" class="action-btn secondary" title="Each output one color">Identify Strips</button>
-                <button id="pm-validate-btn" class="action-btn secondary">Validate</button>
-                <button id="pm-apply-btn" class="action-btn primary">Apply</button>
               </div>
             </div>
             <div id="pm-status" class="status-msg"></div>
+
+            <!-- Save / Load Configs -->
+            <h3 style="margin-top:16px;">Layout Configs</h3>
+            <div style="display:flex; gap:8px; align-items:center; margin-bottom:8px;">
+              <input id="pm-save-name" type="text" placeholder="Config name..." style="flex:1; padding:6px 10px; background:#1a1a2e; border:1px solid #333; border-radius:6px; color:#eee;">
+              <button id="pm-save-btn" class="action-btn primary">Save</button>
+            </div>
+            <div id="pm-saved-list" style="max-height:200px; overflow-y:auto;"></div>
 
             <!-- Teensy Config Status -->
             <h3 style="margin-top:16px;">Teensy Config</h3>

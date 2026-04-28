@@ -131,6 +131,103 @@ def create_router(deps, require_auth) -> APIRouter:
         deps.renderer.set_test_strip(None)
         return {"status": "ok"}
 
+    # --- Config Save/Load ---
+
+    @router.get("/configs")
+    async def list_configs():
+        """List saved layout configs."""
+        import os, json
+        saves_dir = deps.config_dir / "layout_saves"
+        if not saves_dir.exists():
+            return {"configs": []}
+        configs = []
+        for f in sorted(saves_dir.glob("*.yaml")):
+            meta_file = f.with_suffix('.meta.json')
+            meta = {}
+            if meta_file.exists():
+                try:
+                    meta = json.loads(meta_file.read_text())
+                except Exception:
+                    pass
+            configs.append({
+                "filename": f.name,
+                "name": meta.get("name", f.stem),
+                "date": meta.get("date", ""),
+            })
+        configs.sort(key=lambda c: c["date"], reverse=True)
+        return {"configs": configs}
+
+    @router.post("/configs/save", dependencies=[Depends(require_auth)])
+    async def save_config(req: dict):
+        """Save current layout.yaml as a named config."""
+        import shutil, json
+        from datetime import datetime
+        name = (req.get("name") or "").strip()
+        if not name:
+            raise HTTPException(400, "Name is required")
+        saves_dir = deps.config_dir / "layout_saves"
+        saves_dir.mkdir(exist_ok=True)
+        # Sanitize filename
+        safe_name = "".join(c if c.isalnum() or c in '-_ ' else '' for c in name).strip().replace(' ', '_')
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        filename = f"{timestamp}_{safe_name}.yaml"
+        # Copy current layout.yaml
+        src = deps.config_dir / "layout.yaml"
+        if not src.exists():
+            raise HTTPException(404, "No layout.yaml to save")
+        shutil.copy2(src, saves_dir / filename)
+        # Write metadata
+        meta = {"name": name, "date": datetime.now().strftime("%Y-%m-%d %H:%M")}
+        (saves_dir / f"{filename}.meta.json").write_text(json.dumps(meta))
+        logger.info(f"Saved layout config: {filename} ({name})")
+        return {"status": "ok", "filename": filename}
+
+    @router.post("/configs/load", dependencies=[Depends(require_auth)])
+    async def load_config(req: dict):
+        """Load a saved config, replacing current layout.yaml."""
+        import shutil
+        filename = req.get("filename", "")
+        saves_dir = deps.config_dir / "layout_saves"
+        src = saves_dir / filename
+        if not src.exists():
+            raise HTTPException(404, f"Config '{filename}' not found")
+        dst = deps.config_dir / "layout.yaml"
+        shutil.copy2(src, dst)
+        # Reload and apply
+        try:
+            new_config = load_layout(deps.config_dir)
+            errors = validate_layout(new_config)
+            if errors:
+                raise HTTPException(400, f"Loaded config has errors: {'; '.join(errors)}")
+            new_compiled = compile_layout(new_config)
+            oc = output_config_list(new_compiled)
+            ok = await deps.transport.send_config(oc)
+            if not ok:
+                logger.warning("CONFIG NAK after loading saved config")
+            deps.layout_config = new_config
+            deps.compiled_layout = new_compiled
+            deps.renderer.apply_layout(new_compiled, new_config)
+            logger.info(f"Loaded layout config: {filename}")
+            return {"status": "ok"}
+        except HTTPException:
+            raise
+        except Exception as e:
+            raise HTTPException(500, f"Failed to apply loaded config: {e}")
+
+    @router.delete("/configs/{filename}", dependencies=[Depends(require_auth)])
+    async def delete_config(filename: str):
+        """Delete a saved config."""
+        saves_dir = deps.config_dir / "layout_saves"
+        target = saves_dir / filename
+        meta = saves_dir / f"{filename}.meta.json"
+        if not target.exists():
+            raise HTTPException(404, f"Config '{filename}' not found")
+        target.unlink()
+        if meta.exists():
+            meta.unlink()
+        logger.info(f"Deleted layout config: {filename}")
+        return {"status": "ok"}
+
     @router.post("/probe/{strip}/{led}", dependencies=[Depends(require_auth)])
     async def probe_led(strip: int, led: int):
         """Light a single LED by strip (channel) and wire position. For debugging."""

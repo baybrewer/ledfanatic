@@ -1376,6 +1376,72 @@ async function validateLayout() {
   }
 }
 
+// --- Layout Config Save/Load ---
+
+async function saveLayoutConfig() {
+  const nameInput = document.getElementById('pm-save-name');
+  const name = (nameInput.value || '').trim();
+  if (!name) {
+    showPmStatus('Enter a name for this config', true);
+    nameInput.focus();
+    return;
+  }
+  const result = await api('POST', '/api/layout/configs/save', { name });
+  if (result && result.status === 'ok') {
+    showPmStatus(`Saved "${name}"`);
+    nameInput.value = '';
+    loadSavedConfigs();
+  } else {
+    showPmStatus('Save failed: ' + (result?.error || 'unknown'), true);
+  }
+}
+
+async function loadSavedConfigs() {
+  const container = document.getElementById('pm-saved-list');
+  if (!container) return;
+  const result = await api('GET', '/api/layout/configs');
+  if (!result || !result.configs) {
+    container.innerHTML = '<div style="color:#666; padding:8px;">No saved configs</div>';
+    return;
+  }
+  const configs = result.configs;
+  if (configs.length === 0) {
+    container.innerHTML = '<div style="color:#666; padding:8px;">No saved configs</div>';
+    return;
+  }
+  container.innerHTML = configs.map(c => `
+    <div style="display:flex; justify-content:space-between; align-items:center; padding:6px 8px; border-bottom:1px solid #222;">
+      <div>
+        <strong style="color:#ddd;">${c.name}</strong>
+        <span style="color:#666; font-size:0.85em; margin-left:8px;">${c.date}</span>
+      </div>
+      <div style="display:flex; gap:4px;">
+        <button class="action-btn secondary" style="padding:3px 10px; font-size:0.85em;" onclick="loadLayoutConfig('${c.filename}')">Load</button>
+        <button class="action-btn" style="padding:3px 8px; font-size:0.85em; color:#f66;" onclick="deleteLayoutConfig('${c.filename}')">✕</button>
+      </div>
+    </div>
+  `).join('');
+}
+
+async function loadLayoutConfig(filename) {
+  if (!confirm('Load this config? Current layout will be replaced.')) return;
+  const result = await api('POST', '/api/layout/configs/load', { filename });
+  if (result && result.status === 'ok') {
+    showPmStatus('Config loaded — layout applied');
+    loadPixelMap();
+  } else {
+    showPmStatus('Load failed: ' + (result?.error || 'unknown'), true);
+  }
+}
+
+async function deleteLayoutConfig(filename) {
+  if (!confirm('Delete this saved config?')) return;
+  const result = await api('DELETE', '/api/layout/configs/' + filename);
+  if (result && result.status === 'ok') {
+    loadSavedConfigs();
+  }
+}
+
 function addSegmentRow(defaults) {
   const tbody = document.getElementById('pm-segment-tbody');
   if (!tbody) return;
@@ -1462,8 +1528,8 @@ function initSetup() {
     if (result && result.status === 'ok') showPmStatus('Strip identify active (10s)');
     else showPmStatus('Failed', true);
   });
-  document.getElementById('pm-validate-btn').addEventListener('click', () => validateLayout());
-  document.getElementById('pm-apply-btn').addEventListener('click', () => applyLayout());
+  document.getElementById('pm-save-btn').addEventListener('click', () => saveLayoutConfig());
+  loadSavedConfigs();
   document.getElementById('pm-origin-select').addEventListener('change', () => scheduleApply());
   document.getElementById('pm-grid-w').addEventListener('input', () => scheduleApply());
   document.getElementById('pm-grid-h').addEventListener('input', () => scheduleApply());
