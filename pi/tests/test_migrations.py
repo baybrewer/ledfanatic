@@ -99,6 +99,57 @@ class TestStateMigration:
         assert 'schema_version' in full
         assert full['schema_version'] == STATE_SCHEMA_VERSION
 
+    def test_v1_to_v2_migration(self, tmp_path):
+        """v1 state migrates to v2 with layer fields; scene preserved."""
+        sm = StateManager(config_dir=tmp_path)
+        sm._state = {
+            'schema_version': 1,
+            'current_scene': 'rainbow_rotate',
+            'current_params': {'speed': 0.5},
+        }
+        sm._migrate(sm._state)
+        assert sm._state['schema_version'] == 2
+        # R10-H1: migration does NOT convert scene to layers
+        assert sm._state['current_layers'] == []
+        assert sm._state['render_mode'] == 'single'
+        # Original scene preserved
+        assert sm._state['current_scene'] == 'rainbow_rotate'
+        assert sm._state['current_params'] == {'speed': 0.5}
+
+    def test_v0_to_v2_migration(self, tmp_path):
+        """Unversioned state migrates through v1 to v2."""
+        sm = StateManager(config_dir=tmp_path)
+        sm._state = {
+            'current_scene': 'fire',
+            'current_params': {},
+        }
+        sm._migrate(sm._state)
+        assert sm._state['schema_version'] == 2
+        assert sm._state['current_layers'] == []
+        assert sm._state['render_mode'] == 'single'
+        assert sm._state['current_scene'] == 'fire'
+
+    def test_v1_file_loads_with_layer_fields(self, tmp_path):
+        """A v1 state.json on disk loads and gets layer fields."""
+        v1_state = {
+            'schema_version': 1,
+            'current_scene': 'gradient',
+            'current_params': {'colors': ['blue']},
+            'blackout': False,
+            'scenes': {},
+            'playlists': {},
+            'last_updated': '2026-04-01T00:00:00',
+        }
+        with open(tmp_path / "state.json", 'w') as f:
+            json.dump(v1_state, f)
+
+        mgr = StateManager(config_dir=tmp_path)
+        mgr.load()
+        assert mgr.current_scene == 'gradient'
+        assert mgr.current_layers == []
+        assert mgr._state['render_mode'] == 'single'
+        assert mgr._state['schema_version'] == 2
+
 
 class TestMediaMetadataMigration:
     """media metadata.json versioning and migration."""

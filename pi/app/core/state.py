@@ -16,7 +16,7 @@ from datetime import datetime
 
 logger = logging.getLogger(__name__)
 
-STATE_SCHEMA_VERSION = 1
+STATE_SCHEMA_VERSION = 2
 
 
 class StateManager:
@@ -33,6 +33,8 @@ class StateManager:
       'blackout': False,
       'scenes': {},
       'playlists': {},
+      'current_layers': [],
+      'render_mode': 'single',
       'last_updated': None,
     }
     self._dirty = False
@@ -53,10 +55,18 @@ class StateManager:
 
   def _migrate(self, data: dict):
     """Migrate legacy state data to the current schema."""
-    if 'schema_version' not in data:
+    version = data.get('schema_version', 0)
+    if version < 1:
       # Legacy v0 -> v1: just stamp the version
-      data['schema_version'] = STATE_SCHEMA_VERSION
+      data['schema_version'] = 1
+      version = 1
       logger.info("Migrated state.json from unversioned to v1")
+    if version < 2:
+      # v1 -> v2: add layer support fields (R10-H1: do NOT convert scenes to layers)
+      data['current_layers'] = []
+      data['render_mode'] = 'single'
+      data['schema_version'] = 2
+      logger.info("Migrated state.json from v1 to v2")
 
   def _atomic_write(self):
     """Atomically save state to disk."""
@@ -108,6 +118,15 @@ class StateManager:
   @current_params.setter
   def current_params(self, value: dict):
     self._state['current_params'] = value
+    self.mark_dirty()
+
+  @property
+  def current_layers(self) -> list[dict]:
+    return self._state.get('current_layers', [])
+
+  @current_layers.setter
+  def current_layers(self, layers: list[dict]):
+    self._state['current_layers'] = layers
     self.mark_dirty()
 
   # --- Per-effect param memory ---
