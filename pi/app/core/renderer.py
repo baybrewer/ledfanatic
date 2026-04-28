@@ -172,6 +172,9 @@ class Renderer:
     # Rebuild segment cache if config provided
     if layout_config is not None:
       self._rebuild_segment_cache_from_config(layout_config)
+    # Propagate layout change to compositor if active
+    if self.compositor:
+      self.compositor.apply_layout(layout.width, layout.height)
     # Recreate current effect at new dimensions (force recreation, not update_params)
     if self.state.current_scene and self.state.current_scene in self.effect_registry:
       saved_scene = self.state.current_scene
@@ -340,12 +343,32 @@ class Renderer:
     w = self.layout.width
     h = self.layout.height
 
-    if self.state.blackout or self.current_effect is None:
+    if self.state.blackout:
       logical_frame = np.zeros((w, h, 3), dtype=np.uint8)
       self._last_logical_frame = logical_frame
       self.state.effect_render_ms = 0.0
-    else:
+      self.state.compositor_ms = 0.0
+    elif self.compositor and self.compositor.layers:
+      # Compositor mode — render blended layer stack
       t = time.monotonic()
+      effect_start = time.perf_counter()
+      try:
+        internal_frame = self.compositor.render(t, self.state)
+      except Exception as e:
+        logger.error(f"Compositor crashed: {e}", exc_info=True)
+        internal_frame = np.zeros((w, h, 3), dtype=np.uint8)
+      self.state.effect_render_ms = (time.perf_counter() - effect_start) * 1000
+      self.state.compositor_ms = self.compositor.compositor_ms
+      # Update compositor state for status consumers
+      self.state._compositor_active = True
+      self.state._compositor_layers = self.compositor.to_dict()['layers']
+      logical_frame = internal_frame
+    elif self.current_effect is not None:
+      # Single-effect mode
+      t = time.monotonic()
+      self.state.compositor_ms = 0.0
+      self.state._compositor_active = False
+      self.state._compositor_layers = []
       effect_start = time.perf_counter()
       try:
         internal_frame = self.current_effect.render(t, self.state)
@@ -362,7 +385,17 @@ class Renderer:
         logical_frame = np.array(img).transpose(1, 0, 2)
       else:
         logical_frame = internal_frame
+    else:
+      logical_frame = np.zeros((w, h, 3), dtype=np.uint8)
+      self._last_logical_frame = logical_frame
+      self.state.effect_render_ms = 0.0
+      self.state.compositor_ms = 0.0
+      self.state._compositor_active = False
+      self.state._compositor_layers = []
 
+    # Post-processing pipeline (brightness, gamma, test patterns) —
+    # skip for blackout and no-effect branches which already set logical_frame
+    if not self.state.blackout and (self.current_effect is not None or (self.compositor and self.compositor.layers)):
       # Apply effective brightness from engine
       effective = self.brightness_engine.get_effective_brightness(
         datetime.now(timezone.utc)

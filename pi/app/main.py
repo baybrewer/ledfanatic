@@ -349,12 +349,28 @@ def main():
   audio_analyzer.start()
   logger.info("Audio analyzer auto-started")
 
-  # Startup scene
-  startup = state_manager.current_scene or display_conf.get('startup_scene', 'rainbow_rotate')
-  if not renderer.activate_scene(startup, state_manager.current_params, media_manager=media_manager):
-    fallback = display_conf.get('startup_scene', 'rainbow_rotate')
-    logger.warning(f"Failed to restore scene '{startup}', falling back to '{fallback}'")
-    renderer.activate_scene(fallback)
+  # Startup scene — unified restore with compositor support
+  saved_layers = state_manager.current_layers
+  render_mode = state_manager._state.get('render_mode', 'single')
+  if render_mode == 'layered' and saved_layers:
+    from app.core.compositor import Compositor
+    renderer.compositor = Compositor.from_dict(
+      {'layers': saved_layers},
+      compiled_layout.width, compiled_layout.height,
+      renderer.effect_registry,
+      effects_config=effects_conf,
+    )
+    renderer.current_effect = None
+    render_state.current_scene = None
+    state_manager.current_scene = None
+    state_manager.current_params = None
+    logger.info(f"Restored {len(saved_layers)} layer(s) from state.json")
+  else:
+    startup = state_manager.current_scene or display_conf.get('startup_scene', 'rainbow_rotate')
+    if not renderer.activate_scene(startup, state_manager.current_params, media_manager=media_manager):
+      fallback = display_conf.get('startup_scene', 'rainbow_rotate')
+      logger.warning(f"Failed to restore scene '{startup}', falling back to '{fallback}'")
+      renderer.activate_scene(fallback)
 
   # Preview service
   preview_service = PreviewService(renderer)
