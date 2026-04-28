@@ -42,6 +42,16 @@ LED controller: Raspberry Pi + Teensy 4.1 + OctoWS2811.
 - All new effects must be registered in `pi/app/effects/registry.py` (SSOT) and `pi/app/effects/catalog.py` (metadata)
 - Particle systems should use NumPy structured arrays, not Python object lists
 
+## Compositor (added 2026-04-28)
+- `pi/app/core/compositor.py` — Layer model, 5 blend modes (normal/add/screen/multiply/max), Compositor class
+- Layer stack with per-layer opacity, blend mode, enable/disable
+- Per-layer error isolation (crash in one layer doesn't affect others)
+- Shared `_create_effect()` honors RENDER_SCALE, YAML param merge, animation_switcher
+- Mode exclusion: activate_scene clears compositor; /layers/add bootstraps from current scene
+- State persistence: current_layers + render_mode in state.json v2
+- API: GET/POST /api/scenes/layers (add, remove, update, reorder)
+- Brightness calibration: per-segment 3-point RGB correction curves in layout.yaml → 256-entry LUTs in pack_frame
+
 ## Performance (measured 2026-04-26)
 - pack_frame: 0.24ms (vectorized NumPy fancy indexing, precomputed at compile time)
 - send_frame: ~5ms (USB CDC, hardware-limited)
