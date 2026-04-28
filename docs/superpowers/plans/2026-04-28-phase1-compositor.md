@@ -8,7 +8,7 @@
 
 **Tech Stack:** Python 3.13 / NumPy / FastAPI / Pydantic
 
-**Codex Review:** Rev 4 addressed 14 total findings across 4 rounds.
+**Codex Review:** Rev 5 addressed 16 total findings across 5 rounds.
 
 Round 1 (6 findings):
 - R1-H1: Added state.json schema_version v2 migration + persistent layer storage
@@ -31,6 +31,10 @@ Round 4 (3 findings):
 - R4-H1: Explicit mode exclusion — activate_scene clears compositor; removing all layers clears compositor
 - R4-H2: First /layers/add bootstraps layer 0 from current scene, clears current_effect
 - R4-M3: Boot restore always uses compositor for any non-empty current_layers (preserves opacity/blend)
+
+Round 5 (2 findings):
+- R5-H1: activate_scene clears compositor only AFTER successful activation (no state loss on failure)
+- R5-M2: Boot restore REPLACES existing startup block (not appended after); clears current_effect in compositor path
 
 ---
 
@@ -828,15 +832,17 @@ class LayerReorderRequest(BaseModel):
 
 - [ ] **Step 2: Add mode exclusion to activate_scene**
 
-In the existing `activate_scene` endpoint handler, add compositor teardown:
+In the existing `activate_scene` endpoint handler, clear compositor only AFTER successful activation:
 ```python
 @router.post("/activate", dependencies=[Depends(require_auth)])
 async def activate_scene(req: SceneRequest):
-    # R4-H1 fix: entering single-effect mode clears compositor
-    if deps.renderer.compositor:
+    # ... existing activation logic that returns success/failure ...
+    # R4-H1 + R5-H1 fix: only clear compositor after successful activation
+    # so a failed activate doesn't destroy a running layered scene
+    if success and deps.renderer.compositor:
         deps.renderer.compositor = None
         deps.state_manager.current_layers = []
-    # ... rest of existing activate_scene logic ...
+    # ... return response ...
 ```
 
 - [ ] **Step 3: Add layer CRUD + reorder endpoints**
@@ -962,16 +968,16 @@ In `Renderer.apply_layout()`, add:
         self.compositor.apply_layout(layout.width, layout.height)
 ```
 
-- [ ] **Step 2: Add boot-time layer restore in main.py**
+- [ ] **Step 2: Replace existing startup scene block in main.py**
 
-In `pi/app/main.py`, after the existing startup scene block, add compositor restore:
+In `pi/app/main.py`, REPLACE the existing startup scene block (the `# Startup scene` section) with a unified restore that handles both layered and single-effect modes. This is a replacement, not an addition — avoids the R5-M2 conflict of running both paths.
 
 ```python
-  # Restore scene from persisted state (R3-H1 + R4-M3 fix)
+  # Startup scene — unified restore (R3-H1 + R4-M3 + R5-M2 fix)
+  # Replaces the previous single-effect startup block entirely.
   saved_layers = state_manager.current_layers
   if saved_layers:
-      # Always restore via compositor to preserve opacity/blend/enabled semantics
-      # even for single-layer scenes (R4-M3 fix)
+      # Restore via compositor to preserve opacity/blend/enabled semantics
       from app.core.compositor import Compositor
       renderer.compositor = Compositor.from_dict(
           {'layers': saved_layers},
@@ -979,12 +985,16 @@ In `pi/app/main.py`, after the existing startup scene block, add compositor rest
           renderer.effect_registry,
           effects_config=effects_conf,
       )
+      # R5-M2 fix: clear current_effect so it doesn't linger behind compositor
+      renderer.current_effect = None
       logger.info(f"Restored {len(saved_layers)} layer(s) from state.json")
   else:
       # Legacy: no layers persisted, use current_scene
       startup = state_manager.current_scene or display_conf.get('startup_scene', 'rainbow_rotate')
       if not renderer.activate_scene(startup, state_manager.current_params, media_manager=media_manager):
-          renderer.activate_scene(display_conf.get('startup_scene', 'rainbow_rotate'))
+          fallback = display_conf.get('startup_scene', 'rainbow_rotate')
+          logger.warning(f"Failed to restore scene '{startup}', falling back to '{fallback}'")
+          renderer.activate_scene(fallback)
 ```
 
 - [ ] **Step 3: Run full test suite + deploy**
