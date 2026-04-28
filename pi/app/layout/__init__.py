@@ -7,7 +7,7 @@ from pathlib import Path
 
 import yaml
 
-from .schema import LayoutConfig, MatrixConfig, LinearSegment, ExplicitSegment, parse_layout
+from .schema import LayoutConfig, MatrixConfig, LinearSegment, ExplicitSegment, BrightnessCal, parse_layout
 from .compiler import validate_layout, compile_layout, CompiledLayout, _expand_segment
 from .packer import pack_frame, output_config_list
 
@@ -53,13 +53,20 @@ def save_layout(config: LayoutConfig, config_dir: Path) -> None:
         }
         for seg in output.segments:
             if isinstance(seg, ExplicitSegment):
-                out_data["segments"].append({
+                seg_dict = {
                     "id": seg.id,
                     "type": "explicit",
                     "points": [{"x": p[0], "y": p[1]} for p in seg.points],
                     "physical_offset": seg.physical_offset,
                     "enabled": seg.enabled,
-                })
+                }
+                if seg.brightness_cal != BrightnessCal():
+                    seg_dict['brightness_cal'] = {
+                        'r': list(seg.brightness_cal.r),
+                        'g': list(seg.brightness_cal.g),
+                        'b': list(seg.brightness_cal.b),
+                    }
+                out_data["segments"].append(seg_dict)
             else:
                 seg_data = {
                     "id": seg.id,
@@ -72,6 +79,12 @@ def save_layout(config: LayoutConfig, config_dir: Path) -> None:
                     seg_data["enabled"] = False
                 if seg.color_order:
                     seg_data["color_order"] = seg.color_order
+                if seg.brightness_cal != BrightnessCal():
+                    seg_data['brightness_cal'] = {
+                        'r': list(seg.brightness_cal.r),
+                        'g': list(seg.brightness_cal.g),
+                        'b': list(seg.brightness_cal.b),
+                    }
                 out_data["segments"].append(seg_data)
         data["outputs"].append(out_data)
 

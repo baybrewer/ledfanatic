@@ -13,7 +13,7 @@ import numpy as np
 
 from .schema import (
     LayoutConfig, OutputConfig, LinearSegment, ExplicitSegment, Segment,
-    VALID_DIRECTIONS,
+    BrightnessCal, VALID_DIRECTIONS,
 )
 
 
@@ -130,6 +130,23 @@ class MappingEntry:
     channel: int
     pixel_index: int
     swizzle: tuple[int, int, int]
+    segment_key: tuple = ()  # (output_id, segment_id)
+
+
+def _build_segment_lut(cal: BrightnessCal) -> np.ndarray:
+    """Build (3, 256) uint8 LUT from 3-point calibration curve."""
+    lut = np.zeros((3, 256), dtype=np.uint8)
+    levels = np.array([0.0, 0.2, 0.5, 0.8, 1.0])
+    for ch_idx, points in enumerate([cal.r, cal.g, cal.b]):
+        muls = np.array([1.0, points[0], points[1], points[2], 1.0])
+        for i in range(256):
+            brightness = i / 255.0
+            idx = min(np.searchsorted(levels, brightness, side='right') - 1, len(levels) - 2)
+            idx = max(0, idx)
+            t = (brightness - levels[idx]) / max(levels[idx + 1] - levels[idx], 1e-6)
+            mul = muls[idx] * (1 - t) + muls[idx + 1] * t
+            lut[ch_idx, i] = min(255, max(0, int(i * mul + 0.5)))
+    return lut
 
 
 @dataclass
@@ -148,6 +165,10 @@ class CompiledLayout:
     pack_src: np.ndarray = field(default_factory=lambda: np.empty(0, dtype=np.int32))
     pack_dst: np.ndarray = field(default_factory=lambda: np.empty(0, dtype=np.int32))
     pack_buf_size: int = 0
+    # Per-segment brightness calibration LUTs
+    cal_luts: np.ndarray = field(default_factory=lambda: np.empty((0, 3, 256), dtype=np.uint8))
+    cal_seg_idx_expanded: np.ndarray = field(default_factory=lambda: np.empty(0, dtype=np.int32))
+    cal_logical_ch: np.ndarray = field(default_factory=lambda: np.empty(0, dtype=np.int32))
 
 
 def compile_layout(config: LayoutConfig) -> CompiledLayout:
@@ -191,6 +212,7 @@ def compile_layout(config: LayoutConfig) -> CompiledLayout:
                 entries.append(MappingEntry(
                     x=px, y=py, channel=ch,
                     pixel_index=phys_idx, swizzle=seg_swizzle,
+                    segment_key=(output.id, seg.id),
                 ))
                 total_mapped += 1
                 if phys_idx + 1 > max_idx:
@@ -220,6 +242,43 @@ def compile_layout(config: LayoutConfig) -> CompiledLayout:
         dst[i3 + 1] = base_dst + 1
         dst[i3 + 2] = base_dst + 2
 
+    # Build per-segment brightness calibration LUTs
+    seg_keys_ordered: list[tuple] = []
+    seg_key_to_idx: dict[tuple, int] = {}
+    segment_cal_map: dict[tuple, BrightnessCal] = {}
+
+    for output in config.outputs:
+        for seg in output.segments:
+            if not seg.enabled:
+                continue
+            key = (output.id, seg.id)
+            segment_cal_map[key] = seg.brightness_cal
+
+    for e in entries:
+        if e.segment_key not in seg_key_to_idx:
+            seg_key_to_idx[e.segment_key] = len(seg_keys_ordered)
+            seg_keys_ordered.append(e.segment_key)
+
+    if seg_keys_ordered:
+        cal_luts = np.stack([
+            _build_segment_lut(segment_cal_map.get(key, BrightnessCal()))
+            for key in seg_keys_ordered
+        ])
+    else:
+        cal_luts = np.empty((0, 3, 256), dtype=np.uint8)
+
+    cal_seg_idx = np.array(
+        [seg_key_to_idx[e.segment_key] for e in entries], dtype=np.int32
+    )
+    cal_seg_idx_expanded = np.repeat(cal_seg_idx, 3)
+
+    cal_logical_ch = np.empty(n * 3, dtype=np.int32)
+    for i, e in enumerate(entries):
+        i3 = i * 3
+        cal_logical_ch[i3] = e.swizzle[0]
+        cal_logical_ch[i3 + 1] = e.swizzle[1]
+        cal_logical_ch[i3 + 2] = e.swizzle[2]
+
     return CompiledLayout(
         width=w,
         height=h,
@@ -233,4 +292,7 @@ def compile_layout(config: LayoutConfig) -> CompiledLayout:
         pack_src=src,
         pack_dst=dst,
         pack_buf_size=pack_buf_size,
+        cal_luts=cal_luts,
+        cal_seg_idx_expanded=cal_seg_idx_expanded,
+        cal_logical_ch=cal_logical_ch,
     )

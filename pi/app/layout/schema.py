@@ -15,6 +15,22 @@ VALID_ORIGINS = ("bottom_left", "top_left", "bottom_right", "top_right")
 
 
 @dataclass(frozen=True)
+class BrightnessCal:
+  """Per-channel 3-point correction at brightness levels 0.2, 0.5, 0.8."""
+  r: tuple[float, float, float] = (1.0, 1.0, 1.0)
+  g: tuple[float, float, float] = (1.0, 1.0, 1.0)
+  b: tuple[float, float, float] = (1.0, 1.0, 1.0)
+
+  def __post_init__(self):
+    for ch_name in ('r', 'g', 'b'):
+      ch = getattr(self, ch_name)
+      if len(ch) != 3:
+        raise ValueError(f"brightness_cal.{ch_name} must have exactly 3 values, got {len(ch)}")
+      if not all(isinstance(v, (int, float)) for v in ch):
+        raise ValueError(f"brightness_cal.{ch_name} values must be numeric")
+
+
+@dataclass(frozen=True)
 class MatrixConfig:
     width: int
     height: int
@@ -32,6 +48,7 @@ class LinearSegment:
     type: str = "linear"
     enabled: bool = True
     color_order: str = ""   # "" = inherit from output
+    brightness_cal: BrightnessCal = field(default_factory=BrightnessCal)
 
 
 @dataclass(frozen=True)
@@ -43,6 +60,7 @@ class ExplicitSegment:
     type: str = "explicit"
     enabled: bool = True
     color_order: str = ""   # "" = inherit from output
+    brightness_cal: BrightnessCal = field(default_factory=BrightnessCal)
 
 
 # Union type for segments
@@ -89,6 +107,12 @@ def parse_layout(raw: dict) -> LayoutConfig:
         segments = []
         for seg_raw in out_raw.get("segments", []):
             seg_type = seg_raw.get("type", "linear")
+            cal_raw = seg_raw.get('brightness_cal', {})
+            brightness_cal = BrightnessCal(
+                r=tuple(cal_raw.get('r', [1.0, 1.0, 1.0])),
+                g=tuple(cal_raw.get('g', [1.0, 1.0, 1.0])),
+                b=tuple(cal_raw.get('b', [1.0, 1.0, 1.0])),
+            )
             if seg_type == "explicit":
                 points = tuple((p["x"], p["y"]) for p in seg_raw["points"])
                 segments.append(ExplicitSegment(
@@ -97,6 +121,7 @@ def parse_layout(raw: dict) -> LayoutConfig:
                     physical_offset=seg_raw.get("physical_offset", 0),
                     enabled=seg_raw.get("enabled", True),
                     color_order=seg_raw.get("color_order", ""),
+                    brightness_cal=brightness_cal,
                 ))
             elif seg_type == "linear":
                 direction = seg_raw["direction"]
@@ -111,6 +136,7 @@ def parse_layout(raw: dict) -> LayoutConfig:
                     physical_offset=seg_raw.get("physical_offset", 0),
                     enabled=seg_raw.get("enabled", True),
                     color_order=seg_raw.get("color_order", ""),
+                    brightness_cal=brightness_cal,
                 ))
             else:
                 raise ValueError(f"Unknown segment type '{seg_type}'")

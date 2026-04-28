@@ -20,7 +20,11 @@ def pack_frame(frame: np.ndarray, layout: CompiledLayout) -> bytes:
         return b''
     buf = np.zeros(layout.pack_buf_size, dtype=np.uint8)
     flat = frame.ravel()
-    buf[layout.pack_dst] = flat[layout.pack_src]
+    raw = flat[layout.pack_src]
+    # Apply per-segment brightness correction via LUT
+    if layout.cal_luts.shape[0] > 0:
+        raw = layout.cal_luts[layout.cal_seg_idx_expanded, layout.cal_logical_ch, raw]
+    buf[layout.pack_dst] = raw
     return buf.tobytes()
 
 
