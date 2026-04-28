@@ -308,6 +308,7 @@ def main():
     params=(
       {'name': 'num_jets', 'label': 'Jets', 'min': 1, 'max': 5, 'step': 1, 'default': 2, 'type': 'slider'},
       {'name': 'strength', 'label': 'Strength', 'min': 50.0, 'max': 2000.0, 'step': 25.0, 'default': 200.0, 'type': 'slider'},
+      {'name': 'speed', 'label': 'Speed', 'min': 0.05, 'max': 2.0, 'step': 0.05, 'default': 0.3, 'type': 'slider'},
       {'name': 'interval', 'label': 'Interval', 'min': 1.0, 'max': 10.0, 'step': 0.5, 'default': 3.0, 'type': 'slider'},
       {'name': 'ring_size', 'label': 'Ring Size', 'min': 0.5, 'max': 4.0, 'step': 0.1, 'default': 1.5, 'type': 'slider'},
       {'name': 'color_speed', 'label': 'Color Cycle', 'min': 0.0, 'max': 1.0, 'step': 0.05, 'default': 0.15, 'type': 'slider'},

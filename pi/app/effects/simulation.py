@@ -924,6 +924,8 @@ class SmokeRings(Effect):
                         'step': 1, 'default': 2})(),
         type('P', (), {'label': 'Strength', 'attr': 'strength', 'lo': 50.0, 'hi': 2000.0,
                         'step': 25.0, 'default': 200.0})(),
+        type('P', (), {'label': 'Speed', 'attr': 'speed', 'lo': 0.05, 'hi': 2.0,
+                        'step': 0.05, 'default': 0.3})(),
         type('P', (), {'label': 'Interval', 'attr': 'interval', 'lo': 1.0, 'hi': 10.0,
                         'step': 0.5, 'default': 3.0})(),
         type('P', (), {'label': 'Ring Size', 'attr': 'ring_size', 'lo': 0.5, 'hi': 4.0,
@@ -980,11 +982,12 @@ class SmokeRings(Effect):
         dt = min(t - self._last_t, 0.05)
         self._last_t = t
 
-        strength = self.params.get('strength', 30.0)
+        strength = self.params.get('strength', 200.0)
+        speed = self.params.get('speed', 0.3)
         interval = self.params.get('interval', 3.0)
         ring_size = self.params.get('ring_size', 1.5)
         color_speed = self.params.get('color_speed', 0.15)
-        trail = self.params.get('trail', 0.95)
+        trail = self.params.get('trail', 0.998)
         num_jets = int(self.params.get('num_jets', 2))
 
         w, h = self.width, self.height
@@ -1053,8 +1056,8 @@ class SmokeRings(Effect):
             vel_x = (-dy * inv).sum(axis=1)
             vel_y = (dx * inv).sum(axis=1)
 
-            v['x'] = (v['x'] + vel_x * dt) % w
-            v['y'] += vel_y * dt
+            v['x'] = (v['x'] + vel_x * dt * speed) % w
+            v['y'] += vel_y * dt * speed
 
             # Compute velocity field on grid
             field_vx = np.zeros((w, h), dtype=np.float32)
@@ -1070,9 +1073,8 @@ class SmokeRings(Effect):
                 field_vy += dx_g * inv_g
 
             # Semi-Lagrangian advect dye by velocity field
-            # Trace each grid point backward through velocity
-            src_x = self._gx - field_vx * dt
-            src_y = self._gy - field_vy * dt
+            src_x = self._gx - field_vx * dt * speed
+            src_y = self._gy - field_vy * dt * speed
 
             # Clamp and wrap
             src_x = src_x % w
