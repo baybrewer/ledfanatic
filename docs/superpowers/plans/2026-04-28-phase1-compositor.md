@@ -8,7 +8,7 @@
 
 **Tech Stack:** Python 3.13 / NumPy / FastAPI / Pydantic
 
-**Codex Review:** Rev 8 addressed 25 total findings across 8 rounds.
+**Codex Review:** Rev 9 addressed 27 total findings across 9 rounds.
 
 Round 1 (6 findings):
 - R1-H1: Added state.json schema_version v2 migration + persistent layer storage
@@ -47,9 +47,13 @@ Round 7 (4 findings):
 - R7-4: Fixed attribute name _data → _state in migration snippet and test to match actual code
 
 Round 8 (3 findings):
-- R8-1: Restructured _render_frame() to 4-way branch (blackout/compositor/single-effect/none) — compositor unreachable with old guard
-- R8-2: state_manager stored on renderer at init — activate_scene always clears layers without callers passing it
-- R8-3: /layers/add validates effect_name exists in registry and rejects media: scenes with 422
+- R8-1: Restructured _render_frame() to 4-way branch (blackout/compositor/single-effect/none)
+- R8-2: state_manager stored on renderer at init — activate_scene always clears layers
+- R8-3: /layers/add validates effect_name against registry, rejects media: with 422
+
+Round 9 (2 findings):
+- R9-1: Compositor state (active flag + layers) added to RenderState.to_dict() for status/WS consumers
+- R9-2: Layer routes validate indices — return 404/422 instead of silent no-ops
 
 ---
 
@@ -952,34 +956,43 @@ async def add_layer(req: LayerAddRequest):
 
 @router.post("/layers/{index}/remove", dependencies=[Depends(require_auth)])
 async def remove_layer(index: int):
-    if deps.renderer.compositor:
-        deps.renderer.compositor.remove_layer(index)
-        layers = deps.renderer.compositor.to_dict()['layers']
-        deps.state_manager.current_layers = layers
-        # R4-H1 + R6-H1 fix: if all layers removed, clear everything
-        if not layers:
-            deps.renderer.compositor = None
-            deps.state_manager.current_scene = None
-            deps.state_manager.current_params = None
-        return {'status': 'ok', 'layers': layers}
-    return {'error': 'no compositor active'}
+    from fastapi import HTTPException
+    if not deps.renderer.compositor:
+        raise HTTPException(status_code=404, detail="no compositor active")
+    if index < 0 or index >= len(deps.renderer.compositor.layers):
+        raise HTTPException(status_code=422, detail=f"invalid layer index: {index}")
+    deps.renderer.compositor.remove_layer(index)
+    layers = deps.renderer.compositor.to_dict()['layers']
+    deps.state_manager.current_layers = layers
+    if not layers:
+        deps.renderer.compositor = None
+        deps.state_manager.current_scene = None
+        deps.state_manager.current_params = None
+    return {'status': 'ok', 'layers': layers}
 
 @router.post("/layers/{index}/update", dependencies=[Depends(require_auth)])
 async def update_layer(index: int, req: LayerUpdateRequest):
-    if deps.renderer.compositor:
-        updates = {k: v for k, v in req.model_dump().items() if v is not None}
-        deps.renderer.compositor.update_layer(index, **updates)
-        deps.state_manager.current_layers = deps.renderer.compositor.to_dict()['layers']
-        return {'status': 'ok', 'layers': deps.renderer.compositor.to_dict()['layers']}
-    return {'error': 'no compositor active'}
+    from fastapi import HTTPException
+    if not deps.renderer.compositor:
+        raise HTTPException(status_code=404, detail="no compositor active")
+    if index < 0 or index >= len(deps.renderer.compositor.layers):
+        raise HTTPException(status_code=422, detail=f"invalid layer index: {index}")
+    updates = {k: v for k, v in req.model_dump().items() if v is not None}
+    deps.renderer.compositor.update_layer(index, **updates)
+    deps.state_manager.current_layers = deps.renderer.compositor.to_dict()['layers']
+    return {'status': 'ok', 'layers': deps.renderer.compositor.to_dict()['layers']}
 
 @router.post("/layers/reorder", dependencies=[Depends(require_auth)])
 async def reorder_layer(req: LayerReorderRequest):
-    if deps.renderer.compositor:
-        deps.renderer.compositor.move_layer(req.from_index, req.to_index)
-        deps.state_manager.current_layers = deps.renderer.compositor.to_dict()['layers']
-        return {'status': 'ok', 'layers': deps.renderer.compositor.to_dict()['layers']}
-    return {'error': 'no compositor active'}
+    from fastapi import HTTPException
+    if not deps.renderer.compositor:
+        raise HTTPException(status_code=404, detail="no compositor active")
+    n = len(deps.renderer.compositor.layers)
+    if req.from_index >= n:
+        raise HTTPException(status_code=422, detail=f"from_index {req.from_index} out of range (0-{n-1})")
+    deps.renderer.compositor.move_layer(req.from_index, req.to_index)
+    deps.state_manager.current_layers = deps.renderer.compositor.to_dict()['layers']
+    return {'status': 'ok', 'layers': deps.renderer.compositor.to_dict()['layers']}
 ```
 
 - [ ] **Step 3: Run full test suite**
@@ -1061,6 +1074,35 @@ In `Renderer.apply_layout()`, add:
     if self.compositor:
         self.compositor.apply_layout(layout.width, layout.height)
 ```
+
+**R9-1 fix:** Add compositor state to `RenderState.to_dict()` so status/WS
+consumers know about layered mode:
+
+In `RenderState.to_dict()`, add after `'compositor_ms'`:
+```python
+      'compositor_active': False,  # overridden by renderer
+      'compositor_layers': [],     # overridden by renderer
+```
+
+In `Renderer._render_frame()`, after compositor renders:
+```python
+    # Update render state with compositor info for status consumers
+    if self.compositor and self.compositor.layers:
+        self.state._compositor_active = True
+        self.state._compositor_layers = self.compositor.to_dict()['layers']
+    else:
+        self.state._compositor_active = False
+        self.state._compositor_layers = []
+```
+
+In `RenderState.to_dict()`:
+```python
+      'compositor_active': getattr(self, '_compositor_active', False),
+      'compositor_layers': getattr(self, '_compositor_layers', []),
+```
+
+This ensures `/api/system/status`, WebSocket broadcasts, and the effects catalog
+endpoint all see the active layer stack without route-level changes.
 
 - [ ] **Step 2: Replace existing startup scene block in main.py**
 
