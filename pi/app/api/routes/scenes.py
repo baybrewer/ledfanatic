@@ -1,9 +1,34 @@
-"""Scene routes — list, activate, presets."""
+"""Scene routes — list, activate, presets, layer CRUD."""
 
 from fastapi import APIRouter, Depends, HTTPException
+from pydantic import BaseModel, Field
+from typing import Optional, Literal
 
 from ..schemas import SceneRequest, SceneSaveRequest
 from ...effects.catalog import EffectCatalogService
+from ...core.compositor import Compositor, Layer
+
+BlendMode = Literal['normal', 'add', 'screen', 'multiply', 'max']
+
+
+class LayerAddRequest(BaseModel):
+  effect_name: str
+  params: dict = Field(default_factory=dict)
+  opacity: float = Field(default=1.0, ge=0.0, le=1.0)
+  blend_mode: BlendMode = 'normal'
+  enabled: bool = True
+
+
+class LayerUpdateRequest(BaseModel):
+  opacity: Optional[float] = Field(default=None, ge=0.0, le=1.0)
+  blend_mode: Optional[BlendMode] = None
+  enabled: Optional[bool] = None
+  params: Optional[dict] = None
+
+
+class LayerReorderRequest(BaseModel):
+  from_index: int = Field(ge=0)
+  to_index: int = Field(ge=0)
 
 
 def create_router(deps, require_auth, broadcast_state) -> APIRouter:
@@ -125,5 +150,170 @@ def create_router(deps, require_auth, broadcast_state) -> APIRouter:
             effect.handle_input(action)
             return {"status": "ok"}
         return {"status": "ignored", "reason": "no active game effect"}
+
+    # --- Layer CRUD endpoints ---
+
+    def _persist_layers():
+      """Persist current compositor layers to state_manager."""
+      compositor = deps.renderer.compositor
+      if compositor and deps.state_manager:
+        deps.state_manager.current_layers = [l.to_dict() for l in compositor.layers]
+
+    @router.get("/layers")
+    async def get_layers():
+        """Return current layer stack or single-scene info."""
+        compositor = deps.renderer.compositor
+        if compositor:
+          return {
+            'render_mode': 'layered',
+            'layers': [l.to_dict() for l in compositor.layers],
+          }
+        return {
+          'render_mode': 'single',
+          'current_scene': deps.render_state.current_scene,
+          'layers': [],
+        }
+
+    @router.post("/layers/add", dependencies=[Depends(require_auth)])
+    async def add_layer(req: LayerAddRequest):
+        """Add a layer. First add bootstraps compositor from current scene."""
+        # Reject invalid effect names
+        if req.effect_name not in deps.renderer.effect_registry:
+          raise HTTPException(422, f"Unknown effect: {req.effect_name}")
+        # Reject media: scenes (not compositable)
+        if req.effect_name.startswith('media:'):
+          raise HTTPException(422, "Media scenes cannot be used as layers")
+
+        compositor = deps.renderer.compositor
+
+        # Bootstrap compositor on first add
+        if compositor is None:
+          layout = deps.compiled_layout
+          compositor = Compositor(
+            width=layout.width,
+            height=layout.height,
+            effect_registry=deps.renderer.effect_registry,
+            effects_config=getattr(deps.renderer, 'effects_config', None),
+          )
+          # Seed layer 0 from current single-mode scene (if registry-backed)
+          current = deps.render_state.current_scene
+          if current and current in deps.renderer.effect_registry:
+            current_params = deps.state_manager.current_params or {}
+            compositor.add_layer(Layer(
+              effect_name=current,
+              params=dict(current_params),
+              opacity=1.0,
+              blend_mode='normal',
+              enabled=True,
+            ))
+          deps.renderer.compositor = compositor
+
+        # Add the requested layer
+        new_layer = Layer(
+          effect_name=req.effect_name,
+          params=req.params,
+          opacity=req.opacity,
+          blend_mode=req.blend_mode,
+          enabled=req.enabled,
+        )
+        idx = compositor.add_layer(new_layer)
+
+        # Clear single-effect state, switch to layered mode
+        deps.renderer.current_effect = None
+        deps.render_state.current_scene = None
+        deps.state_manager.current_scene = None
+        deps.state_manager.current_params = {}
+        deps.state_manager._state['render_mode'] = 'layered'
+        _persist_layers()
+        deps.state_manager.mark_dirty()
+
+        await broadcast_state()
+        return {
+          'status': 'ok',
+          'index': idx,
+          'layers': [l.to_dict() for l in compositor.layers],
+        }
+
+    @router.post("/layers/{index}/remove", dependencies=[Depends(require_auth)])
+    async def remove_layer(index: int):
+        """Remove a layer by index."""
+        compositor = deps.renderer.compositor
+        if compositor is None:
+          raise HTTPException(404, "No compositor active")
+        if index < 0 or index >= len(compositor.layers):
+          raise HTTPException(422, f"Invalid layer index: {index}")
+
+        compositor.remove_layer(index)
+
+        # If last layer removed, tear down compositor
+        if len(compositor.layers) == 0:
+          deps.renderer.compositor = None
+          deps.state_manager._state['render_mode'] = 'single'
+          deps.state_manager.current_layers = []
+          deps.state_manager.mark_dirty()
+          await broadcast_state()
+          return {
+            'status': 'ok',
+            'layers': [],
+            'render_mode': 'single',
+          }
+
+        _persist_layers()
+        deps.state_manager.mark_dirty()
+        await broadcast_state()
+        return {
+          'status': 'ok',
+          'layers': [l.to_dict() for l in compositor.layers],
+        }
+
+    @router.post("/layers/{index}/update", dependencies=[Depends(require_auth)])
+    async def update_layer(index: int, req: LayerUpdateRequest):
+        """Update layer properties (opacity, blend_mode, enabled, params)."""
+        compositor = deps.renderer.compositor
+        if compositor is None:
+          raise HTTPException(404, "No compositor active")
+        if index < 0 or index >= len(compositor.layers):
+          raise HTTPException(422, f"Invalid layer index: {index}")
+
+        updates = {}
+        if req.opacity is not None:
+          updates['opacity'] = req.opacity
+        if req.blend_mode is not None:
+          updates['blend_mode'] = req.blend_mode
+        if req.enabled is not None:
+          updates['enabled'] = req.enabled
+        if req.params is not None:
+          updates['params'] = req.params
+
+        compositor.update_layer(index, **updates)
+        _persist_layers()
+        deps.state_manager.mark_dirty()
+
+        await broadcast_state()
+        return {
+          'status': 'ok',
+          'layers': [l.to_dict() for l in compositor.layers],
+        }
+
+    @router.post("/layers/reorder", dependencies=[Depends(require_auth)])
+    async def reorder_layers(req: LayerReorderRequest):
+        """Move a layer from one position to another."""
+        compositor = deps.renderer.compositor
+        if compositor is None:
+          raise HTTPException(404, "No compositor active")
+        if req.from_index >= len(compositor.layers):
+          raise HTTPException(422, f"Invalid from_index: {req.from_index}")
+        if req.to_index >= len(compositor.layers):
+          raise HTTPException(422, f"Invalid to_index: {req.to_index}")
+
+        compositor.move_layer(req.from_index, req.to_index)
+        _persist_layers()
+        deps.state_manager.mark_dirty()
+
+        await broadcast_state()
+        return {
+          'status': 'ok',
+          'layers': [l.to_dict() for l in compositor.layers],
+        }
 
     return router

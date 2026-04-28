@@ -121,6 +121,7 @@ def main():
 
   # Renderer
   renderer = Renderer(transport, render_state, brightness_engine, compiled_layout)
+  renderer.state_manager = state_manager
   renderer._rebuild_segment_cache_from_config(layout_config)
   effects_conf = config.get('effects', {})
   renderer.effects_config = effects_conf

@@ -142,6 +142,8 @@ class Renderer:
     self._test_strip_until: float = 0.0
     self._probe_strip: int = -1
     self._probe_led: int = -1
+    self.compositor = None
+    self.state_manager = None
     self._running = False
     self._gamma_lut = _build_gamma_lut(state.gamma)
     self._fps_samples: list[float] = []
@@ -263,6 +265,7 @@ class Renderer:
   def activate_scene(self, scene_name: str, params: Optional[dict] = None,
                      media_manager=None) -> bool:
     """Unified scene activation for all types (generative, audio, media)."""
+    success = False
     if scene_name.startswith('media:'):
       # State-preserving for media: same item → update params, don't reset playback
       if scene_name == self.state.current_scene and self.current_effect is not None:
@@ -278,9 +281,18 @@ class Renderer:
           media_manager=media_manager,
         )
         self.state.current_scene = scene_name
-        return True
-      return False
-    return self._set_scene(scene_name, params)
+        success = True
+    else:
+      success = self._set_scene(scene_name, params)
+    # Clear compositor and persisted layers on successful single-scene activation
+    if success:
+      if self.compositor:
+        self.compositor = None
+      if self.state_manager:
+        self.state_manager.current_layers = []
+        self.state_manager._state['render_mode'] = 'single'
+        self.state_manager.mark_dirty()
+    return success
 
   async def run(self):
     """Main render loop."""
