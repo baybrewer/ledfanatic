@@ -217,28 +217,18 @@ class FluidSim(Effect):
             r, g, b = self._hsv_fast(hue3, 0.8, mid)
             self._dye[1, side_y - 1:side_y + 2] += np.array([r, g, b], dtype=np.float32) * dye_rate * 0.5
 
-        # Auto-injection: always keep fluid alive even without audio
+        # Auto-injection: only when audio is quiet — keeps fluid alive as fallback
+        raw_level = state.audio_level  # before gain
         self._auto_inject_timer -= dt
-        if self._auto_inject_timer <= 0:
-            self._auto_inject_timer = np.random.uniform(0.3, 1.0)
-            # Inject from bottom with upward force
+        if self._auto_inject_timer <= 0 and raw_level < 0.05:
+            self._auto_inject_timer = np.random.uniform(1.5, 3.0)
             ix = np.random.randint(1, w + 1)
             region_x = slice(max(1, ix - 1), min(ix + 2, w + 1))
             region_y = slice(max(1, bottom - 2), bottom + 1)
-            self._vy[region_x, region_y] -= force * 2
+            self._vy[region_x, region_y] -= force * 0.8
             hue_auto = self._hue_phase % 1.0
-            r, g, b = self._hsv_fast(hue_auto, 1.0, 0.8)
-            self._dye[region_x, region_y] += np.array([r, g, b], dtype=np.float32) * dye_rate
-            # Also inject from sides occasionally
-            if np.random.random() < 0.4:
-                side = 1 if np.random.random() < 0.5 else w
-                sy = np.random.randint(h // 4 + 1, 3 * h // 4 + 1)
-                region_sy = slice(max(1, sy - 1), min(sy + 2, h + 1))
-                direction = 1.0 if side == 1 else -1.0
-                self._vx[side, region_sy] += direction * force * 1.5
-                hue_side = (self._hue_phase + 0.5) % 1.0
-                r, g, b = self._hsv_fast(hue_side, 0.9, 0.7)
-                self._dye[side, region_sy] += np.array([r, g, b], dtype=np.float32) * dye_rate * 0.8
+            r, g, b = self._hsv_fast(hue_auto, 1.0, 0.5)
+            self._dye[region_x, region_y] += np.array([r, g, b], dtype=np.float32) * dye_rate * 0.5
 
         # Velocity step: diffuse (if needed) → advect → project
         tmp1, tmp2 = self._tmp1, self._tmp2
@@ -816,26 +806,30 @@ class FluidJets(FluidSim):
         w, h = self.width, self.height
         pw, ph = w + 2, h + 2  # padded grid size
 
-        # Advance jet timers and fire pulses
+        # Advance jet timers and fire pulses — only when audio is active
+        raw_level = state.audio_level
         for ji, (side, pos_frac, vx_dir, vy_dir, base_hue) in enumerate(self._JET_DEFS):
-            self._jet_timers[ji] -= dt * pulse_rate * (0.5 + level)
+            should_fire = False
 
-            should_fire = self._jet_timers[ji] <= 0
-            if should_fire:
-                self._jet_timers[ji] = np.random.uniform(0.3, 0.8)
-                self._jet_hue_offsets[ji] += 0.12  # shift hue each pulse
-
-            # Also fire on beat for extra energy
+            # Fire on beat — primary trigger
             if beat and ji == (self._pulse_index % len(self._JET_DEFS)):
                 should_fire = True
                 self._pulse_index += 1
+
+            # Timer-based firing only when audio is present
+            if raw_level > 0.05:
+                self._jet_timers[ji] -= dt * pulse_rate * level
+                if self._jet_timers[ji] <= 0:
+                    should_fire = True
+                    self._jet_timers[ji] = np.random.uniform(0.3, 0.8)
+                    self._jet_hue_offsets[ji] += 0.12
 
             if not should_fire:
                 continue
 
             # Compute injection position on padded grid
             hue = (base_hue + self._jet_hue_offsets[ji]) % 1.0
-            intensity = dye_rate * (0.5 + level)
+            intensity = dye_rate * (0.3 + level)
             jet_force = force * (0.5 + bass * 0.5)
 
             if side == 'bottom':
@@ -929,7 +923,7 @@ class SmokeRings(Effect):
         type('P', (), {'label': 'Jets', 'attr': 'num_jets', 'lo': 1, 'hi': 5,
                         'step': 1, 'default': 2})(),
         type('P', (), {'label': 'Strength', 'attr': 'strength', 'lo': 50.0, 'hi': 2000.0,
-                        'step': 25.0, 'default': 600.0})(),
+                        'step': 25.0, 'default': 200.0})(),
         type('P', (), {'label': 'Interval', 'attr': 'interval', 'lo': 1.0, 'hi': 10.0,
                         'step': 0.5, 'default': 3.0})(),
         type('P', (), {'label': 'Ring Size', 'attr': 'ring_size', 'lo': 0.5, 'hi': 4.0,
