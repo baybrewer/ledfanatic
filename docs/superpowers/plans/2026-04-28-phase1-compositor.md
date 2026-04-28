@@ -8,7 +8,7 @@
 
 **Tech Stack:** Python 3.13 / NumPy / FastAPI / Pydantic
 
-**Codex Review:** Rev 3 addressed 11 total findings across 3 rounds.
+**Codex Review:** Rev 4 addressed 14 total findings across 4 rounds.
 
 Round 1 (6 findings):
 - R1-H1: Added state.json schema_version v2 migration + persistent layer storage
@@ -26,6 +26,11 @@ Round 2 (3 findings):
 Round 3 (2 findings):
 - R3-H1: Boot-time restore path hydrates compositor from persisted `current_layers` in main.py
 - R3-M2: All Compositor construction sites (API route, from_dict, boot restore) pass `effects_config`
+
+Round 4 (3 findings):
+- R4-H1: Explicit mode exclusion — activate_scene clears compositor; removing all layers clears compositor
+- R4-H2: First /layers/add bootstraps layer 0 from current scene, clears current_effect
+- R4-M3: Boot restore always uses compositor for any non-empty current_layers (preserves opacity/blend)
 
 ---
 
@@ -821,7 +826,20 @@ class LayerReorderRequest(BaseModel):
     to_index: int = Field(ge=0)
 ```
 
-- [ ] **Step 2: Add layer CRUD + reorder endpoints**
+- [ ] **Step 2: Add mode exclusion to activate_scene**
+
+In the existing `activate_scene` endpoint handler, add compositor teardown:
+```python
+@router.post("/activate", dependencies=[Depends(require_auth)])
+async def activate_scene(req: SceneRequest):
+    # R4-H1 fix: entering single-effect mode clears compositor
+    if deps.renderer.compositor:
+        deps.renderer.compositor = None
+        deps.state_manager.current_layers = []
+    # ... rest of existing activate_scene logic ...
+```
+
+- [ ] **Step 3: Add layer CRUD + reorder endpoints**
 
 ```python
 @router.get("/layers")
@@ -838,10 +856,20 @@ async def get_layers():
 async def add_layer(req: LayerAddRequest):
     from app.core.compositor import Layer, Compositor
     if deps.renderer.compositor is None:
+        # R4-H2 fix: bootstrap compositor from current scene so we don't drop it
         deps.renderer.compositor = Compositor(
             deps.compiled_layout.width, deps.compiled_layout.height,
             deps.renderer.effect_registry,
             effects_config=deps.renderer.effects_config)
+        # Seed layer 0 from the currently active single-effect scene
+        if deps.render_state.current_scene:
+            base_layer = Layer(
+                effect_name=deps.render_state.current_scene,
+                params=deps.state_manager.current_params or {},
+            )
+            deps.renderer.compositor.add_layer(base_layer)
+        # R4-H1 fix: clear single-effect mode — compositor owns rendering now
+        deps.renderer.current_effect = None
     layer = Layer(**req.model_dump())
     idx = deps.renderer.compositor.add_layer(layer)
     deps.state_manager.current_layers = deps.renderer.compositor.to_dict()['layers']
@@ -851,8 +879,13 @@ async def add_layer(req: LayerAddRequest):
 async def remove_layer(index: int):
     if deps.renderer.compositor:
         deps.renderer.compositor.remove_layer(index)
-        deps.state_manager.current_layers = deps.renderer.compositor.to_dict()['layers']
-        return {'status': 'ok', 'layers': deps.renderer.compositor.to_dict()['layers']}
+        layers = deps.renderer.compositor.to_dict()['layers']
+        deps.state_manager.current_layers = layers
+        # R4-H1 fix: if all layers removed, clear compositor so we don't
+        # render stale state — next activate_scene will work cleanly
+        if not layers:
+            deps.renderer.compositor = None
+        return {'status': 'ok', 'layers': layers}
     return {'error': 'no compositor active'}
 
 @router.post("/layers/{index}/update", dependencies=[Depends(require_auth)])
@@ -934,10 +967,11 @@ In `Renderer.apply_layout()`, add:
 In `pi/app/main.py`, after the existing startup scene block, add compositor restore:
 
 ```python
-  # Restore layered scene if persisted (R3-H1 fix)
+  # Restore scene from persisted state (R3-H1 + R4-M3 fix)
   saved_layers = state_manager.current_layers
-  if saved_layers and len(saved_layers) > 1:
-      # Multi-layer scene — hydrate compositor
+  if saved_layers:
+      # Always restore via compositor to preserve opacity/blend/enabled semantics
+      # even for single-layer scenes (R4-M3 fix)
       from app.core.compositor import Compositor
       renderer.compositor = Compositor.from_dict(
           {'layers': saved_layers},
@@ -945,13 +979,7 @@ In `pi/app/main.py`, after the existing startup scene block, add compositor rest
           renderer.effect_registry,
           effects_config=effects_conf,
       )
-      logger.info(f"Restored {len(saved_layers)} layers from state.json")
-  elif saved_layers and len(saved_layers) == 1:
-      # Single-layer — use traditional activate_scene (backward compatible)
-      layer = saved_layers[0]
-      startup = layer['effect_name']
-      if not renderer.activate_scene(startup, layer.get('params'), media_manager=media_manager):
-          renderer.activate_scene(display_conf.get('startup_scene', 'rainbow_rotate'))
+      logger.info(f"Restored {len(saved_layers)} layer(s) from state.json")
   else:
       # Legacy: no layers persisted, use current_scene
       startup = state_manager.current_scene or display_conf.get('startup_scene', 'rainbow_rotate')
@@ -1000,4 +1028,8 @@ git tag v1.2.0-compositor
 | Pydantic rejects invalid opacity/blend | 422 on bad request | R2-M3 ✓ |
 | Layers restored on boot from state.json | Reboot Pi, verify layers active | R3-H1 ✓ |
 | effects_config passed to all Compositor sites | Code review of API + from_dict + boot | R3-M2 ✓ |
+| activate_scene clears compositor | Test: activate after layers, verify single-effect | R4-H1 ✓ |
+| First /layers/add preserves current scene | Test: add layer while scene active, both visible | R4-H2 ✓ |
+| Remove all layers clears compositor cleanly | Test: remove all, then activate_scene works | R4-H1 ✓ |
+| Single-layer with opacity restores correctly | Reboot with opacity=0.5 layer, verify dim | R4-M3 ✓ |
 | Existing single-effect mode unchanged | Full regression suite | — |
