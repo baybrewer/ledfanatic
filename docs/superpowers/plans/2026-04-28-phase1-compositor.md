@@ -8,7 +8,7 @@
 
 **Tech Stack:** Python 3.13 / NumPy / FastAPI / Pydantic
 
-**Codex Review:** Rev 12 addressed 32 total findings across 12 rounds.
+**Codex Review:** Rev 13 addressed 35 total findings across 13 rounds.
 
 Round 1 (6 findings):
 - R1-H1: Added state.json schema_version v2 migration + persistent layer storage
@@ -65,6 +65,11 @@ Round 11 (1 finding):
 
 Round 12 (1 finding):
 - R12-H1: Bootstrap layer 0 only from registry-backed effects — skip media: scenes (not compositable)
+
+Round 13 (3 findings):
+- R13-M1: GET /layers returns real compositor state only — no synthetic single-effect layers; includes render_mode
+- R13-M2: Dropped overstated claim that effects catalog auto-sees compositor — deferred to Phase 2
+- R13-M3: Boot restore clears state_manager.current_scene/current_params in layered path
 
 ---
 
@@ -945,13 +950,17 @@ No changes needed in media routes, diagnostic routes, or startup — they all ca
 ```python
 @router.get("/layers")
 async def get_layers():
+    # R13-M1: return real compositor state only — no synthetic layers
     if deps.renderer.compositor:
-        return deps.renderer.compositor.to_dict()
-    if deps.render_state.current_scene:
-        return {'layers': [{'effect_name': deps.render_state.current_scene,
-                           'params': deps.state_manager.current_params or {},
-                           'opacity': 1.0, 'blend_mode': 'normal', 'enabled': True}]}
-    return {'layers': []}
+        return {
+            'render_mode': 'layered',
+            **deps.renderer.compositor.to_dict(),
+        }
+    return {
+        'render_mode': 'single',
+        'layers': [],
+        'current_scene': deps.render_state.current_scene,
+    }
 
 @router.post("/layers/add", dependencies=[Depends(require_auth)])
 async def add_layer(req: LayerAddRequest):
@@ -1138,8 +1147,10 @@ In `RenderState.to_dict()`:
       'compositor_layers': getattr(self, '_compositor_layers', []),
 ```
 
-This ensures `/api/system/status`, WebSocket broadcasts, and the effects catalog
-endpoint all see the active layer stack without route-level changes.
+This ensures `/api/system/status` and WebSocket broadcasts see the active layer
+stack. Note: `/api/effects/catalog` reads `current_scene` directly from
+`deps.render_state` — it will need a separate update in Phase 2 (Studio UI)
+to expose compositor state in the catalog response.
 
 - [ ] **Step 2: Replace existing startup scene block in main.py**
 
@@ -1161,6 +1172,9 @@ In `pi/app/main.py`, REPLACE the existing startup scene block (the `# Startup sc
       )
       renderer.current_effect = None
       render_state.current_scene = None
+      # R13-M3: clear persisted single-effect fields too
+      state_manager.current_scene = None
+      state_manager.current_params = None
       logger.info(f"Restored {len(saved_layers)} layer(s) from state.json")
   else:
       # Legacy: no layers persisted, use current_scene
