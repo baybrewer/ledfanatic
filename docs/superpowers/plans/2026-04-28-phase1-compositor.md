@@ -1153,11 +1153,16 @@ def test_compiled_layout_has_correction_array():
     }
     config = parse_layout(raw)
     layout = compile_layout(config)
-    # Should have a correction array (n_entries * 3,) matching pack_src/pack_dst
-    assert hasattr(layout, 'pack_correction')
-    assert layout.pack_correction.shape == layout.pack_src.shape
-    # Red channel corrections should be < 1.0 (segment has r=[0.5, 0.75, 1.0])
-    # At default brightness, interpolation gives a single multiplier per segment
+    # Should have calibration LUTs and index arrays
+    assert hasattr(layout, 'cal_luts')
+    assert layout.cal_luts.shape == (1, 3, 256)  # 1 segment, 3 channels, 256 entries
+    # Red LUT should differ from identity (segment has r=(0.5, 0.75, 1.0))
+    identity = np.arange(256, dtype=np.uint8)
+    assert not np.array_equal(layout.cal_luts[0, 0], identity)  # red is corrected
+    assert np.array_equal(layout.cal_luts[0, 1], identity)  # green is 1.0 = identity
+    # Index arrays exist and have correct shape
+    assert layout.cal_seg_idx_expanded.shape == layout.pack_src.shape
+    assert layout.cal_logical_ch.shape == layout.pack_src.shape
 ```
 
 - [ ] **Step 2: Run test — verify it fails**
@@ -1177,6 +1182,15 @@ class BrightnessCal:
     r: tuple[float, float, float] = (1.0, 1.0, 1.0)
     g: tuple[float, float, float] = (1.0, 1.0, 1.0)
     b: tuple[float, float, float] = (1.0, 1.0, 1.0)
+
+    def __post_init__(self):
+        # R17-M2: validate shape and types at parse time
+        for ch_name in ('r', 'g', 'b'):
+            ch = getattr(self, ch_name)
+            if len(ch) != 3:
+                raise ValueError(f"brightness_cal.{ch_name} must have exactly 3 values, got {len(ch)}")
+            if not all(isinstance(v, (int, float)) for v in ch):
+                raise ValueError(f"brightness_cal.{ch_name} values must be numeric")
 
 @dataclass(frozen=True)
 class LinearSegment:
@@ -1244,25 +1258,28 @@ cal_seg_idx: np.ndarray = field(default_factory=lambda: np.empty(0, dtype=np.int
 
 Build these during compile_layout():
 ```python
-# Collect unique segment calibrations
-seg_ids_ordered = []  # list of unique segment IDs in order
-seg_id_to_idx = {}
+# R17-H1: key by compile-time entry index, not bare segment_id
+# (segment IDs aren't guaranteed unique across outputs)
+# Use (output_id, segment_id) as the unique key instead.
+seg_keys_ordered = []  # list of unique (output_id, seg_id) keys
+seg_key_to_idx = {}
 for e in entries:
-    if e.segment_id not in seg_id_to_idx:
-        seg_id_to_idx[e.segment_id] = len(seg_ids_ordered)
-        seg_ids_ordered.append(e.segment_id)
+    key = e.segment_key  # set during compile: (output.id, seg.id)
+    if key not in seg_key_to_idx:
+        seg_key_to_idx[key] = len(seg_keys_ordered)
+        seg_keys_ordered.append(key)
 
 # Build LUTs (R16-M3: guard empty layouts)
-if seg_ids_ordered:
+if seg_keys_ordered:
     cal_luts = np.stack([
-        _build_segment_lut(segment_cal_map.get(sid, BrightnessCal()))
-        for sid in seg_ids_ordered
+        _build_segment_lut(segment_cal_map.get(key, BrightnessCal()))
+        for key in seg_keys_ordered
     ])  # (n_segments, 3, 256)
 else:
     cal_luts = np.empty((0, 3, 256), dtype=np.uint8)
 
-# Per-entry segment index
-cal_seg_idx = np.array([seg_id_to_idx[e.segment_id] for e in entries], dtype=np.int32)
+# Per-entry segment index (using unique key, not bare segment_id)
+cal_seg_idx = np.array([seg_key_to_idx[e.segment_key] for e in entries], dtype=np.int32)
 ```
 
 To build `segment_cal_map`, track segment_id on MappingEntry:
@@ -1275,7 +1292,7 @@ class MappingEntry:
     channel: int
     pixel_index: int
     swizzle: tuple[int, int, int]
-    segment_id: str = ""  # NEW: for calibration lookup
+    segment_key: tuple = ()  # NEW: (output_id, seg_id) for unique calibration lookup
 ```
 
 - [ ] **Step 5: Apply corrections in pack_frame**
