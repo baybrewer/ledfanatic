@@ -202,6 +202,10 @@ def main():
       {'name': 'speed', 'label': 'Speed', 'min': 0.1, 'max': 5.0, 'step': 0.1, 'default': 1.0, 'type': 'slider'},
       {'name': 'text', 'label': 'Message', 'type': 'text', 'default': 'LED FANATIC'},
       {'name': 'color', 'label': 'Color', 'type': 'color', 'default': '#00FFFF'},
+      {'name': 'panels', 'label': 'Panels', 'min': 1, 'max': 4, 'step': 1, 'default': 1, 'type': 'slider'},
+      {'name': 'direction', 'label': 'Direction', 'type': 'select',
+       'options': [{'value': 'vertical', 'label': 'Bottom → Top'}, {'value': 'horizontal', 'label': 'Right → Left'}],
+       'default': 'vertical'},
     ),
   ))
 
