@@ -983,6 +983,32 @@ async function loadPixelMap() {
   renderSegmentTable(data);
   renderSegmentCards(data);
   updateSummary(data);
+
+  // Load Teensy config status
+  const status = await api('GET', '/api/system/status');
+  const el = document.getElementById('pm-teensy-output');
+  if (el && status && status.transport) {
+    const t = status.transport;
+    if (t.connected) {
+      const caps = t.caps || {};
+      el.textContent = [
+        `Status:    Connected`,
+        `Port:      ${t.port || '--'}`,
+        `Firmware:  ${caps.firmware_version || '--'}`,
+        `Protocol:  v${caps.protocol_version || '--'}`,
+        `Outputs:   ${caps.outputs || '--'}`,
+        `LEDs/strip: ${caps.leds_per_strip || '--'}`,
+        `Color order: ${caps.color_order || '--'}`,
+        `Frames sent: ${(t.frames_sent || 0).toLocaleString()}`,
+        `Errors:    ${t.send_errors || 0}`,
+        `Reconnects: ${t.reconnect_count || 0}`,
+      ].join('\n');
+    } else {
+      el.textContent = 'Disconnected';
+    }
+  } else if (el) {
+    el.textContent = 'Unable to load status';
+  }
 }
 
 function renderGridSVG(data) {
