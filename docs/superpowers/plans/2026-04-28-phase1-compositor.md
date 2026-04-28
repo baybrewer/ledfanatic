@@ -1403,11 +1403,11 @@ def set_calibrate_preview(self, color: str, level: float, multipliers: dict):
     """Show all segments at a single color/brightness for calibration.
     color: 'r', 'g', 'b'
     level: 0.2, 0.5, 0.8
-    multipliers: segment_id -> float adjustment
+    multipliers: {(output_id, seg_id): float} — uses composite key (R18-H1)
     """
     self._cal_color = color
     self._cal_level = level
-    self._cal_multipliers = multipliers
+    self._cal_multipliers = multipliers  # keyed by (output_id, seg_id)
     self._test_mode = "calibrate"
     self._test_strip_until = time.monotonic() + 600  # 10 min timeout
 ```
@@ -1419,8 +1419,14 @@ elif self._test_mode == "calibrate":
     logical_frame[:] = 0
     val = int(self._cal_level * 255)
     ch = {'r': 0, 'g': 1, 'b': 2}[self._cal_color]
-    for seg_id, positions in self._segment_positions.items():
-        mul = self._cal_multipliers.get(seg_id, 1.0)
+    # R18-H1: iterate with composite key for correct multiplier lookup
+    for output in self._layout_config.outputs if hasattr(self, '_layout_config') else []:
+        for seg in output.segments:
+            if not seg.enabled:
+                continue
+            key = (output.id, seg.id)
+            positions = self._segment_positions.get(seg.id, [])
+            mul = self._cal_multipliers.get(key, 1.0)
         adjusted = min(255, max(0, int(val * mul)))
         for x, y in positions:
             if x < logical_frame.shape[0] and y < logical_frame.shape[1]:
@@ -1437,18 +1443,45 @@ async def calibrate_preview(req: dict):
     """Set all segments to a test color at a specific brightness level."""
     color = req.get('color', 'r')
     level = req.get('level', 0.5)
-    multipliers = req.get('multipliers', {})
+    # R18-H1: multipliers keyed by "output_id:seg_id" from JSON,
+    # convert to (output_id, seg_id) tuples for renderer
+    raw_muls = req.get('multipliers', {})
+    multipliers = {}
+    for k, v in raw_muls.items():
+        parts = k.split(':', 1)
+        if len(parts) == 2:
+            multipliers[(parts[0], parts[1])] = float(v)
     deps.renderer.set_calibrate_preview(color, level, multipliers)
     return {'status': 'ok'}
 
 @router.post("/calibrate/save", dependencies=[Depends(require_auth)])
 async def calibrate_save(req: dict):
-    """Save brightness_cal data to layout.yaml."""
-    cal_data = req.get('calibration', {})  # segment_id -> {r: [...], g: [...], b: [...]}
-    # Load layout.yaml, update brightness_cal per segment, save
-    # ... (uses save_layout from layout module)
-    # Recompile layout to update pack_correction
+    """Save brightness_cal data to layout.yaml.
+    R18-H1: cal_data keyed by 'output_id:seg_id' string (JSON-safe composite key).
+    """
+    cal_data = req.get('calibration', {})  # "output_id:seg_id" -> {r: [...], g: [...], b: [...]}
+    # Load layout, update brightness_cal per segment using composite key, save
+    # Recompile layout to rebuild LUTs with new corrections
+    # ...
     return {'status': 'ok'}
+
+@router.get("/calibrate/data")
+async def get_calibration_data():
+    """R18-M2: Read-back path for existing calibration curves.
+    Returns current brightness_cal for all segments so the UI can
+    pre-populate on page load instead of starting from neutral.
+    """
+    result = {}
+    for output in deps.layout_config.outputs:
+        for seg in output.segments:
+            key = f"{output.id}:{seg.id}"
+            cal = seg.brightness_cal
+            result[key] = {
+                'r': list(cal.r),
+                'g': list(cal.g),
+                'b': list(cal.b),
+            }
+    return {'calibration': result}
 ```
 
 - [ ] **Step 9: Run full test suite**
