@@ -8,7 +8,7 @@
 
 **Tech Stack:** Python 3.13 / NumPy / FastAPI / Pydantic
 
-**Codex Review:** Rev 9 addressed 27 total findings across 9 rounds.
+**Codex Review:** Rev 10 addressed 30 total findings across 10 rounds.
 
 Round 1 (6 findings):
 - R1-H1: Added state.json schema_version v2 migration + persistent layer storage
@@ -54,6 +54,11 @@ Round 8 (3 findings):
 Round 9 (2 findings):
 - R9-1: Compositor state (active flag + layers) added to RenderState.to_dict() for status/WS consumers
 - R9-2: Layer routes validate indices — return 404/422 instead of silent no-ops
+
+Round 10 (3 findings):
+- R10-H1: Migration does NOT convert single-scene to layers; explicit render_mode flag gates compositor restore
+- R10-M2: /layers/reorder validates both from_index AND to_index
+- R10-M3: blend() moved inside per-layer try block — bad shape/dtype can't crash compositor
 
 ---
 
@@ -537,10 +542,11 @@ class Compositor:
                     img = Image.fromarray(frame.transpose(1, 0, 2))
                     img = img.resize((self.width, self.height), Image.LANCZOS)
                     frame = np.array(img).transpose(1, 0, 2)
+                # R10-M3: blend inside try so bad shape/dtype doesn't crash compositor
+                result = blend(result, frame, layer.opacity, layer.blend_mode)
             except Exception as e:
                 logger.error(f"Layer {i} '{layer.effect_name}' crashed: {e}", exc_info=True)
                 continue
-            result = blend(result, frame, layer.opacity, layer.blend_mode)
 
         self.compositor_ms = (time.perf_counter() - start) * 1000
         return result
@@ -780,20 +786,34 @@ def _migrate(self, state: dict) -> dict:
         # ... existing v0→v1 migration ...
         state['schema_version'] = 1
     if version < 2:
-        # v1→v2: convert single scene to layer format
-        scene = state.get('current_scene')
-        params = state.get('current_params', {})
-        if scene:
-            state['current_layers'] = [{
-                'effect_name': scene,
-                'params': params,
-                'opacity': 1.0,
-                'blend_mode': 'normal',
-                'enabled': True,
-            }]
-        else:
-            state['current_layers'] = []
+        # v1→v2: add layer support fields but do NOT convert existing
+        # single-effect scenes to layers — user must explicitly enter
+        # layered mode. (R10-H1: avoid silent mode shift on upgrade)
+        state['current_layers'] = []
+        state['render_mode'] = 'single'  # 'single' or 'layered'
+        # Preserve existing current_scene/current_params unchanged
         state['schema_version'] = 2
+    return state
+```
+
+The key change: migration does NOT populate `current_layers` from `current_scene`.
+Layered mode only activates when the user explicitly adds a layer via the API.
+
+Boot restore uses `render_mode` flag:
+```python
+  saved_layers = state_manager.current_layers
+  render_mode = state_manager._state.get('render_mode', 'single')
+  if render_mode == 'layered' and saved_layers:
+      # Restore compositor
+      ...
+  else:
+      # Restore single-effect (existing logic)
+      ...
+```
+
+Entering compositor mode sets `render_mode = 'layered'`; exiting sets `render_mode = 'single'`.
+
+The old migration block (which populated layers from current_scene) is removed.
     return state
 ```
 
@@ -811,9 +831,12 @@ def test_v1_to_v2_migration():
     }
     sm._migrate(sm._state)
     assert sm._state['schema_version'] == 2
-    assert len(sm._state['current_layers']) == 1
-    assert sm._state['current_layers'][0]['effect_name'] == 'rainbow_rotate'
-    assert sm._state['current_layers'][0]['opacity'] == 1.0
+    # R10-H1: migration does NOT convert scene to layers — preserves single mode
+    assert sm._state['current_layers'] == []
+    assert sm._state['render_mode'] == 'single'
+    # Original scene preserved
+    assert sm._state['current_scene'] == 'rainbow_rotate'
+    assert sm._state['current_params'] == {'speed': 0.5}
 ```
 
 - [ ] **Step 4: Run tests**
@@ -894,9 +917,11 @@ def activate_scene(self, scene_name, params=None, media_manager=None) -> bool:
         # R4-H1 + R5-H1 + R6-H2 + R7-1 + R8-2: centralized teardown
         if self.compositor:
             self.compositor = None
-        # Clear persisted layers — renderer owns state_manager reference
+        # Clear persisted layers + reset render_mode
         if self.state_manager:
             self.state_manager.current_layers = []
+            self.state_manager._state['render_mode'] = 'single'
+            self.state_manager.mark_dirty()
     return success
 ```
 
@@ -944,11 +969,13 @@ async def add_layer(req: LayerAddRequest):
                 params=deps.state_manager.current_params or {},
             )
             deps.renderer.compositor.add_layer(base_layer)
-        # R4-H1 + R6-H1 fix: clear ALL single-effect state — compositor owns rendering
+        # R4-H1 + R6-H1 + R10-H1: clear single-effect state, set render_mode
         deps.renderer.current_effect = None
         deps.render_state.current_scene = None
         deps.state_manager.current_scene = None
         deps.state_manager.current_params = None
+        deps.state_manager._state['render_mode'] = 'layered'
+        deps.state_manager.mark_dirty()
     layer = Layer(**req.model_dump())
     idx = deps.renderer.compositor.add_layer(layer)
     deps.state_manager.current_layers = deps.renderer.compositor.to_dict()['layers']
@@ -988,8 +1015,8 @@ async def reorder_layer(req: LayerReorderRequest):
     if not deps.renderer.compositor:
         raise HTTPException(status_code=404, detail="no compositor active")
     n = len(deps.renderer.compositor.layers)
-    if req.from_index >= n:
-        raise HTTPException(status_code=422, detail=f"from_index {req.from_index} out of range (0-{n-1})")
+    if req.from_index >= n or req.to_index >= n:
+        raise HTTPException(status_code=422, detail=f"index out of range (0-{n-1})")
     deps.renderer.compositor.move_layer(req.from_index, req.to_index)
     deps.state_manager.current_layers = deps.renderer.compositor.to_dict()['layers']
     return {'status': 'ok', 'layers': deps.renderer.compositor.to_dict()['layers']}
@@ -1109,11 +1136,12 @@ endpoint all see the active layer stack without route-level changes.
 In `pi/app/main.py`, REPLACE the existing startup scene block (the `# Startup scene` section) with a unified restore that handles both layered and single-effect modes. This is a replacement, not an addition — avoids the R5-M2 conflict of running both paths.
 
 ```python
-  # Startup scene — unified restore (R3-H1 + R4-M3 + R5-M2 fix)
+  # Startup scene — unified restore (R10-H1: uses render_mode flag)
   # Replaces the previous single-effect startup block entirely.
   saved_layers = state_manager.current_layers
-  if saved_layers:
-      # Restore via compositor to preserve opacity/blend/enabled semantics
+  render_mode = state_manager._state.get('render_mode', 'single')
+  if render_mode == 'layered' and saved_layers:
+      # Restore compositor from explicitly-saved layered session
       from app.core.compositor import Compositor
       renderer.compositor = Compositor.from_dict(
           {'layers': saved_layers},
@@ -1121,11 +1149,8 @@ In `pi/app/main.py`, REPLACE the existing startup scene block (the `# Startup sc
           renderer.effect_registry,
           effects_config=effects_conf,
       )
-      # R5-M2 + R7-3 fix: clear ALL single-effect state
       renderer.current_effect = None
       render_state.current_scene = None
-      state_manager.current_scene = None
-      state_manager.current_params = None
       logger.info(f"Restored {len(saved_layers)} layer(s) from state.json")
   else:
       # Legacy: no layers persisted, use current_scene
