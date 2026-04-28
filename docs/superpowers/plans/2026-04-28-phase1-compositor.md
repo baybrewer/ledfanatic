@@ -8,20 +8,24 @@
 
 **Tech Stack:** Python 3.13 / NumPy / FastAPI / Pydantic
 
-**Codex Review:** Rev 2 addressed 9 total findings across 2 rounds.
+**Codex Review:** Rev 3 addressed 11 total findings across 3 rounds.
 
 Round 1 (6 findings):
-- H1: Added state.json schema_version v2 migration + persistent layer storage
-- H2: Fixed blend mode opacity — canonical `mode(base, top)` then `alpha_blend(base, result, opacity)`
-- H3: Error isolation test exercises `_render_frame()` with mocked transport
-- M4: Added Pydantic request models, reorder endpoint
-- M5: Added `compositor.apply_layout()` for layout hot-swap
-- M6: Wired `compositor_ms` into RenderState and system API
+- R1-H1: Added state.json schema_version v2 migration + persistent layer storage
+- R1-H2: Fixed blend mode opacity — canonical `mode(base, top)` then `alpha_blend(base, result, opacity)`
+- R1-H3: Error isolation test exercises `_render_frame()` with mocked transport
+- R1-M4: Added Pydantic request models, reorder endpoint
+- R1-M5: Added `compositor.apply_layout()` for layout hot-swap
+- R1-M6: Wired `compositor_ms` into RenderState and system API
 
 Round 2 (3 findings):
-- H1: Compositor now uses shared `_create_effect()` that honors RENDER_SCALE, YAML param merging, and animation_switcher wiring — same contract as renderer._set_scene()
-- M2: Crash isolation test now has healthy + crashing + healthy layers, proves healthy layers survive
-- M3: Pydantic models use `Field(ge=0.0, le=1.0)` for opacity, `Literal` for blend_mode, `Field(ge=0)` for indices
+- R2-H1: Compositor uses shared `_create_effect()` honoring RENDER_SCALE, YAML param merging, animation_switcher wiring
+- R2-M2: Crash isolation test has healthy + crashing + healthy layers, proves healthy layers survive
+- R2-M3: Pydantic models use `Field(ge/le)` for opacity, `Literal` for blend_mode, `Field(ge=0)` for indices
+
+Round 3 (2 findings):
+- R3-H1: Boot-time restore path hydrates compositor from persisted `current_layers` in main.py
+- R3-M2: All Compositor construction sites (API route, from_dict, boot restore) pass `effects_config`
 
 ---
 
@@ -517,8 +521,9 @@ class Compositor:
         return {'layers': [l.to_dict() for l in self.layers]}
 
     @staticmethod
-    def from_dict(data: dict, width: int, height: int, effect_registry: dict) -> 'Compositor':
-        comp = Compositor(width, height, effect_registry)
+    def from_dict(data: dict, width: int, height: int, effect_registry: dict,
+                  effects_config: Optional[dict] = None) -> 'Compositor':
+        comp = Compositor(width, height, effect_registry, effects_config=effects_config)
         for ld in data.get('layers', []):
             comp.add_layer(Layer(
                 effect_name=ld['effect_name'],
@@ -835,7 +840,8 @@ async def add_layer(req: LayerAddRequest):
     if deps.renderer.compositor is None:
         deps.renderer.compositor = Compositor(
             deps.compiled_layout.width, deps.compiled_layout.height,
-            deps.renderer.effect_registry)
+            deps.renderer.effect_registry,
+            effects_config=deps.renderer.effects_config)
     layer = Layer(**req.model_dump())
     idx = deps.renderer.compositor.add_layer(layer)
     deps.state_manager.current_layers = deps.renderer.compositor.to_dict()['layers']
@@ -887,12 +893,13 @@ git commit -m "feat: layer CRUD API with Pydantic models and reorder endpoint"
 
 ---
 
-### Task 7: Integration — Compositor in Renderer + Layout Hot-Swap
+### Task 7: Integration — Compositor in Renderer + Layout Hot-Swap + Boot Restore
 
 **Files:**
 - Modify: `pi/app/core/renderer.py`
+- Modify: `pi/app/main.py`
 
-**Codex M5 fix:** `renderer.apply_layout()` calls `compositor.apply_layout()` when active.
+**Codex fixes:** R1-M5 (layout hot-swap), R3-H1 (boot-time layer restore), R3-M2 (effects_config threading).
 
 - [ ] **Step 1: Add compositor integration to renderer**
 
@@ -922,7 +929,37 @@ In `Renderer.apply_layout()`, add:
         self.compositor.apply_layout(layout.width, layout.height)
 ```
 
-- [ ] **Step 2: Run full test suite + deploy**
+- [ ] **Step 2: Add boot-time layer restore in main.py**
+
+In `pi/app/main.py`, after the existing startup scene block, add compositor restore:
+
+```python
+  # Restore layered scene if persisted (R3-H1 fix)
+  saved_layers = state_manager.current_layers
+  if saved_layers and len(saved_layers) > 1:
+      # Multi-layer scene — hydrate compositor
+      from app.core.compositor import Compositor
+      renderer.compositor = Compositor.from_dict(
+          {'layers': saved_layers},
+          compiled_layout.width, compiled_layout.height,
+          renderer.effect_registry,
+          effects_config=effects_conf,
+      )
+      logger.info(f"Restored {len(saved_layers)} layers from state.json")
+  elif saved_layers and len(saved_layers) == 1:
+      # Single-layer — use traditional activate_scene (backward compatible)
+      layer = saved_layers[0]
+      startup = layer['effect_name']
+      if not renderer.activate_scene(startup, layer.get('params'), media_manager=media_manager):
+          renderer.activate_scene(display_conf.get('startup_scene', 'rainbow_rotate'))
+  else:
+      # Legacy: no layers persisted, use current_scene
+      startup = state_manager.current_scene or display_conf.get('startup_scene', 'rainbow_rotate')
+      if not renderer.activate_scene(startup, state_manager.current_params, media_manager=media_manager):
+          renderer.activate_scene(display_conf.get('startup_scene', 'rainbow_rotate'))
+```
+
+- [ ] **Step 3: Run full test suite + deploy**
 
 Run: `cd pi && PYTHONPATH=. pytest tests/ -v -q`
 Deploy: `bash pi/scripts/deploy.sh ledfanatic.local`
@@ -961,4 +998,6 @@ git tag v1.2.0-compositor
 | RENDER_SCALE honored in layers | Manual test with supersampled effect | R2-H1 ✓ |
 | YAML param defaults merged in layers | Code review of _create_effect | R2-H1 ✓ |
 | Pydantic rejects invalid opacity/blend | 422 on bad request | R2-M3 ✓ |
+| Layers restored on boot from state.json | Reboot Pi, verify layers active | R3-H1 ✓ |
+| effects_config passed to all Compositor sites | Code review of API + from_dict + boot | R3-M2 ✓ |
 | Existing single-effect mode unchanged | Full regression suite | — |
