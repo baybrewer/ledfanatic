@@ -8,7 +8,7 @@
 
 **Tech Stack:** Python 3.13 / NumPy / FastAPI / Pydantic
 
-**Codex Review:** Rev 5 addressed 16 total findings across 5 rounds.
+**Codex Review:** Rev 6 addressed 18 total findings across 6 rounds.
 
 Round 1 (6 findings):
 - R1-H1: Added state.json schema_version v2 migration + persistent layer storage
@@ -35,6 +35,10 @@ Round 4 (3 findings):
 Round 5 (2 findings):
 - R5-H1: activate_scene clears compositor only AFTER successful activation (no state loss on failure)
 - R5-M2: Boot restore REPLACES existing startup block (not appended after); clears current_effect in compositor path
+
+Round 6 (2 findings):
+- R6-H1: Entering compositor clears current_scene/current_params; leaving clears all stale state
+- R6-H2: Mode-switch centralized in Renderer.activate_scene() — all activation paths (scenes, media, diagnostics, startup) exit compositor automatically
 
 ---
 
@@ -832,18 +836,28 @@ class LayerReorderRequest(BaseModel):
 
 - [ ] **Step 2: Add mode exclusion to activate_scene**
 
-In the existing `activate_scene` endpoint handler, clear compositor only AFTER successful activation:
+**R6-H2 fix:** Instead of patching individual routes, centralize mode-switch
+logic inside `Renderer.activate_scene()` itself. This ensures ALL activation
+paths (scenes, media, diagnostics, startup) properly exit compositor mode.
+
+In `pi/app/core/renderer.py`, modify `activate_scene()`:
 ```python
-@router.post("/activate", dependencies=[Depends(require_auth)])
-async def activate_scene(req: SceneRequest):
-    # ... existing activation logic that returns success/failure ...
-    # R4-H1 + R5-H1 fix: only clear compositor after successful activation
-    # so a failed activate doesn't destroy a running layered scene
-    if success and deps.renderer.compositor:
-        deps.renderer.compositor = None
-        deps.state_manager.current_layers = []
-    # ... return response ...
+def activate_scene(self, scene_name, params=None, media_manager=None) -> bool:
+    """Unified scene activation. Clears compositor on success (R6-H2)."""
+    # ... existing activation logic ...
+    if success:
+        # R4-H1 + R5-H1 + R6-H2: centralized compositor teardown on any
+        # successful single-effect activation — no route-level patching needed
+        if self.compositor:
+            self.compositor = None
+        # R6-H1: clear stale single-effect fields are updated by _set_scene
+        # so current_scene/current_params always reflect the active state
+    return success
 ```
+
+The route no longer needs mode-exit logic — `renderer.activate_scene()` handles it.
+No changes needed in media routes, diagnostic routes, or startup — they all call
+`renderer.activate_scene()` which now owns the mode transition.
 
 - [ ] **Step 3: Add layer CRUD + reorder endpoints**
 
@@ -874,8 +888,11 @@ async def add_layer(req: LayerAddRequest):
                 params=deps.state_manager.current_params or {},
             )
             deps.renderer.compositor.add_layer(base_layer)
-        # R4-H1 fix: clear single-effect mode — compositor owns rendering now
+        # R4-H1 + R6-H1 fix: clear ALL single-effect state — compositor owns rendering
         deps.renderer.current_effect = None
+        deps.render_state.current_scene = None
+        deps.state_manager.current_scene = None
+        deps.state_manager.current_params = None
     layer = Layer(**req.model_dump())
     idx = deps.renderer.compositor.add_layer(layer)
     deps.state_manager.current_layers = deps.renderer.compositor.to_dict()['layers']
@@ -887,10 +904,11 @@ async def remove_layer(index: int):
         deps.renderer.compositor.remove_layer(index)
         layers = deps.renderer.compositor.to_dict()['layers']
         deps.state_manager.current_layers = layers
-        # R4-H1 fix: if all layers removed, clear compositor so we don't
-        # render stale state — next activate_scene will work cleanly
+        # R4-H1 + R6-H1 fix: if all layers removed, clear everything
         if not layers:
             deps.renderer.compositor = None
+            deps.state_manager.current_scene = None
+            deps.state_manager.current_params = None
         return {'status': 'ok', 'layers': layers}
     return {'error': 'no compositor active'}
 
@@ -1042,4 +1060,6 @@ git tag v1.2.0-compositor
 | First /layers/add preserves current scene | Test: add layer while scene active, both visible | R4-H2 ✓ |
 | Remove all layers clears compositor cleanly | Test: remove all, then activate_scene works | R4-H1 ✓ |
 | Single-layer with opacity restores correctly | Reboot with opacity=0.5 layer, verify dim | R4-M3 ✓ |
+| Mode switch centralized in activate_scene | Media/diag/startup all exit compositor | R6-H2 ✓ |
+| No stale state after mode transitions | Enter layers, exit, verify clean state | R6-H1 ✓ |
 | Existing single-effect mode unchanged | Full regression suite | — |
