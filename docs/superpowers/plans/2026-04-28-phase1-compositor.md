@@ -87,9 +87,11 @@ Round 13 (3 findings):
 | Modify | `pi/app/layout/schema.py` | Add brightness_cal to segments |
 | Modify | `pi/app/layout/compiler.py` | Precompute per-pixel correction array |
 | Modify | `pi/app/layout/packer.py` | Apply corrections during vectorized pack |
+| Modify | `pi/app/layout/__init__.py` | Serialize brightness_cal in save_layout() |
+| Modify | `pi/app/core/renderer.py` | Add "calibrate" test-pattern mode |
 | Create | `pi/app/ui/static/calibrate.html` | Keyboard-driven brightness calibration tool |
 | Modify | `pi/app/api/routes/layout.py` | Calibration preview + save endpoints |
-| Create | `pi/tests/test_brightness_cal.py` | Calibration schema, compiler, pack tests |
+| Create | `pi/tests/test_brightness_cal.py` | Calibration schema, compiler, pack, round-trip tests |
 
 ---
 
@@ -1082,9 +1084,11 @@ input value. Without per-segment correction, the panel looks uneven. This must
 be baked into the pack pipeline so every frame is automatically corrected.
 
 **Data model:** Per-segment, per-channel (R/G/B), 3-point correction curve at
-brightness levels 0.2, 0.5, 0.8. Stored in layout.yaml alongside each segment.
-Defaults to 1.0 (no correction). At runtime, corrections are precomputed into
-a per-pixel multiplier array and applied in pack_frame via vectorized multiply.
+brightness levels 0.2, 0.5, 0.8. Stored in layout.yaml as immutable tuples.
+Defaults to 1.0 (no correction). At compile time, each segment's 3-point curve
+is interpolated into a 256-entry per-channel LUT. At pack time, each pixel's
+RGB values are looked up through the segment's LUT — O(1) per pixel, no
+float math in the hot path.
 
 - [ ] **Step 1: Write failing test for calibration data in schema**
 
@@ -1096,8 +1100,10 @@ import numpy as np
 
 def test_segment_has_default_brightness_cal():
     """Segments should have brightness_cal defaulting to neutral (1.0)."""
+    from app.layout.schema import BrightnessCal
     seg = LinearSegment(id='s1', start=(0, 0), direction='+y', length=10, physical_offset=0)
-    assert seg.brightness_cal == {'r': [1.0, 1.0, 1.0], 'g': [1.0, 1.0, 1.0], 'b': [1.0, 1.0, 1.0]}
+    assert seg.brightness_cal == BrightnessCal()
+    assert seg.brightness_cal.r == (1.0, 1.0, 1.0)
 
 
 def test_parse_layout_with_brightness_cal():
@@ -1112,17 +1118,17 @@ def test_parse_layout_with_brightness_cal():
                 'start': {'x': 0, 'y': 0}, 'direction': '+y', 'length': 5,
                 'physical_offset': 0,
                 'brightness_cal': {
-                    'r': [0.8, 0.9, 1.0],
-                    'g': [1.0, 1.0, 1.0],
-                    'b': [0.7, 0.85, 1.0],
+                    'r': (0.8, 0.9, 1.0),
+                    'g': (1.0, 1.0, 1.0),
+                    'b': (0.7, 0.85, 1.0),
                 },
             }],
         }],
     }
     config = parse_layout(raw)
     seg = config.outputs[0].segments[0]
-    assert seg.brightness_cal['r'] == [0.8, 0.9, 1.0]
-    assert seg.brightness_cal['b'][0] == 0.7
+    assert seg.brightness_cal.r == (0.8, 0.9, 1.0)
+    assert seg.brightness_cal.b[0] == 0.7
 
 
 def test_compiled_layout_has_correction_array():
@@ -1164,18 +1170,23 @@ Expected: AttributeError — brightness_cal not in schema yet
 In `pi/app/layout/schema.py`, add to both segment dataclasses:
 
 ```python
-# Default: neutral correction (1.0 at all 3 test levels for all 3 channels)
-_DEFAULT_CAL = {'r': [1.0, 1.0, 1.0], 'g': [1.0, 1.0, 1.0], 'b': [1.0, 1.0, 1.0]}
+# Immutable calibration data — tuples all the way down (R15-M2 fix)
+@dataclass(frozen=True)
+class BrightnessCal:
+    """Per-channel 3-point correction at brightness levels 0.2, 0.5, 0.8."""
+    r: tuple[float, float, float] = (1.0, 1.0, 1.0)
+    g: tuple[float, float, float] = (1.0, 1.0, 1.0)
+    b: tuple[float, float, float] = (1.0, 1.0, 1.0)
 
 @dataclass(frozen=True)
 class LinearSegment:
     # ... existing fields ...
-    brightness_cal: dict = field(default_factory=lambda: dict(_DEFAULT_CAL))
+    brightness_cal: BrightnessCal = field(default_factory=BrightnessCal)
 
 @dataclass(frozen=True)
 class ExplicitSegment:
     # ... existing fields ...
-    brightness_cal: dict = field(default_factory=lambda: dict(_DEFAULT_CAL))
+    brightness_cal: BrightnessCal = field(default_factory=BrightnessCal)
 ```
 
 In `parse_layout()`, parse the cal data for each segment:
@@ -1195,30 +1206,57 @@ In `pi/app/layout/compiler.py`, after building pack_src/pack_dst, build a
 correction array that matches the same layout:
 
 ```python
-# For each entry, compute a per-channel correction multiplier.
-# The 3-point cal curve (at 0.2, 0.5, 0.8 brightness) is averaged to a
-# single multiplier per channel. This is a simple first-pass — future
-# versions can interpolate per-pixel based on actual brightness.
-correction = np.ones(n * 3, dtype=np.float32)
-for i, e in enumerate(entries):
-    # Find which segment this entry belongs to
-    seg_cal = segment_cal_map.get(e.segment_id, _DEFAULT_CAL)
-    i3 = i * 3
-    # Average the 3 calibration points per channel as a single multiplier
-    # Swizzle-aware: correction[i3+0] maps to the R output byte, etc.
-    r_mul = sum(seg_cal.get('r', [1, 1, 1])) / 3.0
-    g_mul = sum(seg_cal.get('g', [1, 1, 1])) / 3.0
-    b_mul = sum(seg_cal.get('b', [1, 1, 1])) / 3.0
-    muls = [r_mul, g_mul, b_mul]
-    correction[i3] = muls[e.swizzle[0]]
-    correction[i3 + 1] = muls[e.swizzle[1]]
-    correction[i3 + 2] = muls[e.swizzle[2]]
+# R15-H1 fix: build a 256-entry LUT per segment per channel by interpolating
+# the 3-point calibration curve (at brightness 0.2, 0.5, 0.8).
+# Then build a per-pixel lookup index array so pack_frame can do:
+#   corrected = segment_luts[seg_lut_idx, raw_value]
+
+def _build_segment_lut(cal: 'BrightnessCal') -> np.ndarray:
+    """Build a (3, 256) uint8 LUT from a 3-point calibration curve."""
+    lut = np.zeros((3, 256), dtype=np.uint8)
+    levels = np.array([0.0, 0.2, 0.5, 0.8, 1.0])  # anchor points
+    for ch_idx, points in enumerate([cal.r, cal.g, cal.b]):
+        # Build piecewise linear: (0,0), (51,51*p0), (128,128*p1), (204,204*p2), (255,255)
+        muls = np.array([1.0, points[0], points[1], points[2], 1.0])
+        for i in range(256):
+            brightness = i / 255.0
+            # Find which segment of the curve we're in
+            idx = np.searchsorted(levels, brightness, side='right') - 1
+            idx = max(0, min(idx, len(levels) - 2))
+            # Interpolate multiplier
+            t = (brightness - levels[idx]) / max(levels[idx + 1] - levels[idx], 1e-6)
+            mul = muls[idx] * (1 - t) + muls[idx + 1] * t
+            lut[ch_idx, i] = min(255, max(0, int(i * mul + 0.5)))
+    return lut
 ```
 
-Add `pack_correction` to CompiledLayout:
+In CompiledLayout, store the LUT array and per-pixel segment index:
 
 ```python
-pack_correction: np.ndarray = field(default_factory=lambda: np.ones(0, dtype=np.float32))
+# Per-segment LUTs: (n_segments, 3, 256) uint8
+cal_luts: np.ndarray = field(default_factory=lambda: np.empty((0, 3, 256), dtype=np.uint8))
+# Per-pixel segment index: (n_entries,) int — maps each MappingEntry to its segment LUT
+cal_seg_idx: np.ndarray = field(default_factory=lambda: np.empty(0, dtype=np.int32))
+```
+
+Build these during compile_layout():
+```python
+# Collect unique segment calibrations
+seg_ids_ordered = []  # list of unique segment IDs in order
+seg_id_to_idx = {}
+for e in entries:
+    if e.segment_id not in seg_id_to_idx:
+        seg_id_to_idx[e.segment_id] = len(seg_ids_ordered)
+        seg_ids_ordered.append(e.segment_id)
+
+# Build LUTs
+cal_luts = np.stack([
+    _build_segment_lut(segment_cal_map.get(sid, BrightnessCal()))
+    for sid in seg_ids_ordered
+])  # (n_segments, 3, 256)
+
+# Per-entry segment index
+cal_seg_idx = np.array([seg_id_to_idx[e.segment_id] for e in entries], dtype=np.int32)
 ```
 
 To build `segment_cal_map`, track segment_id on MappingEntry:
@@ -1244,13 +1282,24 @@ def pack_frame(frame: np.ndarray, layout: CompiledLayout) -> bytes:
         return b''
     buf = np.zeros(layout.pack_buf_size, dtype=np.uint8)
     flat = frame.ravel()
-    # Apply per-segment brightness correction (vectorized multiply)
-    corrected = (flat[layout.pack_src].astype(np.float32) * layout.pack_correction)
-    buf[layout.pack_dst] = np.clip(corrected, 0, 255).astype(np.uint8)
+    raw = flat[layout.pack_src]  # (n_entries * 3,) uint8
+
+    # Apply per-segment brightness correction via LUT lookup
+    if layout.cal_luts.shape[0] > 0:
+        # For each pixel, look up its corrected value from its segment's LUT
+        # This is O(n) with no float math — pure integer indexing
+        n = len(layout.entries)
+        for ch in range(3):
+            ch_indices = np.arange(n) * 3 + ch  # indices into raw for this channel
+            seg_indices = layout.cal_seg_idx     # which segment LUT to use
+            raw[ch_indices] = layout.cal_luts[seg_indices, ch, raw[ch_indices]]
+
+    buf[layout.pack_dst] = raw
     return buf.tobytes()
 ```
 
-This adds one float32 multiply + clip per pixel — negligible cost on 830 pixels.
+The LUT lookup is integer-only (no float math), same cost as the original
+pack_frame plus one array gather per channel. At 830 pixels: ~0.3ms total.
 
 - [ ] **Step 6: Run tests**
 
@@ -1281,7 +1330,59 @@ Workflow:
 The calibration preview uses the existing test-pattern overlay in the renderer
 (similar to segment-identify but with a solid color at a specific brightness).
 
-- [ ] **Step 8: Add calibration API endpoints**
+- [ ] **Step 8: Update layout serializer to persist brightness_cal**
+
+In `pi/app/layout/__init__.py`, update `save_layout()` to emit `brightness_cal`
+for each segment when serializing to YAML:
+
+```python
+# In the segment serialization block, add:
+if hasattr(seg, 'brightness_cal') and seg.brightness_cal != BrightnessCal():
+    seg_dict['brightness_cal'] = {
+        'r': list(seg.brightness_cal.r),
+        'g': list(seg.brightness_cal.g),
+        'b': list(seg.brightness_cal.b),
+    }
+```
+
+This ensures calibration data round-trips through save/load correctly.
+Test: save a layout with non-default cal, reload it, verify cal preserved.
+
+- [ ] **Step 9: Add calibration preview mode to renderer**
+
+In `pi/app/core/renderer.py`, add a new test mode `"calibrate"` alongside
+existing segment/strip/probe modes:
+
+```python
+def set_calibrate_preview(self, color: str, level: float, multipliers: dict):
+    """Show all segments at a single color/brightness for calibration.
+    color: 'r', 'g', 'b'
+    level: 0.2, 0.5, 0.8
+    multipliers: segment_id -> float adjustment
+    """
+    self._cal_color = color
+    self._cal_level = level
+    self._cal_multipliers = multipliers
+    self._test_mode = "calibrate"
+    self._test_strip_until = time.monotonic() + 600  # 10 min timeout
+```
+
+In the test-pattern section of `_render_frame()`, add the calibrate handler:
+
+```python
+elif self._test_mode == "calibrate":
+    logical_frame[:] = 0
+    val = int(self._cal_level * 255)
+    ch = {'r': 0, 'g': 1, 'b': 2}[self._cal_color]
+    for seg_id, positions in self._segment_positions.items():
+        mul = self._cal_multipliers.get(seg_id, 1.0)
+        adjusted = min(255, max(0, int(val * mul)))
+        for x, y in positions:
+            if x < logical_frame.shape[0] and y < logical_frame.shape[1]:
+                logical_frame[x, y, ch] = adjusted
+```
+
+- [ ] **Step 10: Add calibration API endpoints**
 
 In `pi/app/api/routes/layout.py`, add:
 
@@ -1289,11 +1390,10 @@ In `pi/app/api/routes/layout.py`, add:
 @router.post("/calibrate/preview", dependencies=[Depends(require_auth)])
 async def calibrate_preview(req: dict):
     """Set all segments to a test color at a specific brightness level."""
-    color = req.get('color', 'r')  # 'r', 'g', 'b'
-    level = req.get('level', 0.5)  # 0.2, 0.5, 0.8
-    multipliers = req.get('multipliers', {})  # segment_id -> float
-    # Build a solid-color frame with per-segment multipliers applied
-    # ... (uses renderer test pattern mechanism)
+    color = req.get('color', 'r')
+    level = req.get('level', 0.5)
+    multipliers = req.get('multipliers', {})
+    deps.renderer.set_calibrate_preview(color, level, multipliers)
     return {'status': 'ok'}
 
 @router.post("/calibrate/save", dependencies=[Depends(require_auth)])
