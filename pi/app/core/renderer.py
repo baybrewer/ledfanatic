@@ -46,6 +46,7 @@ class RenderState:
     self.effect_render_ms: float = 0.0  # just the effect.render() call
     self.pack_ms: float = 0.0           # pack_frame only
     self.send_ms: float = 0.0           # transport.send_frame only
+    self.compositor_ms: float = 0.0      # compositor blend pass
 
   def update_audio(self, snapshot: dict):
     """Receive thread-safe audio snapshot."""
@@ -93,6 +94,9 @@ class RenderState:
       'effect_render_ms': round(self.effect_render_ms, 2),
       'pack_ms': round(self.pack_ms, 2),
       'send_ms': round(self.send_ms, 2),
+      'compositor_ms': round(self.compositor_ms, 2),
+      'compositor_active': getattr(self, '_compositor_active', False),
+      'compositor_layers': getattr(self, '_compositor_layers', []),
       'audio_level': round(self.audio_level, 3),
       'audio_bass': round(self.audio_bass, 3),
       'audio_mid': round(self.audio_mid, 3),
