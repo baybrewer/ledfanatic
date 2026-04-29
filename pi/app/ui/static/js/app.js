@@ -2100,6 +2100,14 @@ document.addEventListener('DOMContentLoaded', () => {
         if (wrap) wrap.style.opacity = '1';
         if (activeEffectName) {
           startEffectsPreview(activeEffectName, currentEffectParams);
+        } else {
+          // Fetch current scene if we don't know it yet
+          api('GET', '/api/effects/catalog').then(data => {
+            if (data && data.current) {
+              activeEffectName = data.current;
+              startEffectsPreview(data.current, {});
+            }
+          });
         }
       }
     });
