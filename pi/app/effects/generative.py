@@ -627,11 +627,12 @@ class TwinTorches(Effect):
     self._gy = np.ones(w, dtype=np.float32)[:, np.newaxis] * np.arange(h, dtype=np.float32)[np.newaxis, :]
     # Torch positions — two torches at 1/4 and 3/4 width
     self._torch_x = [w * 0.25, w * 0.75]
-    # TORCH proportions: stick is bottom 50%, fire is top 50%
-    self._flame_top = 2  # clamp flame — never go above row 2
-    self._flame_base = int(h * 0.50)  # flame sits at top 50%
-    self._stick_top = self._flame_base  # stick starts where flame ends
-    self._torch_head = self._stick_top - 2  # wider torch head section
+    # DUNGEON TORCH: long stick, small flame sitting on top
+    # Flame starts at 10% from top, extends to 25% (small torch flame)
+    self._flame_base = int(h * 0.25)  # flame base (where stick ends)
+    self._flame_top = int(h * 0.10)   # flame tip — 10% down from top
+    self._stick_top = self._flame_base
+    self._torch_head = self._stick_top - 1
 
   def render(self, t: float, state) -> np.ndarray:
     if self._last_t is None:
@@ -686,28 +687,24 @@ class TwinTorches(Effect):
         fy_local = fy - flame_top
         fy_norm = 1.0 - fy_local / max(flame_height, 1)  # 1=base, 0=tip
 
-        # 2D noise-based flame shape — multiple octaves
-        # Offset each torch so they look different
+        # Small flickery dungeon torch flame — teardrop shape
         phase = ti * 100
-        n1 = np.sin(dx_norm * 4.0 + tt * 3.0 + phase) * np.cos(fy_norm * 3.0 + tt * 2.5)
-        n2 = np.sin(dx_norm * 7.0 - tt * 4.0 + phase + 50) * 0.5
-        n3 = np.cos(dx_norm * 2.0 + fy_norm * 5.0 + tt * 1.8 + phase) * 0.3
-        swirl = (n1 + n2 + n3) * 0.3
+        # Flicker noise — makes flame dance
+        n1 = np.sin(dx_norm * 6.0 + tt * 5.0 + phase) * 0.3
+        n2 = np.sin(fy_norm * 4.0 + tt * 3.5 + phase + 30) * 0.2
+        flicker = n1 + n2
 
-        # Flame envelope — wider at base, narrow at tip
-        flame_width = (0.3 + fy_norm * 0.7) * (1.0 + swirl * 0.4)
-        # Intensity based on distance from center and height
-        dist_from_center = np.abs(dx_norm + swirl * 0.2)
+        # Narrow teardrop: wide at base (fy_norm=1), pinched at tip (fy_norm=0)
+        flame_width = (0.15 + fy_norm * 0.35) * (1.0 + flicker * 0.3)
+
+        # Wobble — gentle sway like a torch in a draft
+        wobble = np.sin(tt * 1.8 + ti * 2.7) * 0.12 + np.sin(tt * 3.1 + ti) * 0.06
+
+        dist_from_center = np.abs(dx_norm - wobble + flicker * 0.08)
         envelope = np.clip(1.0 - dist_from_center / np.maximum(flame_width, 0.01), 0, 1)
-        # Taper at tip
-        tip_taper = np.clip(fy_norm * 2.0, 0, 1)
+        # Taper at tip — sharp point
+        tip_taper = np.clip(fy_norm * 1.5, 0, 1)
         intensity = envelope * tip_taper
-
-        # Wobble the whole flame sideways
-        wobble = np.sin(tt * 2.3 + ti * 3.14) * 0.15
-        shifted_dist = np.abs(dx_norm - wobble + swirl * 0.15)
-        envelope2 = np.clip(1.0 - shifted_dist / np.maximum(flame_width, 0.01), 0, 1)
-        intensity = np.maximum(intensity, envelope2 * tip_taper)
 
         # Color via palette — use intensity as palette position (no white)
         hue = np.clip(intensity * 0.9, 0, 0.95)
@@ -724,9 +721,9 @@ class TwinTorches(Effect):
         count = 1 + int(self._rng.random() > 0.6)
         new = np.empty(count, dtype=self._SPARK_DTYPE)
         new['x'] = tx + self._rng.uniform(-1.5, 1.5, count).astype(np.float32)
-        new['y'] = self._rng.uniform(self._flame_top, self._flame_base * 0.6, count).astype(np.float32)
-        new['vx'] = self._rng.uniform(-3, 3, count).astype(np.float32)
-        new['vy'] = self._rng.uniform(-12, -4, count).astype(np.float32)
+        new['y'] = self._rng.uniform(self._flame_top, self._flame_top + (self._flame_base - self._flame_top) * 0.4, count).astype(np.float32)
+        new['vx'] = self._rng.uniform(-2, 2, count).astype(np.float32)
+        new['vy'] = self._rng.uniform(-8, -3, count).astype(np.float32)
         new['life'] = self._rng.uniform(0.3, 0.8, count).astype(np.float32)
         new['brightness'] = self._rng.uniform(0.7, 1.0, count).astype(np.float32)
         if len(self._sparks) < self._MAX_SPARKS:
@@ -739,7 +736,7 @@ class TwinTorches(Effect):
       s['y'] += s['vy'] * dt
       s['vy'] += 25 * dt  # gravity
       s['life'] -= dt
-      alive = (s['life'] > 0) & (s['y'] >= self._flame_top) & (s['y'] < h)
+      alive = (s['life'] > 0) & (s['y'] >= max(0, self._flame_top - 3)) & (s['y'] < h)
       self._sparks = s[alive]
 
     # Draw sparks — amber/orange, no white
