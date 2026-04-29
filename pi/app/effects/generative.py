@@ -767,7 +767,7 @@ class TwinTorches(Effect):
         count = 1 + int(self._rng.random() > 0.5)
         new = np.empty(count, dtype=self._SPARK_DTYPE)
         new['x'] = tx + self._rng.uniform(-2, 2, count).astype(np.float32)
-        new['y'] = self._rng.uniform(self._fire_top, self._fire_top + 5, count).astype(np.float32)
+        new['y'] = self._rng.uniform(self._head_top - 3, self._head_top + 3, count).astype(np.float32)
         new['vx'] = self._rng.uniform(-3, 3, count).astype(np.float32)
         new['vy'] = self._rng.uniform(-15, -5, count).astype(np.float32)  # strong upward
         new['life'] = self._rng.uniform(0.3, 0.8, count).astype(np.float32)
