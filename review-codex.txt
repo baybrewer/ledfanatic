@@ -1,1099 +1,884 @@
-============= file start: pi/app/main.py ===============
-"""
-Main entry point for the Pillar Controller application.
-"""
+============= file start: /Users/jim/ai/pillar-controller/docs/superpowers/plans/2026-04-28-v2-phase-b-ui-overhaul.md ===============
+# LED Fanatic v2.0 — Phase B: UI Overhaul
 
-import asyncio
-import logging
-import os
-import sys
-from pathlib import Path
+> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-import uvicorn
-import yaml
+**Goal:** Transform the control panel from a narrow 480px mobile-only layout into a beautiful, futuristic, full-screen responsive UI that works on iPad, desktop, and phone.
 
-from .api.server import create_app
-from .core.renderer import Renderer, RenderState
-from .core.state import StateManager
-from .core.brightness import BrightnessEngine
-from .transport.usb import TeensyTransport
-from .media.manager import MediaManager
-from .audio.analyzer import AudioAnalyzer
-from .effects.generative import EFFECTS
-from .effects.audio_reactive import AUDIO_EFFECTS
-from .diagnostics.patterns import DIAGNOSTIC_EFFECTS
-from .config.pixel_map import load_pixel_map, compile_pixel_map, validate_pixel_map, PixelMapConfig
-from .config.spatial_map import load_spatial_map
-from .preview.service import PreviewService
-from .effects.imported import IMPORTED_EFFECTS
-from .effects.switcher import AnimationSwitcher
-from .effects.catalog import EffectCatalogService, EffectMeta
+**Architecture:** CSS-only visual upgrade with responsive breakpoints. No framework — stay vanilla JS. The existing `app.js` (2047 lines) and `index.html` stay as the foundation. CSS gets a complete rewrite. HTML gets structural tweaks for the new layout.
 
-DEV_MODE = os.environ.get('PILLAR_DEV', '').strip() == '1'
+**Tech Stack:** Vanilla CSS (custom properties, grid, flexbox, backdrop-filter), vanilla JS, no build step
 
+---
 
-def _resolve_paths():
-  """Return (config_dir, media_dir, cache_dir, log_dir) based on environment."""
-  if DEV_MODE or not Path("/opt/pillar").exists():
-    base = Path(__file__).parent.parent
-    return base / "config", base / "media", base / "cache", base / "logs"
-  return (
-    Path("/opt/pillar/config"),
-    Path("/opt/pillar/media"),
-    Path("/opt/pillar/cache"),
-    Path("/opt/pillar/logs"),
-  )
+## Current Problems
 
+1. `max-width: 480px` on `#app` — wastes screen on iPad/desktop
+2. Effect buttons are plain text blocks — no visual identity
+3. No visual hierarchy — everything looks the same
+4. No responsive breakpoints for tablet/desktop
+5. Tab bar is cramped and plain
+6. Status bar is minimal
+7. Color scheme is flat — no depth, glow, or texture
 
-def _setup_logging(log_dir: Path):
-  log_dir.mkdir(parents=True, exist_ok=True)
-  logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
-    handlers=[
-      logging.StreamHandler(sys.stdout),
-      logging.FileHandler(log_dir / "pillar.log"),
-    ],
-  )
+## Design Direction
 
+**Aesthetic:** Dark glassmorphism with accent glow. Think sci-fi HUD meets music production software. Subtle gradients, soft glows, glass panels with blur, animated borders.
 
-def _load_config(config_dir: Path) -> dict:
-  config = {}
-  for name in ('system.yaml', 'hardware.yaml', 'effects.yaml'):
-    path = config_dir / name
-    if path.exists():
-      try:
-        with open(path) as f:
-          config[name.replace('.yaml', '')] = yaml.safe_load(f) or {}
-      except yaml.YAMLError as e:
-        logging.getLogger(__name__).error(f"Failed to parse {path}: {e} — using empty config")
-        config[name.replace('.yaml', '')] = {}
-  return config
+**Layout tiers:**
+- **Phone (≤640px):** Single column, stacked
+- **Tablet/iPad (641-1024px):** Two columns — effects grid left, controls/preview right
+- **Desktop (>1024px):** Same two columns but wider, with more grid columns for effect cards
 
+Note: A third column (category rail) is deferred to Phase C (effect organization).
 
-def main():
-  config_dir, media_dir, cache_dir, log_dir = _resolve_paths()
-  _setup_logging(log_dir)
-  logger = logging.getLogger(__name__)
-  logger.info(f"Starting Pillar Controller (dev={DEV_MODE})")
+---
 
-  config = _load_config(config_dir)
-  sys_conf = config.get('system', {})
-  display_conf = sys_conf.get('display', {})
-  transport_conf = sys_conf.get('transport', {})
-  brightness_conf = sys_conf.get('brightness', {})
+## File Map
 
-  # State manager — load persisted values
-  state_manager = StateManager(config_dir=config_dir)
-  state_manager.load()
+| Action | File | Responsibility |
+|--------|------|---------------|
+| Rewrite | `pi/app/ui/static/css/app.css` | Complete visual overhaul |
+| Modify | `pi/app/ui/static/index.html` | Structural changes for responsive layout |
+| Modify | `pi/app/ui/static/js/app.js` | Effect card rendering, category logic |
 
-  # Brightness engine — config defaults first, then persisted overrides
-  brightness_engine = BrightnessEngine(brightness_conf)
-  if state_manager.brightness_manual_cap is not None:
-    brightness_engine.manual_cap = state_manager.brightness_manual_cap
-  if state_manager.brightness_auto_enabled is not None and state_manager.brightness_auto_enabled:
-    brightness_engine.update_config({'auto_enabled': True})
+---
 
-  # Render state — config defaults first, then persisted overrides
-  render_state = RenderState()
-  render_state.gamma = display_conf.get('gamma', 2.2)
-  if state_manager.target_fps is not None:
-    render_state.target_fps = state_manager.target_fps
-  else:
-    render_state.target_fps = display_conf.get('target_fps', 60)
+### Task 1: Remove 480px Cap + Responsive Shell
 
-  # Transport
-  transport = TeensyTransport(
-    reconnect_interval=transport_conf.get('reconnect_interval_ms', 1000) / 1000,
-    handshake_timeout=transport_conf.get('handshake_timeout_ms', 3000) / 1000,
-  )
+**Files:**
+- Modify: `pi/app/ui/static/css/app.css`
 
-  # Pixel map — load, validate, compile
-  pixel_map_config = load_pixel_map(config_dir)
-  errors = validate_pixel_map(pixel_map_config)
-  if errors:
-    for err in errors:
-      logger.error(f"Pixel map validation: {err}")
-    logger.error("Pixel map has errors — using empty config (no LEDs)")
-    pixel_map_config = PixelMapConfig()
-  compiled_pixel_map = compile_pixel_map(pixel_map_config)
-  logger.info(
-    f"Pixel map: {compiled_pixel_map.width}x{compiled_pixel_map.height} grid, "
-    f"{len(pixel_map_config.strips)} strips, {compiled_pixel_map.total_mapped_leds} LEDs"
-  )
+- [ ] **Step 1: Remove max-width constraint and add responsive container**
 
-  # Renderer
-  renderer = Renderer(transport, render_state, brightness_engine, compiled_pixel_map)
-  effects_conf = config.get('effects', {})
-  renderer.effects_config = effects_conf
+Replace the `#app` rule (line 37-44):
 
-  for name, cls in EFFECTS.items():
-    renderer.register_effect(name, cls)
-  for name, cls in AUDIO_EFFECTS.items():
-    renderer.register_effect(name, cls)
-  for name, cls in DIAGNOSTIC_EFFECTS.items():
-    renderer.register_effect(name, cls)
-
-  # Register imported animations into renderer
-  for name, cls in IMPORTED_EFFECTS.items():
-    renderer.register_effect(name, cls)
-  renderer.register_effect('animation_switcher', AnimationSwitcher)
-  logger.info(f"Registered {len(IMPORTED_EFFECTS)} imported effects + animation_switcher")
-
-  # Create shared catalog with all effects including imported
-  effect_catalog = EffectCatalogService()
-  from .effects.engine.palettes import PALETTE_NAMES, FELDSTEIN_PALETTE_NAMES
-  for name, cls in IMPORTED_EFFECTS.items():
-    # Extract param metadata from class PARAMS attribute
-    param_dicts = ()
-    if hasattr(cls, 'PARAMS') and cls.PARAMS:
-      param_dicts = tuple(
-        {'name': p.attr.lower(), 'label': p.label, 'min': p.lo, 'max': p.hi,
-         'step': p.step, 'default': p.default, 'type': 'slider'}
-        for p in cls.PARAMS
-      )
-    # Determine available palettes
-    palette_support = getattr(cls, 'PALETTE_SUPPORT', False)
-    palettes = ()
-    if palette_support:
-      palettes = tuple(PALETTE_NAMES)
-    # Feldstein2 has custom palettes
-    if name == 'feldstein_og':
-      palettes = tuple(FELDSTEIN_PALETTE_NAMES)
-      palette_support = True
-
-    meta = EffectMeta(
-      name=name,
-      label=getattr(cls, 'DISPLAY_NAME', name.replace('_', ' ').title()),
-      group=getattr(cls, 'CATEGORY', 'imported'),
-      description=getattr(cls, 'DESCRIPTION', ''),
-      imported=True,
-      audio_requires=getattr(cls, 'AUDIO_REQUIRES', ()),
-      params=param_dicts,
-      palettes=palettes,
-      palette_support=palette_support,
-    )
-    effect_catalog.register_imported(name, meta)
-
-  # Register Animation Switcher in catalog
-  effect_catalog.register_imported('animation_switcher', EffectMeta(
-    name='animation_switcher',
-    label='Animation Switcher',
-    group='special',
-    description='Automatically cycles through selected animations with cross-fade',
-    imported=True,
-    params=(
-      {'name': 'interval', 'label': 'Switch Time (s)', 'min': 5, 'max': 120, 'step': 1, 'default': 15, 'type': 'slider'},
-      {'name': 'fade_duration', 'label': 'Fade Duration (s)', 'min': 0.5, 'max': 5.0, 'step': 0.5, 'default': 2.0, 'type': 'slider'},
-    ),
-  ))
-
-  # Spatial map (optional front-projection geometry)
-  spatial_map = load_spatial_map(config_dir)
-  if spatial_map:
-    logger.info(f"Spatial map: {spatial_map.profile_id}, {len(spatial_map.visible_strips)} visible strips")
-
-  # Media
-  media_manager = MediaManager(media_dir=media_dir, cache_dir=cache_dir)
-  media_manager.scan_library()
-
-  # Audio
-  audio_analyzer = AudioAnalyzer(render_state)
-
-  # Restore saved band sensitivities
-  if state_manager.audio_bass_sensitivity is not None:
-    audio_analyzer.bass_sensitivity = state_manager.audio_bass_sensitivity
-  if state_manager.audio_mid_sensitivity is not None:
-    audio_analyzer.mid_sensitivity = state_manager.audio_mid_sensitivity
-  if state_manager.audio_treble_sensitivity is not None:
-    audio_analyzer.treble_sensitivity = state_manager.audio_treble_sensitivity
-
-  # Auto-start audio with USB mic if available
-  usb_devices = [d for d in audio_analyzer.list_devices() if 'usb' in d['name'].lower()]
-  if usb_devices:
-    audio_analyzer.set_device(usb_devices[0]['index'])
-    logger.info(f"Auto-selected USB mic: {usb_devices[0]['name']} (device {usb_devices[0]['index']})")
-  audio_analyzer.start()
-  logger.info("Audio analyzer auto-started")
-
-  # Startup scene
-  startup = state_manager.current_scene or display_conf.get('startup_scene', 'rainbow_rotate')
-  if not renderer.activate_scene(startup, state_manager.current_params, media_manager=media_manager):
-    fallback = display_conf.get('startup_scene', 'rainbow_rotate')
-    logger.warning(f"Failed to restore scene '{startup}', falling back to '{fallback}'")
-    renderer.activate_scene(fallback)
-
-  # Preview service
-  preview_service = PreviewService(renderer)
-
-  # Create app
-  app = create_app(
-    transport=transport,
-    renderer=renderer,
-    render_state=render_state,
-    state_manager=state_manager,
-    brightness_engine=brightness_engine,
-    media_manager=media_manager,
-    audio_analyzer=audio_analyzer,
-    config=sys_conf,
-    spatial_map=spatial_map,
-    preview_service=preview_service,
-    effect_catalog=effect_catalog,
-    pixel_map_config=pixel_map_config,
-    compiled_pixel_map=compiled_pixel_map,
-    config_dir=config_dir,
-  )
-
-  # Track background tasks for clean shutdown
-  _background_tasks: list[asyncio.Task] = []
-
-  @app.on_event("startup")
-  async def startup_tasks():
-    # Register CONFIG resend callback — fires on every connect/reconnect
-    async def _on_teensy_connect():
-      logger.info("Sending CONFIG to Teensy...")
-      ok = await transport.send_config(compiled_pixel_map.output_config)
-      if ok:
-        logger.info("CONFIG ACK received")
-      else:
-        logger.warning("CONFIG send failed (NAK/timeout)")
-    transport._on_connect_callback = _on_teensy_connect
-
-    _background_tasks.append(asyncio.create_task(transport.reconnect_loop()))
-    _background_tasks.append(asyncio.create_task(renderer.run()))
-    _background_tasks.append(asyncio.create_task(state_manager.flush_loop()))
-    logger.info("Background tasks started")
-
-  @app.on_event("shutdown")
-  async def shutdown_tasks():
-    logger.info("Shutting down...")
-    renderer.stop()
-    if hasattr(app.state, 'broadcast_task'):
-      app.state.broadcast_task.cancel()
-    for task in _background_tasks:
-      task.cancel()
-    await asyncio.gather(*_background_tasks, return_exceptions=True)
-    audio_analyzer.stop()
-    transport.disconnect()
-    state_manager.force_save()
-    logger.info("Shutdown complete")
-
-  # Determine port
-  if DEV_MODE:
-    port = sys_conf.get('ui', {}).get('dev_port', 8000)
-  else:
-    port = sys_conf.get('ui', {}).get('port', 80)
-
-  uvicorn.run(app, host="0.0.0.0", port=port, log_level="info")
-
-
-if __name__ == "__main__":
-  main()
-
-=============== file end: pi/app/main.py ==============
-
-============= file start: pi/app/transport/usb.py ===============
-"""
-USB Serial transport to Teensy.
-
-Handles device discovery, connection, reconnection, handshake,
-frame sending, and stats querying.
-"""
-
-import asyncio
-import logging
-import time
-import struct
-from typing import Optional
-
-import serial
-import serial.tools.list_ports
-
-from ..models.protocol import (
-  PacketType, build_packet, verify_packet, frame_packet,
-  build_hello_payload, build_frame_payload, build_blackout_payload,
-  build_config_payload, output_config_to_list,
-  parse_caps_payload, parse_stats_payload,
-  cobs_encode, cobs_decode, PROTOCOL_VERSION,
-)
-
-logger = logging.getLogger(__name__)
-
-TEENSY_VID = 0x16C0
-TEENSY_PID = 0x0483
-
-
-class TeensyTransport:
-  def __init__(self, reconnect_interval: float = 1.0, handshake_timeout: float = 3.0):
-    self.reconnect_interval = reconnect_interval
-    self.handshake_timeout = handshake_timeout
-    self.serial: Optional[serial.Serial] = None
-    self.connected = False
-    self.caps: Optional[dict] = None
-    self.frame_id = 0
-    self._rx_buffer = bytearray()
-    self._lock = asyncio.Lock()
-    self._last_config_ack: Optional[bool] = None
-    self._on_connect_callback = None  # async callable, set by main.py
-
-    # Stats
-    self.frames_sent = 0
-    self.send_errors = 0
-    self.reconnect_count = 0
-
-  def find_teensy_port(self) -> Optional[str]:
-    for port in serial.tools.list_ports.comports():
-      if port.vid == TEENSY_VID and port.pid == TEENSY_PID:
-        return port.device
-      if port.manufacturer and 'teensy' in port.manufacturer.lower():
-        return port.device
-    return None
-
-  async def connect(self) -> bool:
-    port = self.find_teensy_port()
-    if not port:
-      logger.debug("Teensy not found")
-      return False
-
-    try:
-      self.serial = serial.Serial(
-        port,
-        baudrate=115200,
-        timeout=0.1,
-        write_timeout=1.0,
-      )
-      self.connected = True
-      self._rx_buffer.clear()
-      logger.info(f"Connected to Teensy on {port}")
-
-      success = await self._handshake()
-      if not success:
-        logger.warning("Handshake failed")
-        self.disconnect()
-        return False
-
-      return True
-    except (serial.SerialException, OSError) as e:
-      logger.error(f"Connection failed: {e}")
-      self.connected = False
-      return False
-
-  def disconnect(self):
-    if self.serial and self.serial.is_open:
-      try:
-        self.serial.close()
-      except Exception:
-        pass
-    self.serial = None
-    self.connected = False
-    self.caps = None
-    self._last_config_ack = None  # Force CONFIG resend on next connect
-
-  async def _handshake(self) -> bool:
-    hello_payload = build_hello_payload("pillar-pi", "1.0.0")
-    packet = build_packet(PacketType.HELLO, hello_payload)
-    framed = frame_packet(packet)
-
-    try:
-      async with self._lock:
-        self.serial.write(framed)
-        self.serial.flush()
-    except (serial.SerialException, OSError) as e:
-      logger.error(f"Failed to send HELLO: {e}")
-      return False
-
-    start = time.monotonic()
-    while time.monotonic() - start < self.handshake_timeout:
-      result = self._read_packet()
-      if result:
-        header, payload = result
-        if header.packet_type == PacketType.CAPS:
-          self.caps = parse_caps_payload(payload)
-          if self.caps:
-            logger.info(f"Teensy caps: {self.caps}")
-            return True
-      await asyncio.sleep(0.01)
-
-    return False
-
-  def _read_packet(self) -> Optional[tuple]:
-    # No lock needed: called only from the same async context (request_stats,
-    # _handshake) which already holds or doesn't contend with the write lock.
-    if not self.serial or not self.serial.is_open:
-      return None
-
-    try:
-      available = self.serial.in_waiting
-      if available:
-        self._rx_buffer.extend(self.serial.read(available))
-    except (serial.SerialException, OSError):
-      return None
-
-    while b'\x00' in self._rx_buffer:
-      idx = self._rx_buffer.index(b'\x00')
-      if idx == 0:
-        self._rx_buffer.pop(0)
-        continue
-
-      encoded = bytes(self._rx_buffer[:idx])
-      self._rx_buffer = self._rx_buffer[idx + 1:]
-
-      decoded = cobs_decode(encoded)
-      if decoded is None:
-        continue
-
-      result = verify_packet(decoded)
-      if result:
-        return result
-
-    return None
-
-  async def send_frame(self, pixel_data: bytes) -> bool:
-    """Send a FRAME packet. pixel_data is the raw packed output from pack_frame().
-
-    If CONFIG has been ACK'd, sends raw pixel bytes (post-CONFIG format).
-    Otherwise, sends legacy format with 3-byte header for backward compat.
-    """
-    if not self.connected or not self.serial:
-      return False
-
-    self.frame_id += 1
-    timestamp_us = int(time.monotonic() * 1_000_000) & 0xFFFFFFFFFFFFFFFF
-
-    if self._last_config_ack:
-      # Post-CONFIG: raw pixel bytes
-      payload = pixel_data
-    else:
-      # Legacy format: channels(u8) + leds_per_ch(u16) + pixel data
-      # Derive from pixel_data length: assume 5 channels, calc leds_per_ch
-      total_leds = len(pixel_data) // 3
-      channels = 5
-      leds_per_ch = total_leds // channels if channels > 0 else 0
-      payload = struct.pack('<BH', channels, leds_per_ch) + pixel_data
-
-    packet = build_packet(
-      PacketType.FRAME,
-      payload,
-      frame_id=self.frame_id,
-      timestamp_us=timestamp_us,
-    )
-    framed = frame_packet(packet)
-
-    async with self._lock:
-      try:
-        await asyncio.to_thread(self.serial.write, framed)
-        self.frames_sent += 1
-        return True
-      except (serial.SerialException, OSError) as e:
-        self.send_errors += 1
-        logger.error(f"Frame send failed: {e}")
-        self.connected = False
-        return False
-
-  async def send_command(self, packet_type: int, payload: bytes = b'') -> bool:
-    if not self.connected or not self.serial:
-      return False
-
-    packet = build_packet(packet_type, payload)
-    framed = frame_packet(packet)
-
-    async with self._lock:
-      try:
-        self.serial.write(framed)
-        return True
-      except (serial.SerialException, OSError) as e:
-        logger.error(f"Command send failed: {e}")
-        self.connected = False
-        return False
-
-  async def send_blackout(self, enabled: bool) -> bool:
-    """Send explicit blackout command: True=on, False=off."""
-    return await self.send_command(
-      PacketType.BLACKOUT,
-      build_blackout_payload(enabled),
-    )
-
-  async def send_config(self, output_config: dict, timeout: float = 3.0) -> bool:
-    """Send CONFIG packet and wait for ACK/NAK.
-
-    output_config is the CompiledPixelMap.output_config dict
-    (pin -> [(strip_id, offset, count), ...]).
-    Returns True on ACK, False on NAK/timeout.
-
-    Holds the serial lock for both write AND read to prevent stats
-    reads from consuming the CONFIG response.
-    """
-    if not self.connected or not self.serial:
-      return False
-
-    config_list = output_config_to_list(output_config)
-    payload = build_config_payload(config_list)
-    packet = build_packet(PacketType.CONFIG, payload)
-    framed = frame_packet(packet)
-
-    try:
-      async with self._lock:
-        # Send CONFIG
-        await asyncio.to_thread(self.serial.write, framed)
-        self.serial.flush()
-
-        # Wait for ACK/NAK while holding lock
-        deadline = time.monotonic() + timeout
-        while time.monotonic() < deadline:
-          result = self._read_packet()
-          if result:
-            header, _ = result
-            if header.packet_type in {PacketType.CONFIG_ACK, PacketType.CONFIG_NAK}:
-              acked = header.packet_type == PacketType.CONFIG_ACK
-              self._last_config_ack = acked
-              if acked:
-                logger.info(f"CONFIG acknowledged (active pins: {config_list})")
-              else:
-                logger.warning("CONFIG rejected (NAK)")
-              return acked
-          await asyncio.sleep(0.05)
-    except (serial.SerialException, OSError) as e:
-      logger.error(f"Failed to send CONFIG: {e}")
-      self._last_config_ack = False
-      return False
-
-    logger.warning("CONFIG: no response (timeout)")
-    self._last_config_ack = False
-    return False
-
-  async def _wait_for_response(
-    self,
-    expected_types: set[int],
-    timeout: float = 3.0,
-  ) -> Optional[tuple]:
-    """Read serial until a packet matching expected_types arrives or timeout."""
-    start = time.monotonic()
-    while time.monotonic() - start < timeout:
-      result = self._read_packet()
-      if result:
-        header, payload = result
-        if header.packet_type in expected_types:
-          return result
-      await asyncio.sleep(0.01)
-    return None
-
-  async def send_brightness(self, brightness: float) -> bool:
-    val = max(0, min(255, int(brightness * 255)))
-    return await self.send_command(PacketType.BRIGHTNESS, struct.pack('<B', val))
-
-  async def send_test_pattern(self, pattern_id: int) -> bool:
-    return await self.send_command(PacketType.TEST_PATTERN, struct.pack('<B', pattern_id))
-
-  async def request_stats(self) -> Optional[dict]:
-    """Send PING and wait for STATS response. Holds lock to avoid stealing CONFIG responses."""
-    if not self.connected or not self.serial:
-      return None
-
-    async with self._lock:
-      try:
-        # Send PING
-        packet = build_packet(PacketType.PING)
-        framed = frame_packet(packet)
-        await asyncio.to_thread(self.serial.write, framed)
-
-        # Wait for STATS response
-        start = time.monotonic()
-        while time.monotonic() - start < 0.5:
-          result = self._read_packet()
-          if result:
-            header, payload = result
-            if header.packet_type == PacketType.STATS:
-              parsed = parse_stats_payload(payload)
-              if parsed:
-                return parsed
-              return {'error': 'malformed_stats', 'payload_len': len(payload)}
-          await asyncio.sleep(0.005)
-      except (serial.SerialException, OSError) as e:
-        logger.error(f"Stats request failed: {e}")
-        self.connected = False
-    return None
-
-  async def reconnect_loop(self):
-    """Background task: keep trying to connect. Calls on_connect_callback after each reconnect."""
-    while True:
-      try:
-        if not self.connected:
-          success = await self.connect()
-          if success:
-            self.reconnect_count += 1
-            logger.info(f"Reconnected (attempt #{self.reconnect_count})")
-            # Resend CONFIG after every reconnect
-            if self._on_connect_callback:
-              try:
-                await self._on_connect_callback()
-              except Exception as e:
-                logger.error(f"on_connect callback failed: {e}", exc_info=True)
-        await asyncio.sleep(self.reconnect_interval)
-      except asyncio.CancelledError:
-        break
-
-  def get_status(self) -> dict:
-    return {
-      'connected': self.connected,
-      'port': self.serial.port if self.serial else None,
-      'caps': self.caps,
-      'frames_sent': self.frames_sent,
-      'send_errors': self.send_errors,
-      'reconnect_count': self.reconnect_count,
-    }
-
-=============== file end: pi/app/transport/usb.py ==============
-
-============= file start: pi/app/config/pixel_map.py ===============
-"""
-Pixel map — single source of truth for all LED geometry.
-
-Defines the data model for mapping logical grid positions to physical
-LED strips/outputs. Supports loading from YAML, validation, and
-compilation into forward/reverse LUTs for fast rendering.
-
-This replaces the hardcoded 10x172 geometry with a user-configurable
-pixel map that can describe any strip layout.
-"""
-
-import logging
-import os
-import tempfile
-from dataclasses import dataclass, field
-from pathlib import Path
-import numpy as np
-import yaml
-
-logger = logging.getLogger(__name__)
-
-# Color order swizzle maps: channel name → (R-index, G-index, B-index)
-# Input is always RGB; swizzle tells you which source channel goes to each output byte.
-SWIZZLE_MAP: dict[str, tuple[int, int, int]] = {
-  "RGB": (0, 1, 2),
-  "RBG": (0, 2, 1),
-  "GRB": (1, 0, 2),
-  "GBR": (1, 2, 0),
-  "BRG": (2, 0, 1),
-  "BGR": (2, 1, 0),
+```css
+#app {
+  display: flex;
+  flex-direction: column;
+  min-height: 100dvh;
+  width: 100%;
+  max-width: 1400px;
+  margin: 0 auto;
+  padding: var(--safe-top) 16px var(--safe-bottom);
 }
 
+/* Tablet: wider padding */
+@media (min-width: 641px) {
+  #app { padding-left: 24px; padding-right: 24px; }
+}
 
-# ---------------------------------------------------------------------------
-# Data classes
-# ---------------------------------------------------------------------------
+/* Desktop: even wider */
+@media (min-width: 1025px) {
+  #app { padding-left: 32px; padding-right: 32px; }
+}
+```
 
-@dataclass
-class LineConfig:
-  """A run of LEDs along a single axis with its own color order."""
+- [ ] **Step 2: Deploy and verify full-width on iPad**
 
-  start: tuple[int, int]
-  end: tuple[int, int]
-  color_order: str = "BGR"
+```bash
+bash pi/scripts/deploy.sh ledfanatic.local
+```
 
-  def _validate_axis_aligned(self) -> tuple[int, int]:
-    """Return (dx, dy) or raise if diagonal."""
-    dx = self.end[0] - self.start[0]
-    dy = self.end[1] - self.start[1]
-    if dx != 0 and dy != 0:
-      raise ValueError(
-        f"Line must be axis-aligned (horizontal or vertical), "
-        f"got start={self.start} end={self.end}"
-      )
-    return dx, dy
+Open on iPad — should now fill the screen instead of narrow center strip.
 
-  def led_count(self) -> int:
-    """Number of LEDs in this line (inclusive of both endpoints)."""
-    dx, dy = self._validate_axis_aligned()
-    return abs(dx) + abs(dy) + 1
+- [ ] **Step 3: Commit**
 
-  def positions(self) -> list[tuple[int, int]]:
-    """Ordered list of (x, y) grid positions covered by this line."""
-    dx, dy = self._validate_axis_aligned()
-    result = []
-    count = self.led_count()
-    sx = 0 if dx == 0 else (1 if dx > 0 else -1)
-    sy = 0 if dy == 0 else (1 if dy > 0 else -1)
-    x, y = self.start
-    for _ in range(count):
-      result.append((x, y))
-      x += sx
-      y += sy
-    return result
+```bash
+git add pi/app/ui/static/css/app.css
+git commit -m "feat: remove 480px cap, add responsive container up to 1400px"
+```
 
+---
 
-# Backward-compatible alias so existing imports don't break in one shot
-ScanlineConfig = LineConfig
+### Task 2: Futuristic Color Scheme + Glass Effect Variables
 
+**Files:**
+- Modify: `pi/app/ui/static/css/app.css`
 
-@dataclass
-class StripConfig:
-  """One logical LED strip with its line geometry and output mapping."""
+- [ ] **Step 1: Upgrade CSS custom properties**
 
-  id: int
-  output: int
-  output_offset: int
-  lines: list[LineConfig]
-  pixel_overrides: dict[int, tuple[int, int]] = field(default_factory=dict)
+Replace the `:root` block:
 
-  @property
-  def total_leds(self) -> int:
-    """Derived from sum of line LED counts."""
-    return sum(line.led_count() for line in self.lines)
+```css
+:root {
+  /* Core palette */
+  --bg: #060610;
+  --bg-gradient: linear-gradient(135deg, #060610 0%, #0d0d1a 50%, #0a0a18 100%);
+  --surface: rgba(20, 20, 35, 0.8);
+  --surface2: rgba(30, 30, 50, 0.6);
+  --surface-solid: #14141f;
+  --border: rgba(100, 100, 180, 0.15);
+  --border-glow: rgba(108, 92, 231, 0.3);
 
+  /* Text */
+  --text: #e8e8f8;
+  --text-dim: #7878a0;
+  --text-muted: #4a4a6a;
 
-@dataclass
-class PixelMapConfig:
-  """Top-level pixel map configuration loaded from YAML."""
+  /* Accent */
+  --accent: #6c5ce7;
+  --accent-light: #a29bfe;
+  --accent-glow: rgba(108, 92, 231, 0.4);
+  --accent-gradient: linear-gradient(135deg, #6c5ce7, #a29bfe);
 
-  origin: str = "bottom-left"
-  teensy_outputs: int = 8
-  teensy_max_leds_per_output: int = 1200
-  teensy_wire_order: str = "BGR"
-  teensy_signal_family: str = "ws281x_800khz"
-  teensy_octo_pins: list[int] = field(default_factory=lambda: [2, 14, 7, 8, 6, 20, 21, 5])
-  strips: list[StripConfig] = field(default_factory=list)
+  /* Status */
+  --success: #00cec9;
+  --warning: #ffeaa7;
+  --danger: #ff6b6b;
 
+  /* Glass */
+  --glass-bg: rgba(15, 15, 30, 0.7);
+  --glass-border: rgba(100, 100, 180, 0.2);
+  --glass-blur: 12px;
 
-@dataclass
-class CompiledPixelMap:
-  """Pre-compiled lookup tables and metadata for fast rendering."""
+  /* Layout */
+  --radius: 12px;
+  --radius-lg: 16px;
+  --safe-top: env(safe-area-inset-top, 0px);
+  --safe-bottom: env(safe-area-inset-bottom, 0px);
 
-  width: int
-  height: int
-  origin: str
-  forward_lut: np.ndarray   # (width, height, 2) int16 — [strip_id, led_index]
-  reverse_lut: list[list]    # reverse_lut[strip_id][led_index] → (x, y, swizzle)
-  output_config: dict        # output_idx → [(strip_id, offset, count), ...]
-  strips: list[StripConfig]
-  total_mapped_leds: int
-  teensy_outputs: int
-  teensy_max_leds_per_output: int
+  /* Transitions */
+  --transition-fast: 150ms ease;
+  --transition-normal: 250ms ease;
+}
+```
 
+- [ ] **Step 2: Update body background**
 
-# ---------------------------------------------------------------------------
-# Load / Save
-# ---------------------------------------------------------------------------
+```css
+body {
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', system-ui, sans-serif;
+  background: var(--bg);
+  background-image: var(--bg-gradient);
+  /* M3 fix: no background-attachment:fixed — causes scroll jank on iPad */
+  color: var(--text);
+  overflow-x: hidden;
+  min-height: 100dvh;
+  user-select: none;
+  -webkit-user-select: none;
+  line-height: 1.5;
+}
+```
 
-def load_pixel_map(config_dir: Path) -> PixelMapConfig:
-  """Load pixel_map.yaml from config directory. Falls back to empty config if missing."""
-  path = config_dir / "pixel_map.yaml"
-  if not path.exists():
-    logger.warning(f"No pixel_map.yaml at {path} — using empty config")
-    return PixelMapConfig()
-  try:
-    with open(path) as f:
-      data = yaml.safe_load(f) or {}
-  except yaml.YAMLError as e:
-    logger.error(f"Failed to parse {path}: {e} — using empty config")
-    return PixelMapConfig()
-  return _parse_config(data)
+- [ ] **Step 3: Add glass panel utility class**
 
+```css
+.glass {
+  background: var(--glass-bg);
+  border: 1px solid var(--glass-border);
+  border-radius: var(--radius);
+}
 
-def _parse_config(data: dict) -> PixelMapConfig:
-  """Parse a raw YAML dict into a PixelMapConfig."""
-  teensy = data.get("teensy", {})
-  strips = []
-  for s in data.get("strips", []):
-    lines = [
-      LineConfig(
-        start=tuple(ln["start"]),
-        end=tuple(ln["end"]),
-        color_order=ln.get("color_order", "BGR"),
-      )
-      for ln in s.get("lines", [])
-    ]
-    overrides = {}
-    for ov in s.get("pixel_overrides", []):
-      overrides[ov["led_index"]] = tuple(ov["position"])
-    strips.append(StripConfig(
-      id=s["id"],
-      output=s["output"],
-      output_offset=s["output_offset"],
-      lines=lines,
-      pixel_overrides=overrides,
-    ))
-  return PixelMapConfig(
-    origin=data.get("origin", "bottom-left"),
-    teensy_outputs=teensy.get("outputs", 8),
-    teensy_max_leds_per_output=teensy.get("max_leds_per_output", 1200),
-    teensy_wire_order=teensy.get("wire_order", "BGR"),
-    teensy_signal_family=teensy.get("signal_family", "ws281x_800khz"),
-    teensy_octo_pins=teensy.get("octo_pins", [2, 14, 7, 8, 6, 20, 21, 5]),
-    strips=strips,
-  )
-
-
-def save_pixel_map(config: PixelMapConfig, config_dir: Path) -> None:
-  """Atomically save PixelMapConfig to pixel_map.yaml."""
-  path = config_dir / "pixel_map.yaml"
-  config_dir.mkdir(parents=True, exist_ok=True)
-  data = _serialize_config(config)
-  fd, tmp_path = tempfile.mkstemp(dir=str(config_dir), suffix=".tmp")
-  try:
-    with os.fdopen(fd, "w") as f:
-      yaml.dump(data, f, default_flow_style=False, sort_keys=False)
-    os.replace(tmp_path, str(path))
-    logger.info("Saved pixel_map.yaml")
-  except Exception:
-    try:
-      os.unlink(tmp_path)
-    except OSError:
-      pass
-    raise
-
-
-def _serialize_config(config: PixelMapConfig) -> dict:
-  """Convert PixelMapConfig to a dict suitable for YAML serialization."""
-  strips = []
-  for s in config.strips:
-    strip_dict: dict = {
-      "id": s.id,
-      "output": s.output,
-      "output_offset": s.output_offset,
-      "lines": [
-        {
-          "start": list(ln.start),
-          "end": list(ln.end),
-          "color_order": ln.color_order,
-        }
-        for ln in s.lines
-      ],
-    }
-    if s.pixel_overrides:
-      strip_dict["pixel_overrides"] = [
-        {"led_index": idx, "position": list(pos)}
-        for idx, pos in s.pixel_overrides.items()
-      ]
-    strips.append(strip_dict)
-
-  return {
-    "origin": config.origin,
-    "teensy": {
-      "outputs": config.teensy_outputs,
-      "max_leds_per_output": config.teensy_max_leds_per_output,
-      "wire_order": config.teensy_wire_order,
-      "signal_family": config.teensy_signal_family,
-      "octo_pins": config.teensy_octo_pins,
-    },
-    "strips": strips,
+/* M3 fix: backdrop-filter behind @supports with solid fallback */
+@supports (backdrop-filter: blur(1px)) or (-webkit-backdrop-filter: blur(1px)) {
+  .glass {
+    backdrop-filter: blur(var(--glass-blur));
+    -webkit-backdrop-filter: blur(var(--glass-blur));
   }
+}
 
+/* M4 fix: respect reduced motion preference */
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    animation-duration: 0.01ms !important;
+    transition-duration: 0.01ms !important;
+  }
+}
+```
 
-# ---------------------------------------------------------------------------
-# Validation
-# ---------------------------------------------------------------------------
+- [ ] **Step 4: Add focus-visible styles for keyboard accessibility**
 
-def validate_pixel_map(config: PixelMapConfig) -> list[str]:
-  """
-  Validate a PixelMapConfig, returning a list of error strings.
+```css
+/* M4 fix: keyboard focus visibility */
+:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
 
-  Empty list means the config is valid.
-  """
-  errors: list[str] = []
+/* Remove blanket user-select: none — only on controls */
+```
 
-  # --- OctoWS2811 requires exactly 8 outputs ---
-  if config.teensy_outputs != 8:
-    errors.append(
-      f"teensy_outputs must be exactly 8 (OctoWS2811 hardware), got {config.teensy_outputs}"
-    )
+Update the body rule to remove `user-select: none`:
 
-  # --- Duplicate strip IDs ---
-  strip_ids = [s.id for s in config.strips]
-  if len(strip_ids) != len(set(strip_ids)):
-    dupes = [sid for sid in strip_ids if strip_ids.count(sid) > 1]
-    errors.append(f"Duplicate strip IDs: {set(dupes)}")
+```css
+body {
+  /* ... other properties ... */
+  /* M4 fix: removed user-select:none from body — only apply to buttons/controls */
+}
 
-  all_positions: set[tuple[int, int]] = set()
+button, .tab, .effect-card, .category-btn {
+  user-select: none;
+  -webkit-user-select: none;
+}
+```
 
-  for strip in config.strips:
-    # --- Output index must be < 8 (OctoWS2811 hardware) ---
-    if strip.output < 0 or strip.output >= 8:
-      errors.append(
-        f"Strip {strip.id}: output {strip.output} out of range [0, 7] "
-        f"(OctoWS2811 has exactly 8 outputs)"
-      )
-    prefix = f"Strip {strip.id}"
+- [ ] **Step 4: Commit**
 
-    # --- Validate lines (axis-aligned, valid color_order) ---
-    line_total = 0
-    for ln in strip.lines:
-      try:
-        line_total += ln.led_count()
-      except ValueError as exc:
-        errors.append(f"{prefix}: {exc}")
-      if ln.color_order not in SWIZZLE_MAP:
-        errors.append(
-          f"{prefix}: invalid color_order '{ln.color_order}' — "
-          f"must be one of {sorted(SWIZZLE_MAP.keys())}"
-        )
+```bash
+git commit -am "feat: futuristic color scheme with glass effects"
+```
 
-    # --- No negative coordinates ---
-    for ln in strip.lines:
-      for coord_name, coord in [("start", ln.start), ("end", ln.end)]:
-        if coord[0] < 0 or coord[1] < 0:
-          errors.append(
-            f"{prefix}: line {coord_name} has negative coordinate {coord} — "
-            f"all coordinates must be non-negative"
-          )
+---
 
-    # --- Build effective positions (lines + overrides) ---
-    effective_positions: list[tuple[int, int]] = []
-    for ln in strip.lines:
-      try:
-        effective_positions.extend(ln.positions())
-      except ValueError:
-        pass  # already reported above
+### Task 3: Status Bar Redesign
 
-    # Apply pixel overrides (same logic as compile_pixel_map)
-    for led_idx, pos in strip.pixel_overrides.items():
-      if pos[0] < 0 or pos[1] < 0:
-        errors.append(
-          f"{prefix}: pixel_override LED {led_idx} has negative coordinate {pos} — "
-          f"all coordinates must be non-negative"
-        )
-      if led_idx < len(effective_positions):
-        effective_positions[led_idx] = pos
+**Files:**
+- Modify: `pi/app/ui/static/css/app.css`
 
-    # --- No duplicate grid positions ---
-    for pos in effective_positions:
-      if pos in all_positions:
-        errors.append(
-          f"{prefix}: duplicate grid position {pos}"
-        )
-      all_positions.add(pos)
+- [ ] **Step 1: Redesign status bar with glass effect and glow**
 
-    # --- Output overflow ---
-    total = strip.total_leds
-    if strip.output_offset + total > config.teensy_max_leds_per_output:
-      errors.append(
-        f"{prefix}: output overflow — offset ({strip.output_offset}) + "
-        f"total_leds ({total}) = {strip.output_offset + total} "
-        f"exceeds max_leds_per_output ({config.teensy_max_leds_per_output})"
-      )
+```css
+header#status-bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 10px 16px;
+  background: var(--surface-solid);
+  border-bottom: 1px solid var(--glass-border);
+  position: sticky;
+  top: 0;
+  z-index: 100;
+}
 
-  # --- Overlapping output ranges on the same pin ---
-  from collections import defaultdict
-  pin_strips: dict[int, list[StripConfig]] = defaultdict(list)
-  for strip in config.strips:
-    pin_strips[strip.output].append(strip)
+@supports (backdrop-filter: blur(1px)) or (-webkit-backdrop-filter: blur(1px)) {
+  header#status-bar {
+    background: var(--glass-bg);
+    backdrop-filter: blur(16px);
+    -webkit-backdrop-filter: blur(16px);
+  }
+}
 
-  for pin, strips_on_pin in pin_strips.items():
-    for i, a in enumerate(strips_on_pin):
-      for b in strips_on_pin[i + 1:]:
-        a_start, a_end = a.output_offset, a.output_offset + a.total_leds - 1
-        b_start, b_end = b.output_offset, b.output_offset + b.total_leds - 1
-        if a_start <= b_end and b_start <= a_end:
-          errors.append(
-            f"Output pin {pin}: Strip {a.id} range [{a_start}..{a_end}] "
-            f"overlaps Strip {b.id} range [{b_start}..{b_end}]"
-          )
+header#status-bar h1 {
+  font-size: 18px;
+  font-weight: 700;
+  background: var(--accent-gradient);
+  -webkit-background-clip: text;
+  -webkit-text-fill-color: transparent;
+  background-clip: text;
+  letter-spacing: 0.5px;
+}
+```
 
-  return errors
+- [ ] **Step 2: Style connection dot with pulse animation**
 
+```css
+.dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  display: inline-block;
+  margin-right: 6px;
+}
 
-# ---------------------------------------------------------------------------
-# Compilation
-# ---------------------------------------------------------------------------
+.dot.connected {
+  background: var(--success);
+  box-shadow: 0 0 8px var(--success);
+  animation: pulse-glow 2s ease-in-out infinite;
+}
 
-def compile_pixel_map(config: PixelMapConfig) -> CompiledPixelMap:
-  """
-  Compile a validated PixelMapConfig into fast-lookup structures.
+.dot.disconnected {
+  background: var(--danger);
+  box-shadow: 0 0 8px var(--danger);
+}
 
-  Returns a CompiledPixelMap with forward LUT, reverse LUT, and output config.
-  """
-  # First pass: expand all lines + overrides to find grid bounds
-  # and build per-strip position lists.
-  strip_positions: dict[int, list[tuple[int, int]]] = {}
+@keyframes pulse-glow {
+  0%, 100% { box-shadow: 0 0 4px var(--success); }
+  50% { box-shadow: 0 0 12px var(--success), 0 0 20px rgba(0, 206, 201, 0.3); }
+}
+```
 
-  for strip in config.strips:
-    positions: list[tuple[int, int]] = []
-    for ln in strip.lines:
-      positions.extend(ln.positions())
+- [ ] **Step 3: Commit**
 
-    # Apply pixel overrides
-    for led_idx, pos in strip.pixel_overrides.items():
-      if led_idx < len(positions):
-        positions[led_idx] = pos
+```bash
+git commit -am "feat: glass status bar with gradient title and pulse dot"
+```
 
-    strip_positions[strip.id] = positions
+---
 
-  # Determine grid dimensions from all mapped positions
-  all_positions = []
-  for positions in strip_positions.values():
-    all_positions.extend(positions)
+### Task 4: Tab Navigation Redesign
 
-  if not all_positions:
-    return CompiledPixelMap(
-      width=0,
-      height=0,
-      origin=config.origin,
-      forward_lut=np.zeros((0, 0, 2), dtype=np.int16),
-      reverse_lut=[],
-      output_config={},
-      strips=config.strips,
-      total_mapped_leds=0,
-      teensy_outputs=config.teensy_outputs,
-      teensy_max_leds_per_output=config.teensy_max_leds_per_output,
-    )
+**Files:**
+- Modify: `pi/app/ui/static/css/app.css`
 
-  max_x = max(p[0] for p in all_positions)
-  max_y = max(p[1] for p in all_positions)
-  width = max_x + 1
-  height = max_y + 1
+- [ ] **Step 1: Redesign tabs as pill-style navigation**
 
-  # Build forward LUT: (width, height, 2) → [strip_id, led_index]
-  forward_lut = np.full((width, height, 2), -1, dtype=np.int16)
+```css
+#tabs {
+  display: flex;
+  gap: 4px;
+  padding: 8px 16px;
+  background: var(--surface-solid);
+  border-bottom: 1px solid var(--border);
+  overflow-x: auto;
+  scrollbar-width: none;
+  -ms-overflow-style: none;
+}
+#tabs::-webkit-scrollbar { display: none; }
 
-  # Build reverse LUT: reverse_lut[strip_id][led_index] → (x, y, swizzle)
-  # We need a mapping from strip.id to its index in the reverse_lut
-  max_strip_id = max(s.id for s in config.strips)
-  reverse_lut: list[list] = [[] for _ in range(max_strip_id + 1)]
+.tab {
+  padding: 8px 20px;
+  border: none;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--text-dim);
+  font-size: 14px;
+  font-weight: 500;
+  cursor: pointer;
+  white-space: nowrap;
+  transition: all var(--transition-fast);
+  position: relative;
+}
 
-  # Build per-strip LED-to-color-order mapping from lines
-  strip_led_color_order: dict[int, list[str]] = {}
-  for strip in config.strips:
-    led_orders: list[str] = []
-    for ln in strip.lines:
-      led_orders.extend([ln.color_order] * ln.led_count())
-    strip_led_color_order[strip.id] = led_orders
+.tab:hover {
+  color: var(--text);
+  background: var(--surface2);
+}
 
-  total_mapped = 0
+.tab.active {
+  color: var(--text);
+  background: var(--accent);
+  box-shadow: 0 2px 8px var(--accent-glow);
+}
 
-  for strip in config.strips:
-    positions = strip_positions[strip.id]
-    led_orders = strip_led_color_order[strip.id]
-    strip_reverse: list[tuple[int, int, tuple[int, int, int]]] = []
+/* Tablet+: larger tabs */
+@media (min-width: 641px) {
+  .tab {
+    padding: 10px 28px;
+    font-size: 15px;
+  }
+}
+```
 
-    for led_idx, (x, y) in enumerate(positions):
-      color_order = led_orders[led_idx] if led_idx < len(led_orders) else "RGB"
-      swizzle = SWIZZLE_MAP.get(color_order, (0, 1, 2))
+- [ ] **Step 2: Commit**
 
-      forward_lut[x, y] = [strip.id, led_idx]
-      strip_reverse.append((x, y, swizzle))
-      total_mapped += 1
+```bash
+git commit -am "feat: pill-style tab navigation with glow"
+```
 
-    reverse_lut[strip.id] = strip_reverse
+---
 
-  # Build output config: output_idx → [(strip_id, offset, count), ...]
-  output_config: dict[int, list[tuple[int, int, int]]] = {}
-  for strip in config.strips:
-    entry = (strip.id, strip.output_offset, strip.total_leds)
-    if strip.output not in output_config:
-      output_config[strip.output] = []
-    output_config[strip.output].append(entry)
+### Task 5: Effect Grid — Cards Instead of Plain Buttons
 
-  return CompiledPixelMap(
-    width=width,
-    height=height,
-    origin=config.origin,
-    forward_lut=forward_lut,
-    reverse_lut=reverse_lut,
-    output_config=output_config,
-    strips=config.strips,
-    total_mapped_leds=total_mapped,
-    teensy_outputs=config.teensy_outputs,
-    teensy_max_leds_per_output=config.teensy_max_leds_per_output,
-  )
+**Files:**
+- Modify: `pi/app/ui/static/css/app.css`
+- Modify: `pi/app/ui/static/js/app.js`
 
-=============== file end: pi/app/config/pixel_map.py ==============
+This is the biggest visual change — effects become cards with category color accents.
+
+**H1 fix:** Active-state matching must use `data-effect` attribute, not `textContent`.
+**H2 fix:** All CSS selectors target existing DOM IDs/classes OR this task explicitly
+updates them. The plan adds new classes alongside existing IDs where needed.
+
+- [ ] **Step 1: Update HTML classes to match new CSS selectors**
+
+In `index.html`, update the effects panel structure:
+- Change `<div id="effects-grid" class="button-grid">` to `<div id="effects-grid" class="effects-grid">`
+- Change `<div id="effects-filter-bar">` to `<div id="effects-filter-bar" class="category-filters">`
+- Change `<div class="effects-preview">` to `<aside class="effects-sidebar">`
+- Change `<div id="active-effect-controls">` to `<div id="active-effect-controls" class="effect-controls">`
+
+Also update `app.js` filter button rendering:
+- Change `.filter-btn` class usage to `.category-btn`
+- Update `applyEffectsFilter()` to query `.category-btn` instead of `.filter-btn`
+
+- [ ] **Step 2: Define category color map in JS**
+
+In `app.js`, add near the top (after the existing `effectCategory` function):
+
+```javascript
+// L2 fix: keyed by DISPLAY category (output of effectCategory()), not raw group
+const CATEGORY_COLORS = {
+  'Ambient': '#00cec9',
+  'Sound Reactive': '#fd79a8',
+  'Simulation': '#6c5ce7',
+  'Built-in': '#00b894',
+  'Game': '#fdcb6e',
+  'Classic': '#e17055',
+  'Special': '#a29bfe',
+  'Other': '#636e72',
+};
+
+function getCategoryColor(group) {
+  const displayCat = effectCategory(group);
+  return CATEGORY_COLORS[displayCat] || '#6c5ce7';
+}
+
+// Also update CATEGORY_MAP to cover simulation and game groups:
+// Add to existing CATEGORY_MAP: simulation: 'Simulation', game: 'Game'
+
+// M1 fix: update categoryOrder to include new categories:
+// Change: const categoryOrder = ['All', 'Classic', 'Ambient', 'Sound Reactive', 'Built-in', 'Special', 'Other']
+// To:     const categoryOrder = ['All', 'Ambient', 'Sound Reactive', 'Simulation', 'Built-in', 'Classic', 'Game', 'Special']
+```
+
+- [ ] **Step 2: Update effect button rendering to cards**
+
+Find the effect button rendering in `loadEffects()` (around line 284) and update the button creation to include a category accent stripe:
+
+```javascript
+// Replace the simple button creation with card-style:
+const btn = document.createElement('button');
+btn.className = 'effect-card';
+btn.dataset.effect = name;  // H1 fix: always use data-effect for matching
+btn.dataset.group = meta.group || '';
+btn.dataset.category = effectCategory(meta.group);  // H1 fix: preserve for filter matching
+const catColor = getCategoryColor(meta.group);
+btn.innerHTML = `
+  <div class="effect-card-accent" style="background:${catColor}"></div>
+  <div class="effect-card-body">
+    <span class="effect-card-name">${meta.label || name.replace(/_/g, ' ')}</span>
+    <span class="effect-card-group">${effectCategory(meta.group)}</span>
+  </div>
+`;
+```
+
+Also update the active-effect highlighting code (currently in `activateEffect()` around
+line 551 of app.js). Change from `b.textContent === label` to `b.dataset.effect === name`:
+
+```javascript
+// H1 fix: match on data-effect attribute, not textContent
+document.querySelectorAll('.effect-card').forEach(b => {
+  b.classList.toggle('active-scene', b.dataset.effect === name);
+});
+```
+
+- [ ] **Step 3: Add effect card CSS**
+
+```css
+/* Effect cards grid */
+.effects-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(140px, 1fr));
+  gap: 8px;
+  padding: 8px 0;
+}
+
+@media (min-width: 641px) {
+  .effects-grid {
+    grid-template-columns: repeat(auto-fill, minmax(160px, 1fr));
+    gap: 10px;
+  }
+}
+
+@media (min-width: 1025px) {
+  .effects-grid {
+    grid-template-columns: repeat(auto-fill, minmax(180px, 1fr));
+    gap: 12px;
+  }
+}
+
+.effect-card {
+  display: flex;
+  flex-direction: column;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  overflow: hidden;
+  cursor: pointer;
+  transition: all var(--transition-fast);
+  position: relative;
+}
+
+.effect-card:hover {
+  border-color: var(--border-glow);
+  transform: translateY(-2px);
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.3);
+}
+
+.effect-card.active-scene {
+  border-color: var(--accent);
+  box-shadow: 0 0 12px var(--accent-glow), inset 0 0 20px rgba(108, 92, 231, 0.1);
+}
+
+.effect-card-accent {
+  height: 3px;
+  width: 100%;
+}
+
+.effect-card-body {
+  padding: 10px 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.effect-card-name {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text);
+  line-height: 1.3;
+}
+
+.effect-card-group {
+  font-size: 11px;
+  color: var(--text-dim);
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
+```
+
+- [ ] **Step 4: Update category filter buttons**
+
+```css
+.category-filters {
+  display: flex;
+  gap: 6px;
+  padding: 8px 0;
+  overflow-x: auto;
+  scrollbar-width: none;
+  flex-wrap: wrap;
+}
+
+.category-btn {
+  padding: 6px 14px;
+  border: 1px solid var(--border);
+  border-radius: 20px;
+  background: transparent;
+  color: var(--text-dim);
+  font-size: 12px;
+  font-weight: 500;
+  cursor: pointer;
+  white-space: nowrap;
+  transition: all var(--transition-fast);
+}
+
+.category-btn:hover {
+  border-color: var(--accent);
+  color: var(--text);
+}
+
+.category-btn.active {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: white;
+  box-shadow: 0 2px 8px var(--accent-glow);
+}
+```
+
+- [ ] **Step 5: Commit**
+
+```bash
+git commit -am "feat: effect cards with category colors and responsive grid"
+```
+
+---
+
+### Task 6: Controls Panel Glass Styling
+
+**Files:**
+- Modify: `pi/app/ui/static/css/app.css`
+
+- [ ] **Step 1: Glass-style panels for controls and sections**
+
+```css
+.panel {
+  padding: 16px 0;
+  flex: 1;
+}
+
+/* Section headings */
+.panel h3 {
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--text-dim);
+  text-transform: uppercase;
+  letter-spacing: 1px;
+  margin-bottom: 12px;
+  padding-bottom: 6px;
+  border-bottom: 1px solid var(--border);
+}
+
+/* Action buttons */
+.action-btn {
+  padding: 8px 18px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--surface);
+  color: var(--text);
+  font-size: 13px;
+  font-weight: 500;
+  cursor: pointer;
+  transition: all var(--transition-fast);
+}
+
+.action-btn:hover {
+  border-color: var(--accent);
+  background: var(--surface2);
+}
+
+.action-btn.primary {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: white;
+}
+
+.action-btn.primary:hover {
+  background: var(--accent-light);
+  box-shadow: 0 2px 12px var(--accent-glow);
+}
+
+/* Input fields */
+input[type="text"],
+input[type="number"],
+select {
+  padding: 8px 12px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  color: var(--text);
+  font-size: 14px;
+  transition: border-color var(--transition-fast);
+}
+
+input[type="text"]:focus,
+input[type="number"]:focus,
+select:focus {
+  outline: none;
+  border-color: var(--accent);
+  box-shadow: 0 0 8px var(--accent-glow);
+}
+
+/* Sliders */
+input[type="range"] {
+  -webkit-appearance: none;
+  appearance: none;
+  height: 4px;
+  background: var(--surface2);
+  border-radius: 2px;
+  outline: none;
+}
+
+input[type="range"]::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  width: 18px;
+  height: 18px;
+  border-radius: 50%;
+  background: var(--accent);
+  border: 2px solid var(--accent-light);
+  cursor: pointer;
+  box-shadow: 0 0 6px var(--accent-glow);
+}
+```
+
+- [ ] **Step 2: Quick controls glass treatment**
+
+```css
+#quick-controls {
+  padding: 12px 16px;
+  background: var(--surface-solid);
+  border-bottom: 1px solid var(--glass-border);
+}
+
+@supports (backdrop-filter: blur(1px)) or (-webkit-backdrop-filter: blur(1px)) {
+  #quick-controls {
+    background: var(--glass-bg);
+    backdrop-filter: blur(8px);
+    -webkit-backdrop-filter: blur(8px);
+  }
+}
+
+.brightness-control {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.brightness-control label {
+  font-size: 13px;
+  color: var(--text-dim);
+  min-width: 70px;
+}
+
+.brightness-control input[type="range"] {
+  flex: 1;
+}
+```
+
+- [ ] **Step 3: Commit**
+
+```bash
+git commit -am "feat: glass panels, styled inputs/sliders/buttons"
+```
+
+---
+
+### Task 7: Responsive Effects Layout (Tablet + Desktop)
+
+**Files:**
+- Modify: `pi/app/ui/static/index.html`
+- Modify: `pi/app/ui/static/css/app.css`
+
+- [ ] **Step 1: Reuse existing layout structure — move controls into sidebar**
+
+The effects panel already has `.effects-layout` / `.effects-main` / `.effects-preview`
+in `index.html` (around line 80). Do NOT add a new wrapper. Instead:
+
+1. Rename `.effects-preview` to `.effects-sidebar` (it already contains the preview canvas)
+2. Move `#active-effect-controls` INTO `.effects-sidebar`, below the preview canvas
+3. This puts the effect grid on the left and controls+preview on the right
+
+No new wrapper divs — just rearrange existing elements.
+
+- [ ] **Step 2: Add responsive layout CSS**
+
+```css
+.effects-layout {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.effects-main {
+  flex: 1;
+  min-width: 0;
+}
+
+.effects-sidebar {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+/* Tablet: side-by-side */
+@media (min-width: 641px) {
+  .effects-layout {
+    flex-direction: row;
+  }
+  .effects-sidebar {
+    width: 300px;
+    flex-shrink: 0;
+    position: sticky;
+    top: 60px;
+    max-height: calc(100dvh - 120px);
+    overflow-y: auto;
+  }
+}
+
+/* Desktop: wider sidebar */
+@media (min-width: 1025px) {
+  .effects-sidebar {
+    width: 360px;
+  }
+}
+
+/* M2 fix: preserve canvas sizing within renamed sidebar */
+.effects-sidebar canvas {
+  width: 100%;
+  max-height: 300px;
+  border-radius: var(--radius);
+  background: #000;
+}
+
+.effects-sidebar .sim-canvas-wrap {
+  width: 100%;
+  overflow: hidden;
+  border-radius: var(--radius);
+  border: 1px solid var(--border);
+}
+```
+
+- [ ] **Step 3: Style the effect controls sidebar as a glass card**
+
+```css
+.effect-controls {
+  background: var(--surface-solid);
+  border: 1px solid var(--glass-border);
+  border-radius: var(--radius-lg);
+  padding: 16px;
+}
+
+@supports (backdrop-filter: blur(1px)) or (-webkit-backdrop-filter: blur(1px)) {
+  .effect-controls {
+    background: var(--glass-bg);
+    backdrop-filter: blur(8px);
+    -webkit-backdrop-filter: blur(8px);
+  }
+}
+
+.effect-controls h4 {
+  font-size: 16px;
+  font-weight: 600;
+  margin-bottom: 12px;
+  color: var(--text);
+}
+
+.param-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 10px;
+}
+
+.param-row label {
+  font-size: 12px;
+  color: var(--text-dim);
+  min-width: 80px;
+}
+
+.param-row input[type="range"] {
+  flex: 1;
+}
+
+.param-row .param-value {
+  font-size: 12px;
+  color: var(--accent-light);
+  min-width: 40px;
+  text-align: right;
+}
+```
+
+- [ ] **Step 4: Commit**
+
+```bash
+git commit -am "feat: responsive effects layout — sidebar on tablet/desktop"
+```
+
+---
+
+### Task 8: Deploy + Visual Polish Pass
+
+- [ ] **Step 1: Deploy full UI overhaul**
+
+```bash
+bash pi/scripts/deploy.sh ledfanatic.local
+```
+
+- [ ] **Step 2: Test on iPad, iPhone, desktop browser**
+
+Verify:
+- Full-width layout on all devices
+- Glass effects render properly
+- Effect cards display with category colors
+- Category filter pills work
+- Sidebar sticky on tablet/desktop
+- Sliders have custom styling
+- Status bar is glassmorphic with gradient title
+- Tab pills glow when active
+
+- [ ] **Step 3: Final commit and tag**
+
+```bash
+git commit -am "Phase B complete: futuristic responsive UI overhaul"
+git tag v2.0.0-ui
+```
+
+---
+
+## Acceptance Criteria
+
+| Criterion | Test |
+|-----------|------|
+| Full-width on iPad/desktop | Visual: no narrow center strip |
+| Responsive at 3 breakpoints | Resize browser window |
+| Glass effect on status bar | Visual: backdrop blur visible |
+| Effect cards with category colors | Visual: colored accent stripes |
+| Category filter pills | Click: filters effects |
+| Sidebar on tablet | Rotate iPad: controls on right |
+| Custom slider styling | Visual: purple thumb with glow |
+| Tab pills with glow | Click: active tab glows |
+| Works on phone | Narrow viewport: single column |
+
+=============== file end: /Users/jim/ai/pillar-controller/docs/superpowers/plans/2026-04-28-v2-phase-b-ui-overhaul.md ==============
 
