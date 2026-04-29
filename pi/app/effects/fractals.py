@@ -208,58 +208,61 @@ class JuliaExplorer(Effect):
 # ──────────────────────────────────────────────────────────────────────
 
 class BurningShip(Effect):
-  """Angular fractal with dramatic ship-like structures."""
+  """Twin Burning Ship fractals, rotated 90°, one per panel."""
 
   CATEGORY = "simulation"
   DISPLAY_NAME = "Burning Ship"
-  DESCRIPTION = "Angular fractal with dramatic ship-like structures"
+  DESCRIPTION = "Twin rotated burning ship fractals — one per panel"
   PALETTE_SUPPORT = True
 
   PARAMS = [
     _P("Speed", "speed", 0.02, 1.0, 0.02, 0.08),
-    _P("Max Iter", "max_iter", 20, 200, 10, 80),
+    _P("Max Iter", "max_iter", 20, 200, 10, 60),
   ]
 
-  # The main ship is centered around (-1.76, -0.028)
   _CENTER_RE = -1.756
   _CENTER_IM = -0.028
 
   def __init__(self, width, height, params=None):
     super().__init__(width, height, params)
-    xs = np.linspace(-1.0, 1.0, width, dtype=np.float64)
-    ys = np.linspace(-1.0, 1.0, height, dtype=np.float64)
+    # Each panel is half the width
+    self._panel_w = max(1, width // 2)
+    # Rotated 90°: swap x/y for the fractal coords
+    # Panel grid: (panel_w, height) but fractal sees (height, panel_w)
+    pw = self._panel_w
+    # Coordinate grids for one panel — rotated: long axis = real, short = imag
+    xs = np.linspace(-1.0, 1.0, height, dtype=np.float64)  # tall axis → real
+    ys = np.linspace(-1.0, 1.0, pw, dtype=np.float64)      # short axis → imag
     self._gx, self._gy = np.meshgrid(xs, ys, indexing='ij')
-    aspect = width / max(height, 1)
-    self._gx = self._gx * aspect
+    # Aspect ratio: the fractal is taller than wide after rotation
+    aspect = height / max(pw, 1)
+    self._gy = self._gy * (1.0 / aspect)
     self._prev_frame = None
+    self._zoom = 2.0
+    self._stale_count = 0
 
-  def render(self, t: float, state) -> np.ndarray:
-    elapsed = self.elapsed(t)
-    speed = self.params.get('speed', 0.3)
-    max_iter = int(self.params.get('max_iter', 80))
-    pal_idx = _get_palette_idx(self.params)
+  def _render_ship(self, elapsed, speed, max_iter, pal_idx, mirror=False):
+    """Render one burning ship panel."""
+    pw = self._panel_w
+    h = self.height
 
-    # Looping zoom — zooms in then resets, pans between interesting spots
-    cycle = 30.0 / max(speed, 0.01)  # seconds per zoom cycle
-    phase = (elapsed % cycle) / cycle  # 0→1 per cycle
-    zoom = 2.0 * (1.0 - phase * 0.97)  # zoom from 2.0 down to 0.06, then reset
-    zoom = max(zoom, 0.05)
-    # Pan slowly between interesting regions of the burning ship
+    zoom = self._zoom
     pan_phase = elapsed * speed * 0.05
     pan_re = self._CENTER_RE + 0.15 * np.sin(pan_phase)
     pan_im = self._CENTER_IM + 0.1 * np.cos(pan_phase * 0.7)
 
+    # Rotated mapping: gx(height, pw) → real axis, gy(height, pw) → imag axis
     c_re = pan_re + self._gx * zoom
     c_im = pan_im + self._gy * zoom
+    if mirror:
+      c_im = pan_im - self._gy * zoom  # mirror for second panel
 
-    # Burning Ship iteration: z = (|Re(z)| + i|Im(z)|)^2 + c
     z_re = np.zeros_like(c_re)
     z_im = np.zeros_like(c_im)
-    iterations = np.zeros((self.width, self.height), dtype=np.float64)
-    escaped = np.zeros((self.width, self.height), dtype=bool)
+    iterations = np.zeros((h, pw), dtype=np.float64)
+    escaped = np.zeros((h, pw), dtype=bool)
 
     for i in range(max_iter):
-      # Take absolute values before squaring
       z_re_abs = np.abs(z_re)
       z_im_abs = np.abs(z_im)
       z_re_new = z_re_abs * z_re_abs - z_im_abs * z_im_abs + c_re
@@ -271,20 +274,58 @@ class BurningShip(Effect):
       newly_escaped = (mag_sq > 4.0) & ~escaped
       iterations[newly_escaped] = i + 1 - np.log2(np.log2(np.maximum(mag_sq[newly_escaped], 1.0)))
       escaped |= newly_escaped
-
       if escaped.all():
         break
 
-    # Color mapping
     t_color = np.zeros_like(iterations, dtype=np.float32)
     mask = iterations > 0
     if mask.any():
       t_color[mask] = (iterations[mask] / max_iter).astype(np.float32)
     t_color = (t_color + np.float32(elapsed * 0.08)) % 1.0
 
-    frame = pal_color_grid(pal_idx, t_color)
-    frame[~escaped] = 0
-    # Smooth transitions between frames
+    panel = pal_color_grid(pal_idx, t_color)
+    panel[~escaped] = 0
+    # panel is (height, panel_w, 3) — transpose to (panel_w, height, 3)
+    return panel.transpose(1, 0, 2)
+
+  def render(self, t: float, state) -> np.ndarray:
+    elapsed = self.elapsed(t)
+    speed = self.params.get('speed', 0.08)
+    max_iter = int(self.params.get('max_iter', 60))
+    pal_idx = _get_palette_idx(self.params)
+
+    w, h = self.width, self.height
+    pw = self._panel_w
+
+    # Zoom in continuously
+    self._zoom *= (1.0 - speed * 0.02)
+    self._zoom = max(self._zoom, 1e-12)
+
+    # Render two panels
+    left = self._render_ship(elapsed, speed, max_iter, pal_idx, mirror=False)
+    right = self._render_ship(elapsed, speed, max_iter, pal_idx, mirror=True)
+
+    # Composite into full frame
+    frame = np.zeros((w, h, 3), dtype=np.uint8)
+    lw = min(pw, w)
+    rw = min(pw, w - lw)
+    frame[:lw] = left[:lw]
+    if rw > 0:
+      frame[lw:lw + rw] = right[:rw]
+
+    # Detect stale — if frame has very low variance, we've zoomed past detail
+    variance = np.var(frame.astype(np.float32))
+    if variance < 50:
+      self._stale_count += 1
+    else:
+      self._stale_count = 0
+
+    # Reset zoom when stale for ~1 second (60 frames)
+    if self._stale_count > 60:
+      self._zoom = 2.0
+      self._stale_count = 0
+
+    # Temporal smoothing
     if self._prev_frame is not None:
       frame = ((frame.astype(np.float32) * 0.6 + self._prev_frame.astype(np.float32) * 0.4)).astype(np.uint8)
     self._prev_frame = frame.copy()
