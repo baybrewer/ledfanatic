@@ -627,18 +627,17 @@ class TwinTorches(Effect):
     self._gy = np.ones(w)[:, np.newaxis] * np.arange(h, dtype=np.float32)[np.newaxis, :]
     # Two torches
     self._torch_x = [w * 0.25, w * 0.75]
-    # Anatomy of a dungeon torch:
-    #   [top 10%]  — flames licking upward above head
-    #   [10%-30%]  — TORCH HEAD: wrapped rags, fully engulfed in fire
-    #   [30%-50%]  — flames dripping/licking below head
-    #   [50%-100%] — wooden stick
-    self._head_top = int(h * 0.10)      # top of wrapped head
-    self._head_bot = int(h * 0.30)      # bottom of wrapped head
-    self._fire_top = int(h * 0.05)      # flames extend above head (10% margin from display top)
-    self._fire_bot = int(h * 0.40)      # flames drip below head
-    self._stick_top = int(h * 0.30)     # stick starts at bottom of head
-    # Head width (wider than stick — wrapped rags)
-    self._head_w = max(2, w // 4)
+    # Real dungeon torch:
+    #   Stick is bottom 50%
+    #   Wrapped fuel mass (thick bulge) at top of stick, ~15% of height
+    #   Fire engulfs the mass — billows out from sides and top
+    #   Flames are wider than tall, bulbous not teardrop
+    self._stick_top = int(h * 0.50)     # stick is bottom 50%
+    self._head_top = int(h * 0.38)      # fuel mass starts
+    self._head_bot = int(h * 0.52)      # fuel mass ends (overlaps into stick)
+    self._fire_top = int(h * 0.10)      # flames reach up to 10% from top
+    self._fire_bot = int(h * 0.55)      # flames drip slightly below head
+    self._head_w = max(2, int(w * 0.35))  # FAT wrapped mass — 35% of width
 
   def render(self, t: float, state) -> np.ndarray:
     if self._last_t is None:
@@ -663,71 +662,82 @@ class TwinTorches(Effect):
           c = np.array([50, 14, 65] if dx == 0 else [35, 8, 45], dtype=np.float32)
           frame[sx, self._stick_top:] = c
 
-      # === TORCH HEAD (wrapped rags — dark reddish-brown, visible through fire) ===
-      hw = self._head_w
-      for dx in range(-hw, hw + 1):
-        sx = ix + dx
-        if 0 <= sx < w:
-          # Wrapped texture — alternating dark bands
-          for row in range(self._head_top, self._head_bot):
-            band = ((row + dx) % 3 == 0)
-            c = [60, 25, 10] if band else [45, 18, 8]  # dark brown rags
-            frame[sx, row] = c
+      # === FLUID DYNAMICS FIRE engulfing the head ===
+      # Heat simulation on a small grid around each torch head
+      # Heat rises (buoyancy), spreads (diffusion), cools (decay)
+      # Fuel mass is a continuous heat source
+      if not hasattr(self, '_heat'):
+        # Per-torch heat grid covering fire zone
+        ft = self._fire_top
+        fb = self._fire_bot
+        self._heat = [np.zeros((w, fb - ft), dtype=np.float32) for _ in self._torch_x]
 
-      # === FIRE ENGULFING THE HEAD ===
-      # Fire zone: from fire_top to fire_bot, centered on head
       ft = self._fire_top
       fb = self._fire_bot
       fh = fb - ft
       if fh <= 0:
         continue
 
-      fx = self._gx[:, ft:fb]
-      fy = self._gy[:, ft:fb]
+      heat = self._heat[ti]
 
-      # Normalized position within fire zone
-      dx_norm = (fx - tx) / max(w * 0.15, 1)
-      fy_local = (fy - ft) / max(fh, 1)  # 0=top, 1=bottom
+      # Head position in fire grid coordinates
+      head_top_local = self._head_top - ft
+      head_bot_local = self._head_bot - ft
+      head_cx = int(tx)
+      hw = self._head_w
 
-      # Head center is at ~35% of fire zone height
-      head_center_norm = (self._head_top + self._head_bot) / 2.0
-      head_center_in_fire = (head_center_norm - ft) / max(fh, 1)
+      # === INJECT HEAT at fuel mass (continuous source) ===
+      for dx in range(-hw, hw + 1):
+        sx = head_cx + dx
+        if 0 <= sx < w:
+          for row in range(max(0, head_top_local), min(fh, head_bot_local)):
+            heat[sx, row] = min(1.0, heat[sx, row] + 0.15 + self._rng.random() * 0.1)
 
-      # Fire shape: ENGULFS the head — widest at head center, tapers above and below
-      # Distance from head center (vertical)
-      dist_from_head = np.abs(fy_local - head_center_in_fire)
+      # === BUOYANCY — heat rises (shift upward with turbulent mixing) ===
+      new_heat = np.zeros_like(heat)
+      if fh > 2:
+        # Average with neighbors (diffusion) + shift upward (buoyancy)
+        # Shift up by 1-2 rows with averaging
+        new_heat[:, :-2] += heat[:, 1:-1] * 0.35  # from below
+        new_heat[:, :-2] += heat[:, 2:] * 0.25    # from further below
+        # Horizontal diffusion
+        new_heat[1:, :] += heat[:-1, :] * 0.08    # from left
+        new_heat[:-1, :] += heat[1:, :] * 0.08    # from right
+        new_heat += heat * 0.15                     # self-retention
+      heat[:] = new_heat
 
-      # Multi-layer noise for organic swirly fire
-      phase = ti * 77
-      n1 = np.sin(dx_norm * 5.0 + tt * 4.0 + phase) * 0.25
-      n2 = np.sin(fy_local * 6.0 - tt * 3.0 + phase + 40) * 0.2
-      n3 = np.cos(dx_norm * 3.0 + fy_local * 4.0 + tt * 2.5 + phase) * 0.15
-      swirl = n1 + n2 + n3
+      # === TURBULENCE — random perturbation for organic motion ===
+      turb = self._rng.uniform(-0.02, 0.02, size=heat.shape).astype(np.float32)
+      heat += turb
+      # Lateral wobble — shift heat sideways slightly
+      wobble_amt = np.sin(tt * 1.5 + ti * 2.3) * 0.4
+      if abs(wobble_amt) > 0.2:
+        shift = 1 if wobble_amt > 0 else -1
+        heat_shifted = np.roll(heat, shift, axis=0)
+        heat[:] = heat * 0.85 + heat_shifted * 0.15
 
-      # Flame envelope — widest around head, tapers above and below
-      # At head: wide (hw pixels), above head: narrows to a licking tip, below: narrows quickly
-      above_head = fy_local < head_center_in_fire
-      width_above = 0.6 * (1.0 - (head_center_in_fire - fy_local) / max(head_center_in_fire, 0.01)) ** 0.7
-      width_below = 0.5 * (1.0 - (fy_local - head_center_in_fire) / max(1.0 - head_center_in_fire, 0.01)) ** 1.5
-      flame_width = np.where(above_head, width_above, width_below)
-      flame_width = np.clip(flame_width * (1.0 + swirl * 0.4), 0.05, 1.0)
+      # === COOLING — decay ===
+      cool = self._rng.uniform(0.01, 0.04, size=(w, fh)).astype(np.float32)
+      heat[:] = np.maximum(0, heat - cool)
 
-      # Wobble — draft sway
-      wobble = np.sin(tt * 1.5 + ti * 2.3) * 0.08 + np.sin(tt * 2.8 + ti * 1.1) * 0.04
-      dist_from_center = np.abs(dx_norm - wobble + swirl * 0.06)
-      envelope = np.clip(1.0 - dist_from_center / np.maximum(flame_width, 0.01), 0, 1) ** 0.8
+      # === RENDER fire from heat ===
+      heat_clamped = np.clip(heat, 0, 1)
+      self._heat[ti] = heat_clamped
 
-      # Vertical intensity — brightest at head, fades at tips
-      vert_intensity = np.clip(1.0 - dist_from_head * 2.5, 0.1, 1.0)
-      intensity = envelope * vert_intensity
-
-      # Color — palette driven, intensity maps to palette position
-      hue = np.clip(intensity * 0.85, 0, 0.95)
+      # Color via palette — heat value drives palette position
+      hue = np.clip(heat_clamped * 0.85, 0, 0.95)
       fire_rgb = pal_color_grid(pal_idx, hue.astype(np.float32))
-      contrib = fire_rgb.astype(np.float32) * intensity[:, :, np.newaxis]
+      contrib = fire_rgb.astype(np.float32) * heat_clamped[:, :, np.newaxis]
 
-      # Additive blend fire over the head
-      frame[:, ft:fb] = np.maximum(frame[:, ft:fb], contrib)
+      # Warm ambient glow near head center
+      head_cy = (head_top_local + head_bot_local) / 2.0
+      y_grid = np.arange(fh, dtype=np.float32)[np.newaxis, :]
+      head_dist = np.abs(y_grid - head_cy) / max(fh * 0.3, 1)
+      glow = np.clip(1.0 - head_dist, 0, 0.25) * heat_clamped
+      contrib[:, :, 0] += glow * 50
+      contrib[:, :, 1] += glow * 20
+
+      frame[:, ft:fb] = np.maximum(frame[:, ft:fb], np.clip(contrib, 0, 255))
 
     # === SPARKS ===
     for tx in self._torch_x:
