@@ -33,8 +33,10 @@ class RenderState:
     # Audio modulation (updated by audio worker via snapshot)
     self._audio_lock_free: dict = {
       'level': 0.0, 'bass': 0.0, 'mid': 0.0, 'high': 0.0,
-      'beat': False, 'bpm': 0.0, 'spectrum': [0.0] * 16,
+      'beat': False, 'beat_frame_id': 0, 'bpm': 0.0, 'spectrum': [0.0] * 16,
     }
+    self._last_beat_frame_id = 0  # tracks which beats render has seen
+    self._beat_this_frame = False  # set once per frame, safe for multiple reads
 
     # Stats — separated by concern
     self.actual_fps: float = 0.0
@@ -72,7 +74,9 @@ class RenderState:
 
   @property
   def audio_beat(self) -> bool:
-    return self._audio_lock_free.get('beat', False)
+    """True if a beat occurred since last frame. Uses beat_frame_id counter
+    so render can't miss beats between audio callbacks."""
+    return self._beat_this_frame
 
   @property
   def audio_bpm(self) -> float:
@@ -353,6 +357,14 @@ class Renderer:
   async def _render_frame(self):
     """Render one frame and send to Teensy."""
     from datetime import datetime, timezone
+
+    # Update beat detection ONCE per frame using frame ID (can't miss beats)
+    current_beat_id = self.state._audio_lock_free.get('beat_frame_id', 0)
+    if current_beat_id != self.state._last_beat_frame_id:
+      self.state._last_beat_frame_id = current_beat_id
+      self.state._beat_this_frame = True
+    else:
+      self.state._beat_this_frame = False
 
     w = self.layout.width
     h = self.layout.height

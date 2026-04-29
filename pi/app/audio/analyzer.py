@@ -15,7 +15,7 @@ import numpy as np
 logger = logging.getLogger(__name__)
 
 SAMPLE_RATE = 44100
-CHUNK_SIZE = 1024
+CHUNK_SIZE = 512
 FFT_SIZE = 2048
 
 BASS_RANGE = (20, 250)
@@ -45,11 +45,12 @@ class AudioAnalyzer:
     self._bass_smooth = 0.0
     self._mid_smooth = 0.0
     self._high_smooth = 0.0
-    self._smoothing = 0.85
+    self._smoothing = 0.65  # lower = more responsive (was 0.85)
 
     # Beat detection
     self._energy_history: list[float] = []
     self._beat_cooldown = 0
+    self._beat_frame_id = 0  # increments on each beat, render compares to detect
 
     # Config
     self.sensitivity = 1.0
@@ -132,20 +133,21 @@ class AudioAnalyzer:
 
     spectrum_bins = self._compute_spectrum_bins(spectrum, freqs)
 
-    # Beat detection
+    # Beat detection — tuned for responsiveness
     energy = float(np.sum(spectrum[:len(spectrum) // 4]))
     self._energy_history.append(energy)
-    if len(self._energy_history) > 43:
+    if len(self._energy_history) > 86:  # ~1 second at 86Hz (512 chunk)
       self._energy_history.pop(0)
 
     beat = False
     if self._beat_cooldown > 0:
       self._beat_cooldown -= 1
-    elif len(self._energy_history) > 10:
+    elif len(self._energy_history) > 8:
       avg_energy = np.mean(self._energy_history)
-      if energy > avg_energy * 1.5:
+      if energy > avg_energy * 1.4:  # slightly lower threshold for sensitivity
         beat = True
-        self._beat_cooldown = 8
+        self._beat_cooldown = 4  # ~46ms cooldown (was 8=184ms) → ~21 beats/sec max
+        self._beat_frame_id += 1
 
     # Build snapshot under lock and push to render state
     snapshot = {
@@ -154,6 +156,7 @@ class AudioAnalyzer:
       'mid': min(1.0, self._mid_smooth),
       'high': min(1.0, self._high_smooth),
       'beat': beat,
+      'beat_frame_id': self._beat_frame_id,
       'bpm': 0.0,
       'spectrum': spectrum_bins,
     }
