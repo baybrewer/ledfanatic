@@ -155,6 +155,8 @@
     <div class="status" id="cal-status"></div>
   </div>
 
+  <a href="/" style="margin-top:16px;color:var(--text-dim,#7878a0);font-size:14px;text-decoration:none;">← Return to Control Panel</a>
+
   <script>
 const token = localStorage.getItem('ledfanatic_token') || '';
 
@@ -336,6 +338,18 @@ bindBtn('cal-btn-down-big', () => setMultiplier(getMultiplier() - 0.05));
 bindBtn('cal-btn-advance', advance);
 bindBtn('cal-btn-save', save);
 bindBtn('cal-btn-cancel', () => { apiFetch('POST', '/api/layout/test-off'); window.location.href = '/'; });
+
+// Auto-clear test mode when leaving page (prevents stuck calibration)
+window.addEventListener('beforeunload', () => {
+  // Use sendBeacon for reliable delivery on page close
+  const headers = { type: 'application/json' };
+  const body = new Blob([JSON.stringify({})], headers);
+  navigator.sendBeacon('/api/layout/test-off', body);
+});
+
+window.addEventListener('pagehide', () => {
+  navigator.sendBeacon('/api/layout/test-off', new Blob([JSON.stringify({})], { type: 'application/json' }));
+});
 
 init();
   </script>

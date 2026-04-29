@@ -125,7 +125,7 @@ def create_router(deps, require_auth) -> APIRouter:
         deps.renderer.set_test_identify("strip_identify", duration=10.0)
         return {"status": "ok", "mode": "strip_identify"}
 
-    @router.post("/test-off", dependencies=[Depends(require_auth)])
+    @router.post("/test-off")
     async def test_off():
         """Cancel any active test pattern."""
         deps.renderer.set_test_strip(None)
