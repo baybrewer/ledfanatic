@@ -227,7 +227,25 @@ const CATEGORY_MAP = {
   imported_ambient: 'Ambient',
   generative: 'Built-in',
   special: 'Special',
+  simulation: 'Simulation',
+  game: 'Game',
 };
+
+const CATEGORY_COLORS = {
+  'Ambient': '#00cec9',
+  'Sound Reactive': '#fd79a8',
+  'Simulation': '#6c5ce7',
+  'Built-in': '#00b894',
+  'Game': '#fdcb6e',
+  'Classic': '#e17055',
+  'Special': '#a29bfe',
+  'Other': '#636e72',
+};
+
+function getCategoryColor(group) {
+  const displayCat = effectCategory(group);
+  return CATEGORY_COLORS[displayCat] || '#6c5ce7';
+}
 
 const DEFAULT_PALETTES = ['Rainbow', 'Ocean', 'Sunset', 'Forest', 'Lava', 'Ice', 'Neon', 'Cyberpunk', 'Pastel', 'Vapor'];
 
@@ -263,17 +281,17 @@ async function loadEffects() {
   const filterBar = document.getElementById('effects-filter-bar');
   filterBar.innerHTML = '';
 
-  const categoryOrder = ['All', 'Classic', 'Ambient', 'Sound Reactive', 'Built-in', 'Special', 'Other'];
+  const categoryOrder = ['All', 'Ambient', 'Sound Reactive', 'Simulation', 'Built-in', 'Classic', 'Game', 'Special'];
   for (const cat of categoryOrder) {
     if (cat !== 'All' && !counts[cat]) continue;
     const btn = document.createElement('button');
-    btn.className = 'filter-btn' + (cat === currentFilterCategory ? ' filter-active' : '');
+    btn.className = `category-btn${cat === currentFilterCategory ? ' active' : ''}`;
     btn.textContent = cat === 'All' ? `All (${categorized.length})` : `${cat} (${counts[cat]})`;
     btn.addEventListener('click', () => {
       currentFilterCategory = cat;
       // Update active state on filter buttons
-      filterBar.querySelectorAll('.filter-btn').forEach(b => b.classList.remove('filter-active'));
-      btn.classList.add('filter-active');
+      filterBar.querySelectorAll('.category-btn').forEach(b => b.classList.remove('active'));
+      btn.classList.add('active');
       // Filter grid
       applyEffectsFilter();
     });
@@ -286,8 +304,18 @@ async function loadEffects() {
 
   for (const eff of categorized) {
     const btn = document.createElement('button');
-    btn.textContent = eff.label || eff.name.replace(/_/g, ' ');
+    btn.className = 'effect-card';
+    btn.dataset.effect = eff.name;
+    btn.dataset.group = eff.group || '';
     btn.dataset.category = eff.category;
+    const catColor = getCategoryColor(eff.group);
+    btn.innerHTML = `
+      <div class="effect-card-accent" style="background:${catColor}"></div>
+      <div class="effect-card-body">
+        <span class="effect-card-name">${eff.label || eff.name.replace(/_/g, ' ')}</span>
+        <span class="effect-card-group">${eff.category}</span>
+      </div>
+    `;
     if (eff.name === data.current) btn.classList.add('active-scene');
     btn.addEventListener('click', () => activateEffect(eff.name));
     grid.appendChild(btn);
@@ -305,12 +333,15 @@ async function loadEffects() {
 
 function applyEffectsFilter() {
   const grid = document.getElementById('effects-grid');
-  grid.querySelectorAll('button').forEach(btn => {
+  grid.querySelectorAll('.effect-card').forEach(btn => {
     if (currentFilterCategory === 'All' || btn.dataset.category === currentFilterCategory) {
       btn.style.display = '';
     } else {
       btn.style.display = 'none';
     }
+  });
+  document.querySelectorAll('.category-btn').forEach(b => {
+    b.classList.toggle('active', b.textContent.startsWith(currentFilterCategory));
   });
 }
 
@@ -548,14 +579,9 @@ async function activateEffect(name) {
   // Re-render to update active highlight and controls without full refetch
   if (effectsCatalog && effectsCatalog[name]) {
     // Update highlights in effects grid
-    const grid = document.getElementById('effects-grid');
-    if (grid) {
-      grid.querySelectorAll('button').forEach(b => b.classList.remove('active-scene'));
-      grid.querySelectorAll('button').forEach(b => {
-        const label = effectsCatalog[name]?.label || name.replace(/_/g, ' ');
-        if (b.textContent === label) b.classList.add('active-scene');
-      });
-    }
+    document.querySelectorAll('.effect-card').forEach(b => {
+      b.classList.toggle('active-scene', b.dataset.effect === name);
+    });
     showEffectControls(name, effectsCatalog[name]);
     // Start live preview on effects tab
     const activeTab = document.querySelector('.tab.active');
