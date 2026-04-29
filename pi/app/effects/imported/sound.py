@@ -100,6 +100,7 @@ class Spectrum(Effect):
     self._audio_adapter = AudioCompatAdapter()
     self.buf = LEDBuffer(width, height)
     self._heights = [0.0] * width
+    self._smooth_heights = [0.0] * width  # smoothed target for anti-strobe
     self._peaks = [0.0] * width
     self._peak_age = [0] * width
     self._drop_flash = 0.0
@@ -130,7 +131,10 @@ class Spectrum(Effect):
     from ...audio.adapter import AudioCompatAdapter as _AC
     col_bands = _AC.resample_bands(audio.bands, cols)
     for i in range(cols):
-      target = col_bands[i] * rows * adjusted_gain
+      raw_target = col_bands[i] * rows * adjusted_gain
+      # Smooth the target to prevent strobing (rise fast, fall smooth)
+      self._smooth_heights[i] += (raw_target - self._smooth_heights[i]) * 0.4
+      target = self._smooth_heights[i]
       self._heights[i] = max(target, self._heights[i] * decay)
       h = int(self._heights[i])
       if h > self._peaks[i]:

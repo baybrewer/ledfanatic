@@ -131,39 +131,22 @@ class SRShadowPulse(Effect):
     darkness_strength = self.params.get('darkness', 0.95)
 
     bass = state.audio_bass * gain
-    beat = state.audio_beat
     level = state.audio_level * gain
 
-    self._beat_cooldown = max(0, self._beat_cooldown - dt)
-
-    # Spawn rings on beat — lots of them
-    if beat and self._beat_cooldown <= 0 and len(self._rings) < _MAX_RINGS:
-      self._beat_cooldown = 0.08
-      count = 2 + int(bass > 0.4) + int(bass > 0.7)
+    # Continuous bass-driven spawning — more bass = more rings
+    spawn_rate = bass * 8.0  # rings per second at full bass
+    spawn_count = int(spawn_rate * dt + np.random.random() * 0.5)
+    if spawn_count > 0 and len(self._rings) < _MAX_RINGS:
+      count = min(spawn_count, _MAX_RINGS - len(self._rings))
       new = np.empty(count, dtype=_RING_DTYPE)
       new['cx'] = np.random.uniform(0, self.width, count).astype(np.float32)
       new['cy'] = np.random.uniform(0, self.height, count).astype(np.float32)
       new['radius'] = 0.0
-      new['speed'] = ring_speed * (0.7 + bass * 0.6)
-      life = 2.0 + bass
+      new['speed'] = ring_speed * (0.5 + bass * 0.8)
+      life = 1.5 + bass * 1.5
       new['life'] = life
       new['max_life'] = life
-      new['width'] = ring_width * (0.8 + bass * 0.4)
-      if len(self._rings) == 0:
-        self._rings = new
-      else:
-        self._rings = np.concatenate([self._rings, new])
-
-    # Auto-spawn on sustained bass — aggressive
-    if bass > 0.3 and np.random.random() < bass * dt * 4 and len(self._rings) < _MAX_RINGS:
-      new = np.empty(1, dtype=_RING_DTYPE)
-      new['cx'] = np.random.uniform(0, self.width, 1).astype(np.float32)
-      new['cy'] = np.random.uniform(0, self.height, 1).astype(np.float32)
-      new['radius'] = 0.0
-      new['speed'] = ring_speed * 0.8
-      new['life'] = 1.5
-      new['max_life'] = 1.5
-      new['width'] = ring_width
+      new['width'] = ring_width * (0.6 + bass * 0.6)
       if len(self._rings) == 0:
         self._rings = new
       else:
@@ -400,15 +383,11 @@ class SRLightningGap(Effect):
     darkness_strength = self.params.get('darkness', 0.95)
 
     bass = state.audio_bass * gain
-    beat = state.audio_beat
     level = state.audio_level * gain
     high = state.audio_high * gain
 
-    self._beat_cooldown = max(0, self._beat_cooldown - dt)
-
-    # Spawn cracks on beat
-    if beat and self._beat_cooldown <= 0:
-      self._beat_cooldown = 0.15
+    # Continuous bass-driven crack spawning
+    if bass > 0.2 and np.random.random() < bass * dt * 3 and len(self._crack_points) < _MAX_CRACK_POINTS * 0.7:
       self._spawn_crack(bass)
 
     # Update crack lifetimes
@@ -523,20 +502,14 @@ class SRNegativeRain(Effect):
     darkness_strength = self.params.get('darkness', 0.95)
 
     bass = state.audio_bass * gain
-    beat = state.audio_beat
     level = state.audio_level * gain
     mid = state.audio_mid * gain
 
-    # Continuous spawning — aggressive
-    spawn_rate = density * (0.5 + bass * 1.0) * self.width * 0.2
+    # Continuous bass-driven spawning — more bass = heavier rain
+    spawn_rate = density * (0.2 + bass * 1.5) * self.width * 0.3
     spawn_count = int(spawn_rate * dt + 0.5)
     if spawn_count > 0:
-      self._spawn_drops(spawn_count, bass)
-
-    # Burst on beat — heavy
-    if beat:
-      burst = int(5 + bass * 12)
-      self._spawn_drops(burst, bass, speed_mult=1.5)
+      self._spawn_drops(spawn_count, bass, speed_mult=0.8 + bass * 0.5)
 
     # Update drops
     if len(self._drops) > 0:
@@ -679,20 +652,12 @@ class SRSilhouette(Effect):
     darkness_strength = self.params.get('darkness', 0.95)
 
     bass = state.audio_bass * gain
-    beat = state.audio_beat
     level = state.audio_level * gain
     mid = state.audio_mid * gain
 
-    self._beat_cooldown = max(0, self._beat_cooldown - dt)
-
-    # Spawn on beat — aggressive
-    if beat and self._beat_cooldown <= 0:
-      self._beat_cooldown = 0.12
-      self._spawn_blobs(2 + int(bass > 0.4), bass)
-
-    # Auto-spawn on sustained bass
-    if bass > 0.3 and np.random.random() < bass * dt * 3 and len(self._blobs) < _MAX_BLOBS:
-      self._spawn_blobs(1, bass)
+    # Continuous bass-driven blob spawning
+    if bass > 0.15 and np.random.random() < bass * dt * 4 and len(self._blobs) < _MAX_BLOBS:
+      self._spawn_blobs(1 + int(bass > 0.5), bass)
 
     # Update blobs
     if len(self._blobs) > 0:
