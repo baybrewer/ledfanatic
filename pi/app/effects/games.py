@@ -768,7 +768,7 @@ class MarioRunner(Effect):
 
     # Physics
     if self.alive:
-      self.scroll += speed * 15 * dt
+      self.scroll += speed * 8 * dt
 
       # Gravity
       self.mario_vy -= 40 * dt
@@ -786,78 +786,70 @@ class MarioRunner(Effect):
         self.death_timer = 3.0
         self.score += 1000
 
-      # Check collisions with obstacles
-      scroll_y = int(self.scroll)
-      mario_screen_row = h - self.ground_level - 1 - int(self.mario_y)
+      # Check collisions — object is at scroll distance (ly - scroll)
+      # Mario is at distance 0, so collisions happen when ly ≈ scroll
       for ly, ltype, lparams in self.LEVEL_1_1:
-        obj_screen = ly - scroll_y
-        if ltype == 'goomba' and abs(obj_screen - mario_screen_row) < 2 and self.mario_y < 1:
+        dist = ly - self.scroll  # how far ahead the object is
+        if ltype == 'goomba' and abs(dist) < 1.5 and self.mario_y < 1.5:
           self.alive = False
           self.death_timer = 2.0
         elif ltype == 'pipe':
           ph = lparams.get('h', 2)
-          if 0 <= obj_screen - mario_screen_row < ph and self.mario_y < ph:
-            if self.mario_vy <= 0 and self.mario_y < ph - 0.5:
-              self.alive = False
-              self.death_timer = 2.0
-        elif ltype == 'gap':
-          gw = lparams.get('w', 2)
-          if 0 <= mario_screen_row - obj_screen < gw and self.mario_y <= 0:
+          if -1 < dist < 1.5 and self.mario_y < ph:
             self.alive = False
             self.death_timer = 2.0
-        elif ltype == 'question' and abs(obj_screen - (mario_screen_row - 4)) < 1 and self.mario_vy > 0:
+        elif ltype == 'gap':
+          gw = lparams.get('w', 2)
+          if 0 <= dist < gw and self.mario_y <= 0.1:
+            self.alive = False
+            self.death_timer = 2.0
+        elif ltype == 'question' and abs(dist) < 1.5 and self.mario_y > 3 and self.mario_vy > 0:
           self.score += 100
           self.coins += 1
 
-    # Render
+    # Render — side-scroller scrolls vertically on the LED panel
+    # Mario is fixed at a row near the bottom; world scrolls downward past him
     frame = np.zeros((w, h, 3), dtype=np.uint8)
-    scroll_y = int(self.scroll)
+    scroll_int = int(self.scroll)
 
     # Sky background
     frame[:, :] = self.SKY
 
-    # Ground
-    frame[:, -self.ground_level:] = self.GROUND
-    # Brick pattern on ground
-    for gx in range(w):
-      if (gx + scroll_y) % 2 == 0:
-        frame[gx, -1] = self.BRICK
+    # Ground — every row below mario's ground level
+    ground_row = h - self.ground_level
+    frame[:, ground_row:] = self.GROUND
 
-    # Draw level objects
+    # Mario's fixed screen position (near bottom, above ground)
+    mario_row = ground_row - 1 - int(self.mario_y)
+
+    # Draw level objects — each object at screen_row = ground_row - 1 - (ly - scroll)
+    # When ly == scroll, object is at mario's feet. ly > scroll = ahead (above on screen).
     for ly, ltype, lparams in self.LEVEL_1_1:
-      screen_y = ly - scroll_y
-      if screen_y < -5 or screen_y >= h + 5:
-        continue
-
-      row = h - self.ground_level - 1 - max(0, screen_y - (h - self.ground_level - 1))
-      actual_row = h - self.ground_level - 1
+      offset = ly - scroll_int
+      base_row = ground_row - 1 - offset  # where the object's base sits on screen
 
       if ltype == 'pipe':
         ph = lparams.get('h', 2)
         px = w // 2 - 1
-        for py_off in range(ph):
-          yr = actual_row - py_off
-          if 0 <= (ly - scroll_y) < h and 0 <= yr < h:
-            for dx in range(3):
-              if 0 <= px + dx < w:
-                frame[px + dx, yr] = self.PIPE_DARK if dx == 0 else self.PIPE_GREEN
-        # Pipe cap (wider)
-        yr = actual_row - ph
-        if 0 <= yr < h:
-          for dx in range(-1, 4):
-            if 0 <= px + dx < w:
-              frame[px + dx, yr] = self.PIPE_GREEN
+        for py_off in range(ph + 1):
+          yr = base_row - py_off
+          if 0 <= yr < ground_row:
+            width_at = 3 if py_off < ph else 5  # cap is wider
+            start_x = px if py_off < ph else px - 1
+            for dx in range(width_at):
+              xx = start_x + dx
+              if 0 <= xx < w:
+                frame[xx, yr] = self.PIPE_GREEN if dx > 0 else self.PIPE_DARK
 
       elif ltype == 'goomba':
-        yr = actual_row
-        gx = w // 2
-        if 0 <= (ly - scroll_y) < h and 0 <= yr < h and 0 <= gx < w:
-          frame[gx, yr] = self.GOOMBA
-          if gx + 1 < w:
-            frame[gx + 1, yr] = self.GOOMBA
+        if 0 <= base_row < ground_row:
+          gx = w // 2
+          for dx in range(2):
+            if 0 <= gx + dx < w:
+              frame[gx + dx, base_row] = self.GOOMBA
 
       elif ltype == 'question':
-        yr = actual_row - 4  # floating above ground
+        yr = base_row - 4
         qx = w // 2
         if 0 <= yr < h and 0 <= qx < w:
           frame[qx, yr] = self.QUESTION
@@ -866,39 +858,42 @@ class MarioRunner(Effect):
         sh = lparams.get('h', 4)
         sx = w // 2 - 1
         for step in range(sh):
-          yr = actual_row - step
-          if 0 <= yr < h:
-            for dx in range(step + 1):
+          yr = base_row - step
+          if 0 <= yr < ground_row:
+            for dx in range(min(step + 1, w - sx)):
               if 0 <= sx + dx < w:
                 frame[sx + dx, yr] = self.BRICK
+
+      elif ltype == 'gap':
+        gw = lparams.get('w', 2)
+        for gi in range(gw):
+          yr = base_row + gi
+          if 0 <= yr < h:
+            frame[:, yr] = self.SKY  # hole in ground
 
       elif ltype == 'flag':
         fx = w // 2
         for fy in range(8):
-          yr = actual_row - fy
+          yr = base_row - fy
           if 0 <= yr < h and 0 <= fx < w:
             frame[fx, yr] = self.FLAG if fy > 0 else self.COIN
 
-    # Draw Mario
+    # Draw Mario (fixed column, variable height from jumping)
     if self.alive:
       mx = self.mario_x
-      my = h - self.ground_level - 1 - int(self.mario_y)
-      if 0 <= mx < w and 0 <= my < h:
-        frame[mx, my] = self.MARIO  # body
-      if 0 <= mx < w and 0 <= my - 1 < h:
-        frame[mx, my - 1] = self.MARIO_SKIN  # head
+      if 0 <= mx < w and 0 <= mario_row < h:
+        frame[mx, mario_row] = self.MARIO
+      if 0 <= mx < w and 0 <= mario_row - 1 < h:
+        frame[mx, mario_row - 1] = self.MARIO_SKIN
 
-    # Score flash on death
+    # Death: dim red overlay (no strobe)
     if not self.alive:
-      flash = int((self.death_timer * 4) % 2)
-      if flash:
-        frame[:, :] = (40, 0, 0)
+      frame = (frame.astype(np.float32) * 0.3).astype(np.uint8)
+      frame[:, :, 0] = np.minimum(frame[:, :, 0].astype(np.uint16) + 30, 255).astype(np.uint8)
 
-    # Win flash
+    # Win: green tint (no strobe)
     if self.won:
-      flash = int((self.death_timer * 2) % 2)
-      if flash:
-        frame[:, :, 1] = np.minimum(frame[:, :, 1].astype(np.uint16) + 60, 255).astype(np.uint8)
+      frame[:, :, 1] = np.minimum(frame[:, :, 1].astype(np.uint16) + 40, 255).astype(np.uint8)
 
     return frame
 
