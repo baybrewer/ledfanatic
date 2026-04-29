@@ -139,6 +139,14 @@ class EffectCatalogService:
       {'name': 'sparking', 'label': 'Sparks', 'min': 30, 'max': 200, 'step': 5, 'default': 140, 'type': 'slider'},
       {'name': 'drip_rate', 'label': 'Fire Drips', 'min': 0.0, 'max': 2.0, 'step': 0.1, 'default': 0.5, 'type': 'slider'},
     ),
+    'fire_bubbles': (
+      {'name': 'bubble_rate', 'label': 'Bubble Rate', 'min': 0.5, 'max': 6.0, 'step': 0.5, 'default': 2.0, 'type': 'slider'},
+      {'name': 'rise_speed', 'label': 'Rise Speed', 'min': 5.0, 'max': 30.0, 'step': 1.0, 'default': 15.0, 'type': 'slider'},
+      {'name': 'pop_height', 'label': 'Pop Height', 'min': 0.1, 'max': 0.8, 'step': 0.05, 'default': 0.5, 'type': 'slider'},
+      {'name': 'max_size', 'label': 'Bubble Size', 'min': 1.0, 'max': 4.0, 'step': 0.25, 'default': 2.5, 'type': 'slider'},
+      {'name': 'spark_intensity', 'label': 'Explosion Size', 'min': 0.3, 'max': 3.0, 'step': 0.1, 'default': 1.0, 'type': 'slider'},
+      {'name': 'wobble', 'label': 'Wobble', 'min': 0.0, 'max': 3.0, 'step': 0.1, 'default': 1.0, 'type': 'slider'},
+    ),
     'sine_bands': (
       {'name': 'frequency', 'label': 'Frequency', 'min': 1, 'max': 10, 'step': 0.5, 'default': 3.0, 'type': 'slider'},
       {'name': 'speed', 'label': 'Speed', 'min': 0, 'max': 2, 'step': 0.1, 'default': 1.0, 'type': 'slider'},

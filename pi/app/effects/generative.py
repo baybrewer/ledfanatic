@@ -857,6 +857,221 @@ class TwinTorches(Effect):
     return result
 
 
+class FireBubbles(Effect):
+  """Bubbles float up gently from the bottom, pop into bursts of fire and sparks."""
+
+  PALETTE_SUPPORT = True
+
+  _BUBBLE_DTYPE = np.dtype([
+    ('x', np.float32), ('y', np.float32),
+    ('vx', np.float32), ('vy', np.float32),
+    ('radius', np.float32), ('hue', np.float32),
+    ('wobble_phase', np.float32), ('wobble_freq', np.float32),
+    ('life', np.float32),
+    ('popped', np.bool_),
+  ])
+
+  _SPARK_DTYPE = np.dtype([
+    ('x', np.float32), ('y', np.float32),
+    ('vx', np.float32), ('vy', np.float32),
+    ('life', np.float32), ('max_life', np.float32),
+    ('r', np.float32), ('g', np.float32), ('b', np.float32),
+  ])
+
+  _MAX_BUBBLES = 25
+  _MAX_SPARKS = 150
+
+  def __init__(self, *args, **kwargs):
+    super().__init__(*args, **kwargs)
+    w, h = self.width, self.height
+    self._rng = np.random.default_rng()
+    self._bubbles = np.empty(0, dtype=self._BUBBLE_DTYPE)
+    self._sparks = np.empty(0, dtype=self._SPARK_DTYPE)
+    self._prev_frame = None
+    self._t = 0.0
+    self._last_t = None
+    self._spawn_accum = 0.0
+    # Precompute grids
+    self._gx = np.arange(w, dtype=np.float32)[:, np.newaxis] * np.ones(h)[np.newaxis, :]
+    self._gy = np.ones(w)[:, np.newaxis] * np.arange(h, dtype=np.float32)[np.newaxis, :]
+
+  def render(self, t: float, state) -> np.ndarray:
+    if self._last_t is None:
+      self._last_t = t
+    dt = min(t - self._last_t, 0.05)
+    self._last_t = t
+    self._t += dt
+
+    w, h = self.width, self.height
+    tt = self._t
+    pal_idx = _get_palette_idx(self.params, default=0)
+    bubble_rate = self.params.get('bubble_rate', 2.0) if 'bubble_rate' in self.params else 2.0
+    rise_speed = self.params.get('rise_speed', 15.0) if 'rise_speed' in self.params else 15.0
+    pop_height = self.params.get('pop_height', 0.5) if 'pop_height' in self.params else 0.5
+    max_size = self.params.get('max_size', 2.5) if 'max_size' in self.params else 2.5
+    spark_intensity = self.params.get('spark_intensity', 1.0) if 'spark_intensity' in self.params else 1.0
+    wobble_amount = self.params.get('wobble', 1.0) if 'wobble' in self.params else 1.0
+
+    # === SPAWN BUBBLES from bottom ===
+    self._spawn_accum += bubble_rate * dt
+    while self._spawn_accum >= 1.0 and len(self._bubbles) < self._MAX_BUBBLES:
+      self._spawn_accum -= 1.0
+      new = np.empty(1, dtype=self._BUBBLE_DTYPE)
+      new['x'] = self._rng.uniform(1, w - 1, 1).astype(np.float32)
+      new['y'] = np.float32(h + self._rng.uniform(0, 3))
+      new['vx'] = np.float32(0)
+      new['vy'] = -self._rng.uniform(rise_speed * 0.8, rise_speed * 1.6, 1).astype(np.float32)
+      new['radius'] = self._rng.uniform(0.8, max_size, 1).astype(np.float32)
+      new['hue'] = self._rng.uniform(0, 1, 1).astype(np.float32)
+      new['wobble_phase'] = self._rng.uniform(0, 6.28, 1).astype(np.float32)
+      new['wobble_freq'] = self._rng.uniform(1.5, 4.0, 1).astype(np.float32)
+      new['life'] = np.float32(99)  # lives until popped
+      new['popped'] = False
+      if len(self._bubbles) == 0:
+        self._bubbles = new
+      else:
+        self._bubbles = np.concatenate([self._bubbles, new])
+
+    # === UPDATE BUBBLES ===
+    if len(self._bubbles) > 0:
+      b = self._bubbles
+      alive_mask = ~b['popped']
+
+      # Gentle wobble side to side — like bubbles in liquid
+      b['vx'] = np.sin(tt * b['wobble_freq'] + b['wobble_phase']) * wobble_amount * 2.0
+      b['x'] += b['vx'] * dt
+      b['y'] += b['vy'] * dt
+
+      # No drag — bubbles float at constant speed like real bubbles
+
+      # Grow slightly as they rise (pressure decrease)
+      b['radius'] = np.minimum(b['radius'] + dt * 0.15, max_size * 1.3)
+
+      # Wrap x
+      b['x'] = b['x'] % w
+
+      # POP when reaching pop_height — burst into fire!
+      pop_row = h * pop_height
+      should_pop = (b['y'] <= pop_row) & ~b['popped']
+      pop_indices = np.where(should_pop)[0]
+
+      for pi in pop_indices:
+        bub = b[pi]
+        # Spawn burst of fire sparks
+        n_sparks = int(8 + bub['radius'] * 4 * spark_intensity)
+        n_sparks = min(n_sparks, self._MAX_SPARKS - len(self._sparks))
+        if n_sparks > 0:
+          new_s = np.empty(n_sparks, dtype=self._SPARK_DTYPE)
+          angles = self._rng.uniform(0, 6.28, n_sparks).astype(np.float32)
+          speeds = self._rng.uniform(5, 25, n_sparks).astype(np.float32) * (0.5 + bub['radius'] * 0.3)
+          new_s['x'] = bub['x']
+          new_s['y'] = bub['y']
+          new_s['vx'] = np.cos(angles) * speeds
+          new_s['vy'] = np.sin(angles) * speeds
+          spark_life = self._rng.uniform(0.3, 1.0, n_sparks).astype(np.float32)
+          new_s['life'] = spark_life
+          new_s['max_life'] = spark_life
+          # Fire colors — hot center, warm edges
+          hue_base = bub['hue']
+          new_s['r'] = np.clip(200 + self._rng.uniform(-30, 55, n_sparks), 0, 255).astype(np.float32)
+          new_s['g'] = np.clip(100 + self._rng.uniform(-40, 60, n_sparks), 0, 255).astype(np.float32)
+          new_s['b'] = np.clip(20 + self._rng.uniform(-10, 30, n_sparks), 0, 255).astype(np.float32)
+          if len(self._sparks) == 0:
+            self._sparks = new_s
+          else:
+            self._sparks = np.concatenate([self._sparks, new_s])
+
+      b['popped'] |= should_pop
+      # Remove popped bubbles
+      self._bubbles = b[~b['popped']]
+
+    # === UPDATE SPARKS — fire physics ===
+    if len(self._sparks) > 0:
+      s = self._sparks
+      s['x'] += s['vx'] * dt
+      s['y'] += s['vy'] * dt
+      s['vy'] += 15 * dt  # gentle gravity — sparks float then fall
+      s['vx'] *= (1.0 - dt * 2.0)  # air resistance
+      s['life'] -= dt
+      # Cool down — colors fade as sparks age
+      age_ratio = s['life'] / s['max_life']
+      alive = (s['life'] > 0) & (s['y'] >= 0) & (s['y'] < h)
+      self._sparks = s[alive]
+
+    # === RENDER ===
+    frame = np.zeros((w, h, 3), dtype=np.float32)
+
+    # Dark warm background — very subtle deep color
+    frame[:, :, 0] = 5
+    frame[:, :, 1] = 2
+    frame[:, :, 2] = 8
+
+    # Draw bubbles — glowing circles with sheen
+    if len(self._bubbles) > 0:
+      for i in range(len(self._bubbles)):
+        bub = self._bubbles[i]
+        bx, by, br = float(bub['x']), float(bub['y']), float(bub['radius'])
+        # Distance field for this bubble
+        dx = self._gx - bx
+        # Wrap distance
+        dx = np.where(np.abs(dx) > w / 2, dx - np.sign(dx) * w, dx)
+        dy = self._gy - by
+        dist = np.sqrt(dx * dx + dy * dy)
+
+        # Bubble shell — bright ring, dim interior
+        shell_thickness = 0.4
+        ring = np.exp(-((dist - br) / shell_thickness) ** 2)
+        # Interior glow — softer
+        interior = np.clip(1.0 - dist / (br + 0.1), 0, 1) * 0.3
+
+        bubble_intensity = np.clip(ring + interior, 0, 1)
+
+        # Highlight/sheen — bright spot at upper-left
+        sheen_x = bx - br * 0.3
+        sheen_y = by - br * 0.3
+        sdx = self._gx - sheen_x
+        sdx = np.where(np.abs(sdx) > w / 2, sdx - np.sign(sdx) * w, sdx)
+        sdy = self._gy - sheen_y
+        sheen_dist = np.sqrt(sdx * sdx + sdy * sdy)
+        sheen = np.clip(1.0 - sheen_dist / (br * 0.4 + 0.3), 0, 1) * 0.6
+
+        # Color from palette
+        hue_val = np.full((w, h), bub['hue'], dtype=np.float32)
+        bubble_rgb = pal_color_grid(pal_idx, hue_val)
+        contrib = bubble_rgb.astype(np.float32) * bubble_intensity[:, :, np.newaxis]
+        # Add white sheen
+        contrib[:, :, 0] += sheen * 180
+        contrib[:, :, 1] += sheen * 180
+        contrib[:, :, 2] += sheen * 200
+
+        frame = np.maximum(frame, np.clip(contrib, 0, 255))
+
+    # Draw fire sparks from popped bubbles
+    if len(self._sparks) > 0:
+      s = self._sparks
+      ix = np.clip(np.round(s['x'] % w).astype(np.int32), 0, w - 1)
+      iy = np.clip(np.round(s['y']).astype(np.int32), 0, h - 1)
+      age = s['life'] / s['max_life']
+      # Hot to cool: bright at birth, dims as it ages
+      fade = age ** 0.4
+      np.add.at(frame[:, :, 0], (ix, iy), s['r'] * fade)
+      np.add.at(frame[:, :, 1], (ix, iy), s['g'] * fade * age)  # green fades faster
+      np.add.at(frame[:, :, 2], (ix, iy), s['b'] * fade * age * age)  # blue fades fastest
+      # Trail pixel
+      iy_prev = np.clip(iy + np.sign(s['vy']).astype(np.int32), 0, h - 1)
+      np.add.at(frame[:, :, 0], (ix, iy_prev), s['r'] * fade * 0.4)
+      np.add.at(frame[:, :, 1], (ix, iy_prev), s['g'] * fade * age * 0.3)
+
+    result = np.clip(frame, 0, 255).astype(np.uint8)
+
+    # Smooth temporal blend — relaxing, no harsh flicker
+    if self._prev_frame is not None:
+      result = (result.astype(np.float32) * 0.5 + self._prev_frame.astype(np.float32) * 0.5).astype(np.uint8)
+    self._prev_frame = result.copy()
+
+    return result
+
+
 EFFECTS = {
   'solid_color': SolidColor,
   'vertical_gradient': VerticalGradient,
@@ -870,4 +1085,5 @@ EFFECTS = {
   'fire': Fire,
   'framed_fire': FramedFire,
   'twin_torches': TwinTorches,
+  'fire_bubbles': FireBubbles,
 }
