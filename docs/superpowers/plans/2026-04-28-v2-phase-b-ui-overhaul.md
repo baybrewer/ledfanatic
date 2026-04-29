@@ -25,9 +25,11 @@
 **Aesthetic:** Dark glassmorphism with accent glow. Think sci-fi HUD meets music production software. Subtle gradients, soft glows, glass panels with blur, animated borders.
 
 **Layout tiers:**
-- **Phone (≤640px):** Single column, stacked, tabs at bottom
+- **Phone (≤640px):** Single column, stacked
 - **Tablet/iPad (641-1024px):** Two columns — effects grid left, controls/preview right
-- **Desktop (>1024px):** Three columns — categories left, effects center, controls/preview right
+- **Desktop (>1024px):** Same two columns but wider, with more grid columns for effect cards
+
+Note: A third column (category rail) is deferred to Phase C (effect organization).
 
 ---
 
@@ -149,7 +151,7 @@ body {
   font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', system-ui, sans-serif;
   background: var(--bg);
   background-image: var(--bg-gradient);
-  background-attachment: fixed;
+  /* M3 fix: no background-attachment:fixed — causes scroll jank on iPad */
   color: var(--text);
   overflow-x: hidden;
   min-height: 100dvh;
@@ -164,10 +166,50 @@ body {
 ```css
 .glass {
   background: var(--glass-bg);
-  backdrop-filter: blur(var(--glass-blur));
-  -webkit-backdrop-filter: blur(var(--glass-blur));
   border: 1px solid var(--glass-border);
   border-radius: var(--radius);
+}
+
+/* M3 fix: backdrop-filter behind @supports with solid fallback */
+@supports (backdrop-filter: blur(1px)) or (-webkit-backdrop-filter: blur(1px)) {
+  .glass {
+    backdrop-filter: blur(var(--glass-blur));
+    -webkit-backdrop-filter: blur(var(--glass-blur));
+  }
+}
+
+/* M4 fix: respect reduced motion preference */
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    animation-duration: 0.01ms !important;
+    transition-duration: 0.01ms !important;
+  }
+}
+```
+
+- [ ] **Step 4: Add focus-visible styles for keyboard accessibility**
+
+```css
+/* M4 fix: keyboard focus visibility */
+:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+/* Remove blanket user-select: none — only on controls */
+```
+
+Update the body rule to remove `user-select: none`:
+
+```css
+body {
+  /* ... other properties ... */
+  /* M4 fix: removed user-select:none from body — only apply to buttons/controls */
+}
+
+button, .tab, .effect-card, .category-btn {
+  user-select: none;
+  -webkit-user-select: none;
 }
 ```
 
@@ -192,13 +234,19 @@ header#status-bar {
   align-items: center;
   justify-content: space-between;
   padding: 10px 16px;
-  background: var(--glass-bg);
-  backdrop-filter: blur(16px);
-  -webkit-backdrop-filter: blur(16px);
+  background: var(--surface-solid);
   border-bottom: 1px solid var(--glass-border);
   position: sticky;
   top: 0;
   z-index: 100;
+}
+
+@supports (backdrop-filter: blur(1px)) or (-webkit-backdrop-filter: blur(1px)) {
+  header#status-bar {
+    background: var(--glass-bg);
+    backdrop-filter: blur(16px);
+    -webkit-backdrop-filter: blur(16px);
+  }
 }
 
 header#status-bar h1 {
@@ -318,7 +366,23 @@ git commit -am "feat: pill-style tab navigation with glow"
 
 This is the biggest visual change — effects become cards with category color accents.
 
-- [ ] **Step 1: Define category color map in JS**
+**H1 fix:** Active-state matching must use `data-effect` attribute, not `textContent`.
+**H2 fix:** All CSS selectors target existing DOM IDs/classes OR this task explicitly
+updates them. The plan adds new classes alongside existing IDs where needed.
+
+- [ ] **Step 1: Update HTML classes to match new CSS selectors**
+
+In `index.html`, update the effects panel structure:
+- Change `<div id="effects-grid" class="button-grid">` to `<div id="effects-grid" class="effects-grid">`
+- Change `<div id="effects-filter-bar">` to `<div id="effects-filter-bar" class="category-filters">`
+- Change `<div class="effects-preview">` to `<aside class="effects-sidebar">`
+- Change `<div id="active-effect-controls">` to `<div id="active-effect-controls" class="effect-controls">`
+
+Also update `app.js` filter button rendering:
+- Change `.filter-btn` class usage to `.category-btn`
+- Update `applyEffectsFilter()` to query `.category-btn` instead of `.filter-btn`
+
+- [ ] **Step 2: Define category color map in JS**
 
 In `app.js`, add near the top (after the existing `effectCategory` function):
 
@@ -347,7 +411,7 @@ Find the effect button rendering in `loadEffects()` (around line 284) and update
 // Replace the simple button creation with card-style:
 const btn = document.createElement('button');
 btn.className = 'effect-card';
-btn.dataset.effect = name;
+btn.dataset.effect = name;  // H1 fix: always use data-effect for matching
 btn.dataset.group = meta.group || '';
 const catColor = getCategoryColor(meta.group);
 btn.innerHTML = `
@@ -357,6 +421,16 @@ btn.innerHTML = `
     <span class="effect-card-group">${effectCategory(meta.group)}</span>
   </div>
 `;
+```
+
+Also update the active-effect highlighting code (currently in `activateEffect()` around
+line 551 of app.js). Change from `b.textContent === label` to `b.dataset.effect === name`:
+
+```javascript
+// H1 fix: match on data-effect attribute, not textContent
+document.querySelectorAll('.effect-card').forEach(b => {
+  b.classList.toggle('active-scene', b.dataset.effect === name);
+});
 ```
 
 - [ ] **Step 3: Add effect card CSS**
@@ -582,10 +656,16 @@ input[type="range"]::-webkit-slider-thumb {
 ```css
 #quick-controls {
   padding: 12px 16px;
-  background: var(--glass-bg);
-  backdrop-filter: blur(8px);
-  -webkit-backdrop-filter: blur(8px);
+  background: var(--surface-solid);
   border-bottom: 1px solid var(--glass-border);
+}
+
+@supports (backdrop-filter: blur(1px)) or (-webkit-backdrop-filter: blur(1px)) {
+  #quick-controls {
+    background: var(--glass-bg);
+    backdrop-filter: blur(8px);
+    -webkit-backdrop-filter: blur(8px);
+  }
 }
 
 .brightness-control {
