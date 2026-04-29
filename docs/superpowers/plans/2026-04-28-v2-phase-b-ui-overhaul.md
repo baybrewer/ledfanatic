@@ -406,6 +406,10 @@ function getCategoryColor(group) {
 
 // Also update CATEGORY_MAP to cover simulation and game groups:
 // Add to existing CATEGORY_MAP: simulation: 'Simulation', game: 'Game'
+
+// M1 fix: update categoryOrder to include new categories:
+// Change: const categoryOrder = ['All', 'Classic', 'Ambient', 'Sound Reactive', 'Built-in', 'Special', 'Other']
+// To:     const categoryOrder = ['All', 'Ambient', 'Sound Reactive', 'Simulation', 'Built-in', 'Classic', 'Game', 'Special']
 ```
 
 - [ ] **Step 2: Update effect button rendering to cards**
@@ -418,6 +422,7 @@ const btn = document.createElement('button');
 btn.className = 'effect-card';
 btn.dataset.effect = name;  // H1 fix: always use data-effect for matching
 btn.dataset.group = meta.group || '';
+btn.dataset.category = effectCategory(meta.group);  // H1 fix: preserve for filter matching
 const catColor = getCategoryColor(meta.group);
 btn.innerHTML = `
   <div class="effect-card-accent" style="background:${catColor}"></div>
@@ -755,6 +760,21 @@ No new wrapper divs — just rearrange existing elements.
   .effects-sidebar {
     width: 360px;
   }
+}
+
+/* M2 fix: preserve canvas sizing within renamed sidebar */
+.effects-sidebar canvas {
+  width: 100%;
+  max-height: 300px;
+  border-radius: var(--radius);
+  background: #000;
+}
+
+.effects-sidebar .sim-canvas-wrap {
+  width: 100%;
+  overflow: hidden;
+  border-radius: var(--radius);
+  border: 1px solid var(--border);
 }
 ```
 
