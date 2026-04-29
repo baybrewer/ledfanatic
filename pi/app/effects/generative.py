@@ -925,7 +925,9 @@ class FireBubbles(Effect):
       new['hue'] = self._rng.uniform(0, 1, 1).astype(np.float32)
       new['wobble_phase'] = self._rng.uniform(0, 6.28, 1).astype(np.float32)
       new['wobble_freq'] = self._rng.uniform(1.5, 4.0, 1).astype(np.float32)
-      new['life'] = np.float32(99)  # lives until popped
+      # Each bubble gets a random pop height — 1/3 to 90% up from bottom
+      pop_frac = self._rng.uniform(0.33, 0.90)
+      new['life'] = np.float32(h * (1.0 - pop_frac))  # store pop row in life field
       new['popped'] = False
       if len(self._bubbles) == 0:
         self._bubbles = new
@@ -950,9 +952,8 @@ class FireBubbles(Effect):
       # Wrap x
       b['x'] = b['x'] % w
 
-      # POP when reaching pop_height — burst into fire!
-      pop_row = h * pop_height
-      should_pop = (b['y'] <= pop_row) & ~b['popped']
+      # POP when reaching each bubble's individual random pop height
+      should_pop = (b['y'] <= b['life']) & ~b['popped']
       pop_indices = np.where(should_pop)[0]
 
       for pi in pop_indices:
