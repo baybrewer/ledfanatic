@@ -135,6 +135,7 @@
         <button class="cal-btn cal-btn-up" id="cal-btn-up-big">+0.05</button>
       </div>
       <div class="touch-row">
+        <button class="cal-btn" id="cal-btn-apply-all" style="border-color:#ffeaa7;color:#ffeaa7;">Apply to All Levels</button>
         <button class="cal-btn cal-btn-next-step" id="cal-btn-advance">Next Step ▶</button>
       </div>
       <div class="touch-row">
@@ -263,17 +264,36 @@ async function sendPreview() {
 }
 
 function advance() {
+  // Carry forward: copy current level's multipliers to next level as starting point
+  const prevLevel = levelIdx;
+  const prevColor = currentColor();
+
   levelIdx++;
   if (levelIdx >= LEVELS.length) {
     levelIdx = 0;
     colorIdx++;
     if (colorIdx >= COLORS.length) {
-      document.getElementById('cal-status').textContent = 'Calibration complete! Press S to save.';
+      document.getElementById('cal-status').textContent = 'Calibration complete! Tap Save.';
       colorIdx = COLORS.length - 1;
       levelIdx = LEVELS.length - 1;
       return;
     }
   }
+
+  // Pre-fill next level with previous level's values (so user doesn't start from 1.0)
+  const nextColor = currentColor();
+  for (const seg of segments) {
+    if (!calData[seg.key]) continue;
+    const ch = calData[seg.key][nextColor];
+    if (ch && ch[levelIdx] === 1.0 && prevLevel < ch.length) {
+      // Only pre-fill if the next level hasn't been manually set
+      const prevVal = calData[seg.key][prevColor]?.[prevLevel];
+      if (prevVal && prevVal !== 1.0 && nextColor === prevColor) {
+        ch[levelIdx] = prevVal;
+      }
+    }
+  }
+
   updateDisplay();
   sendPreview();
 }
@@ -335,6 +355,18 @@ bindBtn('cal-btn-up', () => setMultiplier(getMultiplier() + 0.01));
 bindBtn('cal-btn-down', () => setMultiplier(getMultiplier() - 0.01));
 bindBtn('cal-btn-up-big', () => setMultiplier(getMultiplier() + 0.05));
 bindBtn('cal-btn-down-big', () => setMultiplier(getMultiplier() - 0.05));
+bindBtn('cal-btn-apply-all', () => {
+  // Copy current multiplier to all 3 levels for this color on this segment
+  const seg = currentSegment();
+  if (!seg) return;
+  const val = getMultiplier();
+  const color = currentColor();
+  if (!calData[seg.key]) calData[seg.key] = { r: [1,1,1], g: [1,1,1], b: [1,1,1] };
+  calData[seg.key][color] = [val, val, val];
+  document.getElementById('cal-status').textContent = `Applied ${val.toFixed(2)} to all levels for ${seg.id} ${COLOR_NAMES[color]}`;
+  updateDisplay();
+  sendPreview();
+});
 bindBtn('cal-btn-advance', advance);
 bindBtn('cal-btn-save', save);
 bindBtn('cal-btn-cancel', () => { apiFetch('POST', '/api/layout/test-off'); window.location.href = '/'; });
