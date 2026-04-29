@@ -54,6 +54,30 @@ def _noise_2d(x, y):
           np.cos(x * 0.9 + y * 4.1) * 0.3)
 
 
+def _plasma_bg(gx, gy, elapsed, width, height):
+  """Generate a vibrant animated plasma background. Returns (w, h, 3) uint8."""
+  # Multi-layer sine plasma
+  t = elapsed * 0.4
+  cx = gx / max(width, 1) * 6.0
+  cy = gy / max(height, 1) * 6.0
+
+  v1 = np.sin(cx + t)
+  v2 = np.sin(cy + t * 0.7)
+  v3 = np.sin(cx + cy + t * 1.3)
+  v4 = np.sin(np.sqrt(cx * cx + cy * cy) * 2.0 + t * 0.5)
+  plasma = (v1 + v2 + v3 + v4) / 4.0  # [-1, 1]
+
+  hue = ((plasma + 1.0) * 0.5 + elapsed * 0.02) % 1.0
+  sat = np.clip(0.7 + plasma * 0.2, 0.5, 1.0)
+  val = np.clip(0.85 + plasma * 0.15, 0.7, 1.0)
+
+  return _hsv_array(
+    hue.astype(np.float32),
+    sat.astype(np.float32),
+    val.astype(np.float32),
+  )
+
+
 # ──────────────────────────────────────────────────────────────────────
 #  1. SRShadowPulse
 # ──────────────────────────────────────────────────────────────────────
@@ -152,15 +176,8 @@ class SRShadowPulse(Effect):
       alive = self._rings['life'] > 0
       self._rings = self._rings[alive]
 
-    # Bright background — slowly shifting hue
-    bg_hue = (elapsed * hue_speed) % 1.0
-    bg_sat = 0.3 + 0.1 * np.sin(elapsed * 0.5)
-    bg = _hsv_array(
-      np.full((self.width, self.height), bg_hue, dtype=np.float32),
-      np.full((self.width, self.height), bg_sat, dtype=np.float32),
-      np.full((self.width, self.height), 1.0, dtype=np.float32),
-    )
-    frame = bg.astype(np.float32)
+    # Vibrant plasma background
+    frame = _plasma_bg(self._gx, self._gy, elapsed, self.width, self.height).astype(np.float32)
 
     # Subtract dark rings — vectorized across all rings
     if len(self._rings) > 0:
@@ -181,10 +198,10 @@ class SRShadowPulse(Effect):
 
       # Combine all rings (max darkness at each pixel)
       darkness = np.max(ring_mask, axis=2)
-      darkness = np.clip(darkness * (0.5 + level * 0.5), 0.0, 1.0)
+      darkness = np.clip(darkness * (0.7 + level * 0.5), 0.0, 1.0)
 
-      # Apply darkness to frame
-      frame *= (1.0 - darkness[:, :, np.newaxis] * 0.95)
+      # Apply STRONG darkness
+      frame *= (1.0 - darkness[:, :, np.newaxis])
 
     return np.clip(frame, 0, 255).astype(np.uint8)
 
@@ -254,31 +271,19 @@ class SRVoidBreath(Effect):
     boundary_noise = (boundary_noise + 1.8) / 3.6
     noisy_radius = radius + boundary_noise * jaggedness
 
-    # Bright nebula background with slow color drift
-    bg_h = (elapsed * 0.03 + self._dist * 0.5 + self._angle / (2 * np.pi) * 0.3)
-    bg_s = np.full_like(self._dist, 0.4) + self._dist * 0.3
-    bg_v = np.clip(0.9 - self._dist * 0.3, 0.4, 1.0)
-    # Add nebula shimmer
-    shimmer = _noise_2d(
-      self._gx * 5 + elapsed * 0.3,
-      self._gy * 5 + elapsed * 0.2
-    )
-    bg_v = np.clip(bg_v + shimmer * 0.08, 0.3, 1.0)
-
-    frame = _hsv_array(
-      bg_h.astype(np.float32) % 1.0,
-      np.clip(bg_s, 0, 1).astype(np.float32),
-      bg_v.astype(np.float32),
-    )
-    frame_f = frame.astype(np.float32)
+    # Vibrant plasma background
+    # Use full coordinate grids (not normalized) for plasma
+    gx_full = (self._gx + 0.5) * self.width
+    gy_full = (self._gy + 0.5) * self.height
+    frame_f = _plasma_bg(gx_full, gy_full, elapsed, self.width, self.height).astype(np.float32)
 
     # Void mask — dark where dist < noisy_radius
     # Soft edge transition
     edge_width = 0.03 + level * 0.02
     void_mask = np.clip((noisy_radius - self._dist) / max(edge_width, 0.001), 0, 1)
 
-    # Apply void (darken toward black)
-    frame_f *= (1.0 - void_mask[:, :, np.newaxis] * 0.97)
+    # Apply void (darken toward black — full black inside)
+    frame_f *= (1.0 - void_mask[:, :, np.newaxis])
 
     # Subtle glow at void edge
     edge_glow = np.exp(-((self._dist - noisy_radius) ** 2) / (0.002 + level * 0.003))
@@ -408,20 +413,8 @@ class SRLightningGap(Effect):
       alive = self._crack_points['life'] > 0
       self._crack_points = self._crack_points[alive]
 
-    # Bright background — white-blue sky with subtle gradient
-    bg_v = np.linspace(0.95, 0.85, self.height, dtype=np.float32)
-    bg_v = np.broadcast_to(bg_v[np.newaxis, :], (self.width, self.height)).copy()
-    # Add high-frequency shimmer
-    bg_v += high * 0.05 * np.sin(elapsed * 3 + self._gx * 0.5)
-    bg_v = np.clip(bg_v, 0.7, 1.0)
-
-    # Sky hue: cool blue-white
-    bg_hue = np.full((self.width, self.height), 0.58, dtype=np.float32)
-    bg_hue += np.sin(elapsed * 0.2) * 0.02
-    bg_sat = np.full((self.width, self.height), 0.15 + level * 0.1, dtype=np.float32)
-
-    frame = _hsv_array(bg_hue, np.clip(bg_sat, 0, 1), bg_v)
-    frame_f = frame.astype(np.float32)
+    # Vibrant plasma background
+    frame_f = _plasma_bg(self._gx, self._gy, elapsed, self.width, self.height).astype(np.float32)
 
     # Render crack points — vectorized distance computation
     if len(self._crack_points) > 0:
@@ -449,7 +442,7 @@ class SRLightningGap(Effect):
         darkness = np.maximum(darkness, np.max(crack_intensity, axis=2))
 
       darkness = np.clip(darkness, 0, 1)
-      frame_f *= (1.0 - darkness[:, :, np.newaxis] * 0.92)
+      frame_f *= (1.0 - darkness[:, :, np.newaxis])
 
     return np.clip(frame_f, 0, 255).astype(np.uint8)
 
@@ -545,16 +538,8 @@ class SRNegativeRain(Effect):
       alive = self._drops['y'] < self.height + 5
       self._drops = self._drops[alive]
 
-    # Bright warm background with gentle gradient
-    bg_hue = (elapsed * 0.02) % 1.0
-    row_gradient = np.linspace(0.9, 1.0, self.height, dtype=np.float32)
-    bg_v = np.broadcast_to(row_gradient[np.newaxis, :], (self.width, self.height)).copy()
-    bg_h = np.full((self.width, self.height), bg_hue, dtype=np.float32)
-    bg_h += self._gx / self.width * 0.1
-    bg_s = np.full((self.width, self.height), 0.2 + mid * 0.1, dtype=np.float32)
-
-    frame = _hsv_array(bg_h % 1.0, np.clip(bg_s, 0, 1), bg_v)
-    frame_f = frame.astype(np.float32)
+    # Vibrant plasma background
+    frame_f = _plasma_bg(self._gx, self._gy, elapsed, self.width, self.height).astype(np.float32)
 
     # Render drops — vectorized with column-based approach
     if len(self._drops) > 0:
@@ -591,8 +576,8 @@ class SRNegativeRain(Effect):
           col = col_idx[j]
           darkness[col] = np.maximum(darkness[col], trail_intensity[j])
 
-      darkness = np.clip(darkness * (0.5 + level * 0.5), 0, 1)
-      frame_f *= (1.0 - darkness[:, :, np.newaxis] * 0.9)
+      darkness = np.clip(darkness * (0.7 + level * 0.5), 0, 1)
+      frame_f *= (1.0 - darkness[:, :, np.newaxis])
 
     result = np.clip(frame_f, 0, 255).astype(np.uint8)
 
@@ -731,14 +716,8 @@ class SRSilhouette(Effect):
     if len(self._blobs) < 3:
       self._spawn_blobs(2, bass)
 
-    # Bright gradient background — diagonal rainbow
-    diag = (self._gx / max(self.width, 1) + self._gy / max(self.height, 1)) * 0.5
-    bg_hue = (diag * 0.3 + elapsed * 0.03) % 1.0
-    bg_sat = np.full((self.width, self.height), 0.35 + mid * 0.1, dtype=np.float32)
-    bg_v = np.clip(0.95 - diag * 0.1, 0.8, 1.0).astype(np.float32)
-
-    frame = _hsv_array(bg_hue.astype(np.float32), np.clip(bg_sat, 0, 1), bg_v)
-    frame_f = frame.astype(np.float32)
+    # Vibrant plasma background
+    frame_f = _plasma_bg(self._gx, self._gy, elapsed, self.width, self.height).astype(np.float32)
 
     # Render metaballs — compute field from all blobs
     if len(self._blobs) > 0:
@@ -770,10 +749,10 @@ class SRSilhouette(Effect):
       # Threshold for metaball surface — values > 1.0 are "inside"
       # Smooth transition
       darkness = np.clip((field - 0.5) * 2.0, 0, 1)
-      darkness = np.clip(darkness * (0.5 + level * 0.5), 0, 1)
+      darkness = np.clip(darkness * (0.7 + level * 0.5), 0, 1)
 
-      # Apply darkness
-      frame_f *= (1.0 - darkness[:, :, np.newaxis] * 0.93)
+      # Apply STRONG darkness — full black inside blobs
+      frame_f *= (1.0 - darkness[:, :, np.newaxis])
 
       # Subtle edge highlight where field ~ 1.0
       edge_band = np.exp(-((field - 1.0) ** 2) * 10)
