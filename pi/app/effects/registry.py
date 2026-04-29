@@ -9,6 +9,7 @@ from .generative import EFFECTS as _GENERATIVE
 from .audio_reactive import AUDIO_EFFECTS as _AUDIO
 from .imported import IMPORTED_EFFECTS as _IMPORTED
 from .simulation import SIMULATION_EFFECTS as _SIMULATION
+from .fractals import FRACTAL_EFFECTS as _FRACTAL
 from ..diagnostics.patterns import DIAGNOSTIC_EFFECTS as _DIAGNOSTIC
 from .tetris import Tetris, TetrisAutoplay
 from .fireworks import SRFireworks
@@ -21,6 +22,7 @@ ALL_EFFECTS: dict[str, type] = {
     **_DIAGNOSTIC,
     **_IMPORTED,
     **_SIMULATION,
+    **_FRACTAL,
     'tetris': Tetris,
     'tetris_auto': TetrisAutoplay,
     'sr_fireworks': SRFireworks,
