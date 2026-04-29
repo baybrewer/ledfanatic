@@ -184,7 +184,7 @@ class FluidSim(Effect):
         # Audio-reactive forcing: bass pushes up from bottom, mid from sides
         cx = w // 2 + 1
         bottom = h
-        force_scale = force * (0.5 + level * 2)
+        force_scale = force * (0.25 + level * 1.0)
 
         # Continuous upward force from bass (bottom center)
         if bass > 0.1:
