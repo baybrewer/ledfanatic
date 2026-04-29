@@ -131,6 +131,10 @@ class EffectCatalogService:
       {'name': 'cooling', 'label': 'Cooling', 'min': 20, 'max': 100, 'step': 5, 'default': 55, 'type': 'slider'},
       {'name': 'sparking', 'label': 'Sparking', 'min': 50, 'max': 200, 'step': 5, 'default': 120, 'type': 'slider'},
     ),
+    'framed_fire': (
+      {'name': 'cooling', 'label': 'Cooling', 'min': 20, 'max': 80, 'step': 5, 'default': 45, 'type': 'slider'},
+      {'name': 'sparking', 'label': 'Sparking', 'min': 50, 'max': 200, 'step': 5, 'default': 140, 'type': 'slider'},
+    ),
     'sine_bands': (
       {'name': 'frequency', 'label': 'Frequency', 'min': 1, 'max': 10, 'step': 0.5, 'default': 3.0, 'type': 'slider'},
       {'name': 'speed', 'label': 'Speed', 'min': 0, 'max': 2, 'step': 0.1, 'default': 1.0, 'type': 'slider'},

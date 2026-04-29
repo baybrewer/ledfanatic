@@ -471,6 +471,137 @@ class DiagnosticLabels(Effect):
 
 
 # Effect registry
+class FramedFire(Effect):
+  """Smooth fire contained within a glowing plasma border frame."""
+
+  PALETTE_SUPPORT = True
+
+  def __init__(self, *args, **kwargs):
+    super().__init__(*args, **kwargs)
+    w, h = self.width, self.height
+    self._border = 2
+    # Fire sim runs in the interior only
+    iw = max(1, w - self._border * 2)
+    ih = max(1, h - self._border)  # no border at bottom (fire rises from there)
+    self._heat = np.zeros((iw, ih), dtype=np.float64)
+    self._rng = np.random.default_rng()
+    self._prev_frame = None
+    # Precompute border mask and coordinate grids for plasma
+    self._border_mask = np.zeros((w, h), dtype=bool)
+    self._border_mask[:self._border, :] = True   # left edge
+    self._border_mask[-self._border:, :] = True  # right edge
+    self._border_mask[:, :self._border] = True   # top edge
+    # Coordinate grids for plasma border
+    xs = np.arange(w, dtype=np.float32)
+    ys = np.arange(h, dtype=np.float32)
+    self._gx, self._gy = np.meshgrid(xs, ys, indexing='ij')
+    # Distance from nearest edge (for border glow falloff)
+    dx_edge = np.minimum(xs, w - 1 - xs)
+    dy_edge = np.minimum(ys, h - 1 - ys)
+    self._edge_dist = np.minimum(
+      dx_edge[:, np.newaxis] * np.ones(h)[np.newaxis, :],
+      np.ones(w)[:, np.newaxis] * dy_edge[np.newaxis, :]
+    )
+
+  def render(self, t: float, state) -> np.ndarray:
+    elapsed = self.elapsed(t)
+    pal_idx = _get_palette_idx(self.params, default=4)
+    w, h = self.width, self.height
+    b = self._border
+    iw = max(1, w - b * 2)
+    ih = max(1, h - b)
+
+    # === INTERIOR FIRE (smooth) ===
+    cooling = self.params.get('cooling', 45)
+    sparking = self.params.get('sparking', 140)
+
+    # Cool down
+    cool_amount = self._rng.integers(
+      0, max(1, (cooling * 10) // ih + 2),
+      size=(iw, ih)
+    ) / 255.0
+    self._heat = np.maximum(0, self._heat - cool_amount)
+
+    # Heat rises with smooth averaging
+    shifted = np.zeros_like(self._heat)
+    if ih > 3:
+      shifted[:, 3:] = (
+        self._heat[:, 2:-1] +
+        self._heat[:, 1:-2] +
+        self._heat[:, 1:-2] +
+        self._heat[:, :-3]
+      ) / 4.0
+      shifted[:, :3] = self._heat[:, :3]
+    else:
+      shifted = self._heat.copy()
+    self._heat = shifted
+
+    # Sparks at bottom (more generous)
+    spark_mask = self._rng.integers(0, 255, size=iw) < sparking
+    for x in np.where(spark_mask)[0]:
+      y = self._rng.integers(0, min(5, ih))
+      self._heat[x, y] = min(1.0, self._heat[x, y] + 0.5 + self._rng.random() * 0.3)
+
+    # Color the fire
+    fire_rgb = pal_color_grid(pal_idx, self._heat)
+    fire_frame = (fire_rgb.astype(np.float32) * self._heat[..., np.newaxis]).astype(np.uint8)
+    fire_frame = fire_frame[:, ::-1, :]  # flip so fire rises from bottom
+
+    # === PLASMA BORDER ===
+    tt = elapsed * 0.6
+    cx = self._gx / max(w, 1) * 8.0
+    cy = self._gy / max(h, 1) * 8.0
+    v1 = np.sin(cx + tt * 1.2)
+    v2 = np.sin(cy * 1.5 + tt * 0.8)
+    v3 = np.sin((cx + cy) * 0.7 + tt * 1.5)
+    v4 = np.sin(np.sqrt(cx * cx + cy * cy) * 1.5 + tt)
+    plasma = (v1 + v2 + v3 + v4) / 4.0
+
+    border_hue = ((plasma + 1.0) * 0.5 + elapsed * 0.05) % 1.0
+    border_sat = np.clip(0.8 + plasma * 0.2, 0.6, 1.0)
+    border_val = np.clip(0.9 + plasma * 0.1, 0.7, 1.0)
+
+    # Glow falloff — brighter at very edge, fades inward
+    glow = np.clip(1.0 - self._edge_dist / (b + 1.5), 0, 1) ** 0.8
+    border_val = border_val * glow
+
+    # HSV to RGB for border
+    bh = (border_hue * 6.0).astype(np.float32)
+    bi = bh.astype(np.int32) % 6
+    bf = bh - np.floor(bh)
+    bv = border_val.astype(np.float32)
+    bs = border_sat.astype(np.float32)
+    bp = bv * (1.0 - bs)
+    bq = bv * (1.0 - bs * bf)
+    bt = bv * (1.0 - bs * (1.0 - bf))
+
+    br = np.where(bi == 0, bv, np.where(bi == 1, bq, np.where(bi == 2, bp,
+         np.where(bi == 3, bp, np.where(bi == 4, bt, bv)))))
+    bg = np.where(bi == 0, bt, np.where(bi == 1, bv, np.where(bi == 2, bv,
+         np.where(bi == 3, bq, np.where(bi == 4, bp, bp)))))
+    bb = np.where(bi == 0, bp, np.where(bi == 1, bp, np.where(bi == 2, bt,
+         np.where(bi == 3, bv, np.where(bi == 4, bv, bq)))))
+
+    border_frame = np.zeros((w, h, 3), dtype=np.uint8)
+    border_frame[:, :, 0] = np.clip(br * 255, 0, 255).astype(np.uint8)
+    border_frame[:, :, 1] = np.clip(bg * 255, 0, 255).astype(np.uint8)
+    border_frame[:, :, 2] = np.clip(bb * 255, 0, 255).astype(np.uint8)
+
+    # === COMPOSITE: border + fire interior ===
+    frame = border_frame.copy()
+
+    # Place fire in the interior
+    if iw > 0 and ih > 0:
+      frame[b:b + iw, b:b + ih] = fire_frame[:iw, :ih]
+
+    # Heavy temporal smoothing for ultra-smooth fire
+    if self._prev_frame is not None:
+      frame = (frame.astype(np.float32) * 0.35 + self._prev_frame.astype(np.float32) * 0.65).astype(np.uint8)
+    self._prev_frame = frame.copy()
+
+    return frame
+
+
 EFFECTS = {
   'solid_color': SolidColor,
   'vertical_gradient': VerticalGradient,
@@ -482,4 +613,5 @@ EFFECTS = {
   'color_wipe': ColorWipe,
   'scanline': Scanline,
   'fire': Fire,
+  'framed_fire': FramedFire,
 }
