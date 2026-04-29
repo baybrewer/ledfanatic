@@ -5,7 +5,7 @@ from pathlib import Path
 
 from fastapi import APIRouter, Depends, HTTPException, UploadFile, File
 
-ALLOWED_EXTENSIONS = {'.png', '.jpg', '.jpeg', '.bmp', '.gif', '.mp4', '.mov', '.avi', '.webm', '.mkv'}
+ALLOWED_EXTENSIONS = {'.png', '.jpg', '.jpeg', '.bmp', '.gif', '.mp4', '.mov', '.avi', '.webm', '.mkv', '.heic', '.heif', '.m4v'}
 
 
 def create_router(deps, require_auth, broadcast_state) -> APIRouter:

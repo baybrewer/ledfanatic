@@ -52,6 +52,30 @@ LED controller: Raspberry Pi + Teensy 4.1 + OctoWS2811.
 - API: GET/POST /api/scenes/layers (add, remove, update, reorder)
 - Brightness calibration: per-segment 3-point RGB correction curves in layout.yaml → 256-entry LUTs in pack_frame
 
+## Effects Library (81 effects as of 2026-04-28)
+- `pi/app/effects/generative.py` — 12 built-in generative effects
+- `pi/app/effects/audio_reactive.py` — 5 audio-reactive effects
+- `pi/app/effects/imported/` — 27 imported effects (classic, ambient, sound)
+- `pi/app/effects/simulation.py` — 6 simulation effects (fluid, wave, boids, reaction-diffusion)
+- `pi/app/effects/fractals.py` — 5 fractal effects (Mandelbrot, Julia, Burning Ship, Fractal Flame, Sierpinski)
+- `pi/app/effects/fluids.py` — 10 fluid/physics effects (ink drop, convection, Lorenz, plasma globe, etc.)
+- `pi/app/effects/games.py` — 3 game effects (Space Invaders, Snake, Game of Life)
+- `pi/app/effects/tetris.py` — Tetris + Tetris Autoplay
+- `pi/app/effects/fireworks.py` — SR Fireworks (vectorized particles)
+- `pi/app/effects/scrolltext.py` — Scrolling text with direction + panels
+- `pi/app/effects/switcher.py` — Animation Switcher (playlist cycling)
+
+## UI (v2.0 as of 2026-04-28)
+- Futuristic glassmorphism dark theme
+- Responsive: phone (≤640px), tablet (641-1024px), desktop (>1024px)
+- Effect cards with category color accents
+- Category filter pills (color-coded)
+- Archive/hide effects (persist in localStorage)
+- Sort: alphabetical within categories
+- Night brightness slider (persisted)
+- Layout config save/load with names and dates
+- Live preview via WebSocket (defaults to OFF)
+
 ## Performance (measured 2026-04-26)
 - pack_frame: 0.24ms (vectorized NumPy fancy indexing, precomputed at compile time)
 - send_frame: ~5ms (USB CDC, hardware-limited)
