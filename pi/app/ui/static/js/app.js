@@ -1628,8 +1628,44 @@ function initBrightness() {
     }, 100);
   });
 
-  document.getElementById('brightness-auto-toggle').addEventListener('change', (e) => {
+  const autoToggle = document.getElementById('brightness-auto-toggle');
+  const nightRow = document.getElementById('night-brightness-row');
+  const nightSlider = document.getElementById('night-brightness-slider');
+  const nightDisplay = document.getElementById('night-brightness-value');
+
+  autoToggle.addEventListener('change', (e) => {
     api('POST', '/api/brightness/config', { auto_enabled: e.target.checked });
+    nightRow.style.display = e.target.checked ? '' : 'none';
+  });
+
+  // Night brightness slider
+  let nightDebounce = null;
+  nightSlider.addEventListener('input', () => {
+    nightDisplay.textContent = `${nightSlider.value}%`;
+    clearTimeout(nightDebounce);
+    nightDebounce = setTimeout(() => {
+      api('POST', '/api/brightness/config', {
+        solar: { night_brightness: nightSlider.value / 100 }
+      });
+    }, 100);
+  });
+
+  // Load current values
+  api('GET', '/api/brightness/status').then(data => {
+    if (!data) return;
+    if (data.manual_cap != null) {
+      slider.value = Math.round(data.manual_cap * 100);
+      display.textContent = `${slider.value}%`;
+    }
+    if (data.auto_enabled) {
+      autoToggle.checked = true;
+      nightRow.style.display = '';
+    }
+    if (data.solar?.night_brightness != null) {
+      const nb = Math.round(data.solar.night_brightness * 100);
+      nightSlider.value = nb;
+      nightDisplay.textContent = `${nb}%`;
+    }
   });
 }
 

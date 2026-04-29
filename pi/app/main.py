@@ -89,6 +89,8 @@ def main():
     brightness_engine.manual_cap = state_manager.brightness_manual_cap
   if state_manager.brightness_auto_enabled is not None and state_manager.brightness_auto_enabled:
     brightness_engine.update_config({'auto_enabled': True})
+  if state_manager.night_brightness is not None:
+    brightness_engine.update_config({'solar': {'night_brightness': state_manager.night_brightness}})
 
   # Render state — config defaults first, then persisted overrides
   render_state = RenderState()

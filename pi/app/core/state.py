@@ -162,6 +162,15 @@ class StateManager:
     self.mark_dirty()
 
   @property
+  def night_brightness(self) -> Optional[float]:
+    return self._state.get('night_brightness')
+
+  @night_brightness.setter
+  def night_brightness(self, value: float):
+    self._state['night_brightness'] = max(0.0, min(1.0, value))
+    self.mark_dirty()
+
+  @property
   def target_fps(self) -> Optional[int]:
     return self._state.get('target_fps')
 

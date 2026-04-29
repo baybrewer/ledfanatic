@@ -111,10 +111,11 @@ class BrightnessEngine:
       'solar_phase_value': int(phase),
     }
 
+    # Always include solar config so UI can show/edit night brightness
+    status['solar'] = self._config['solar'].copy()
     if self._config['auto_enabled']:
       status['solar_factor'] = self._compute_solar_factor(now)
       status['location'] = self._config['location'].copy()
-      status['solar'] = self._config['solar'].copy()
 
     return status
 

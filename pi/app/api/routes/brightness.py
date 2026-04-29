@@ -27,6 +27,8 @@ def create_router(deps, require_auth, broadcast_state) -> APIRouter:
             update['location'] = req.location
         if req.solar is not None:
             update['solar'] = req.solar
+            if 'night_brightness' in req.solar:
+                deps.state_manager.night_brightness = req.solar['night_brightness']
         if update:
             deps.brightness_engine.update_config(update)
         effective = deps.brightness_engine.get_effective_brightness(

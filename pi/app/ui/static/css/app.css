@@ -454,6 +454,17 @@ select {
   gap: 6px;
 }
 
+.brightness-night {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 4px 0 0;
+  font-size: 13px;
+  color: var(--text-dim);
+}
+.brightness-night label { min-width: 70px; }
+.brightness-night input[type="range"] { flex: 1; }
+
 .phase-badge {
   background: var(--surface2);
   padding: 2px 8px;
