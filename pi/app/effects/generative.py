@@ -632,11 +632,11 @@ class TwinTorches(Effect):
     #   Wrapped fuel mass (thick bulge) at top of stick, ~15% of height
     #   Fire engulfs the mass — billows out from sides and top
     #   Flames are wider than tall, bulbous not teardrop
-    self._stick_top = int(h * 0.50)     # stick is bottom 50%
-    self._head_top = int(h * 0.38)      # fuel mass starts
-    self._head_bot = int(h * 0.52)      # fuel mass ends (overlaps into stick)
-    self._fire_top = int(h * 0.10)      # flames reach up to 10% from top
-    self._fire_bot = int(h * 0.55)      # flames drip slightly below head
+    self._stick_top = int(h * 0.50)     # stick is bottom 50% (unchanged)
+    self._head_top = int(h * 0.44)      # fuel mass starts (5px lower)
+    self._head_bot = int(h * 0.58)      # fuel mass ends
+    self._fire_top = int(h * 0.16)      # flames reach up (5px lower)
+    self._fire_bot = int(h * 0.61)      # flames drip below head
     self._head_w = max(2, int(w * 0.35))  # FAT wrapped mass — 35% of width
 
   def render(self, t: float, state) -> np.ndarray:
