@@ -16,6 +16,7 @@ from .tetris import Tetris, TetrisAutoplay
 from .fireworks import SRFireworks
 from .scrolltext import ScrollingText
 from .switcher import AnimationSwitcher
+from .games import GAME_EFFECTS as _GAMES
 
 ALL_EFFECTS: dict[str, type] = {
     **_GENERATIVE,
@@ -30,4 +31,5 @@ ALL_EFFECTS: dict[str, type] = {
     'sr_fireworks': SRFireworks,
     'scrolling_text': ScrollingText,
     'animation_switcher': AnimationSwitcher,
+    **_GAMES,
 }

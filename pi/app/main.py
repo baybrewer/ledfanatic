@@ -359,6 +359,25 @@ def main():
       params=param_dicts,
     ))
 
+  # Register game effects in catalog
+  from .effects.games import GAME_EFFECTS as _game_effects
+  for fname, fcls in _game_effects.items():
+    param_dicts = ()
+    if hasattr(fcls, 'PARAMS') and fcls.PARAMS:
+      param_dicts = tuple(
+        {'name': p.attr.lower(), 'label': p.label, 'min': p.lo, 'max': p.hi,
+         'step': p.step, 'default': p.default, 'type': 'slider'}
+        for p in fcls.PARAMS
+      )
+    effect_catalog.register_imported(fname, EffectMeta(
+      name=fname,
+      label=getattr(fcls, 'DISPLAY_NAME', fname.replace('_', ' ').title()),
+      group='game',
+      description=getattr(fcls, 'DESCRIPTION', ''),
+      imported=True,
+      params=param_dicts,
+    ))
+
   # Spatial map (optional front-projection geometry)
   spatial_map = load_spatial_map(config_dir)
   if spatial_map:
