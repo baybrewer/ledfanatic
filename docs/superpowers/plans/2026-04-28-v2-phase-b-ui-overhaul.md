@@ -387,20 +387,25 @@ Also update `app.js` filter button rendering:
 In `app.js`, add near the top (after the existing `effectCategory` function):
 
 ```javascript
+// L2 fix: keyed by DISPLAY category (output of effectCategory()), not raw group
 const CATEGORY_COLORS = {
-  'ambient': '#00cec9',
-  'sound': '#fd79a8',
-  'simulation': '#6c5ce7',
-  'generative': '#00b894',
-  'game': '#fdcb6e',
-  'classic': '#e17055',
-  'special': '#a29bfe',
-  'diagnostic': '#636e72',
+  'Ambient': '#00cec9',
+  'Sound Reactive': '#fd79a8',
+  'Simulation': '#6c5ce7',
+  'Built-in': '#00b894',
+  'Game': '#fdcb6e',
+  'Classic': '#e17055',
+  'Special': '#a29bfe',
+  'Other': '#636e72',
 };
 
 function getCategoryColor(group) {
-  return CATEGORY_COLORS[group] || CATEGORY_COLORS[effectCategory(group)] || '#6c5ce7';
+  const displayCat = effectCategory(group);
+  return CATEGORY_COLORS[displayCat] || '#6c5ce7';
 }
+
+// Also update CATEGORY_MAP to cover simulation and game groups:
+// Add to existing CATEGORY_MAP: simulation: 'Simulation', game: 'Game'
 ```
 
 - [ ] **Step 2: Update effect button rendering to cards**
@@ -699,22 +704,16 @@ git commit -am "feat: glass panels, styled inputs/sliders/buttons"
 - Modify: `pi/app/ui/static/index.html`
 - Modify: `pi/app/ui/static/css/app.css`
 
-- [ ] **Step 1: Wrap effects panel content in responsive layout div**
+- [ ] **Step 1: Reuse existing layout structure — move controls into sidebar**
 
-In `index.html`, inside `panel-effects`, wrap the content in a layout container:
+The effects panel already has `.effects-layout` / `.effects-main` / `.effects-preview`
+in `index.html` (around line 80). Do NOT add a new wrapper. Instead:
 
-```html
-<section id="panel-effects" class="panel active" role="tabpanel">
-  <div class="effects-layout">
-    <div class="effects-main">
-      <!-- Category filters + effect grid go here (existing content) -->
-    </div>
-    <aside class="effects-sidebar">
-      <!-- Preview canvas + active effect controls go here -->
-    </aside>
-  </div>
-</section>
-```
+1. Rename `.effects-preview` to `.effects-sidebar` (it already contains the preview canvas)
+2. Move `#active-effect-controls` INTO `.effects-sidebar`, below the preview canvas
+3. This puts the effect grid on the left and controls+preview on the right
+
+No new wrapper divs — just rearrange existing elements.
 
 - [ ] **Step 2: Add responsive layout CSS**
 
@@ -763,12 +762,18 @@ In `index.html`, inside `panel-effects`, wrap the content in a layout container:
 
 ```css
 .effect-controls {
-  background: var(--glass-bg);
-  backdrop-filter: blur(8px);
-  -webkit-backdrop-filter: blur(8px);
+  background: var(--surface-solid);
   border: 1px solid var(--glass-border);
   border-radius: var(--radius-lg);
   padding: 16px;
+}
+
+@supports (backdrop-filter: blur(1px)) or (-webkit-backdrop-filter: blur(1px)) {
+  .effect-controls {
+    background: var(--glass-bg);
+    backdrop-filter: blur(8px);
+    -webkit-backdrop-filter: blur(8px);
+  }
 }
 
 .effect-controls h4 {
