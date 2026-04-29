@@ -253,6 +253,24 @@ function effectCategory(group) {
   return CATEGORY_MAP[group] || 'Other';
 }
 
+// --- Effect hide/archive ---
+
+function getHiddenEffects() {
+  try {
+    return JSON.parse(localStorage.getItem('ledfanatic_hidden_effects') || '[]');
+  } catch { return []; }
+}
+
+function toggleHideEffect(name) {
+  const hidden = getHiddenEffects();
+  const idx = hidden.indexOf(name);
+  if (idx >= 0) hidden.splice(idx, 1);
+  else hidden.push(name);
+  localStorage.setItem('ledfanatic_hidden_effects', JSON.stringify(hidden));
+}
+
+let showHiddenEffects = false;
+
 async function loadEffects() {
   const data = await api('GET', '/api/effects/catalog');
   if (!data) return;
@@ -271,6 +289,15 @@ async function loadEffects() {
     categorized.push({ name, category: cat, ...info });
   }
 
+  // Sort effects: within each category, alphabetically by label
+  const categoryOrder = ['All', 'Ambient', 'Sound Reactive', 'Simulation', 'Built-in', 'Classic', 'Game', 'Special'];
+  categorized.sort((a, b) => {
+    const catA = categoryOrder.indexOf(a.category);
+    const catB = categoryOrder.indexOf(b.category);
+    if (catA !== catB) return catA - catB;
+    return (a.label || a.name).localeCompare(b.label || b.name);
+  });
+
   // Count per category
   const counts = {};
   for (const eff of categorized) {
@@ -281,7 +308,6 @@ async function loadEffects() {
   const filterBar = document.getElementById('effects-filter-bar');
   filterBar.innerHTML = '';
 
-  const categoryOrder = ['All', 'Ambient', 'Sound Reactive', 'Simulation', 'Built-in', 'Classic', 'Game', 'Special'];
   for (const cat of categoryOrder) {
     if (cat !== 'All' && !counts[cat]) continue;
     const btn = document.createElement('button');
@@ -298,6 +324,23 @@ async function loadEffects() {
       applyEffectsFilter();
     });
     filterBar.appendChild(btn);
+  }
+
+  // "Show Hidden" toggle (only if there are hidden effects)
+  const hiddenCount = getHiddenEffects().length;
+  if (hiddenCount > 0) {
+    const hiddenToggle = document.createElement('button');
+    hiddenToggle.className = 'category-btn';
+    hiddenToggle.id = 'hidden-toggle-btn';
+    hiddenToggle.textContent = `Hidden (${hiddenCount})`;
+    hiddenToggle.style.marginLeft = 'auto';
+    hiddenToggle.classList.toggle('active', showHiddenEffects);
+    hiddenToggle.addEventListener('click', () => {
+      showHiddenEffects = !showHiddenEffects;
+      hiddenToggle.classList.toggle('active', showHiddenEffects);
+      applyEffectsFilter();
+    });
+    filterBar.appendChild(hiddenToggle);
   }
 
   // Render effects grid
@@ -318,6 +361,18 @@ async function loadEffects() {
         <span class="effect-card-group">${eff.category}</span>
       </div>
     `;
+    // Add hide button (visible on hover)
+    const hideBtn = document.createElement('span');
+    hideBtn.className = 'effect-card-hide';
+    hideBtn.textContent = '\u00d7';
+    hideBtn.title = 'Hide this effect';
+    hideBtn.addEventListener('click', (e) => {
+      e.stopPropagation();
+      toggleHideEffect(eff.name);
+      applyEffectsFilter();
+    });
+    btn.querySelector('.effect-card-body').appendChild(hideBtn);
+
     if (eff.name === data.current) btn.classList.add('active-scene');
     btn.addEventListener('click', () => activateEffect(eff.name));
     grid.appendChild(btn);
@@ -335,14 +390,19 @@ async function loadEffects() {
 
 function applyEffectsFilter() {
   const grid = document.getElementById('effects-grid');
+  const hidden = getHiddenEffects();
   grid.querySelectorAll('.effect-card').forEach(btn => {
-    if (currentFilterCategory === 'All' || btn.dataset.category === currentFilterCategory) {
+    const matchesCategory = currentFilterCategory === 'All' || btn.dataset.category === currentFilterCategory;
+    const isHidden = hidden.includes(btn.dataset.effect);
+    if (matchesCategory && (!isHidden || showHiddenEffects)) {
       btn.style.display = '';
+      btn.classList.toggle('effect-hidden', isHidden);
     } else {
       btn.style.display = 'none';
     }
   });
   document.querySelectorAll('.category-btn').forEach(b => {
+    if (b.id === 'hidden-toggle-btn') return;
     b.classList.toggle('active', b.textContent.startsWith(currentFilterCategory));
   });
 }
