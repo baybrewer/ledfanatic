@@ -649,6 +649,7 @@ class TwinTorches(Effect):
     w, h = self.width, self.height
     pal_idx = _get_palette_idx(self.params, default=4)
     sparking = self.params.get('sparking', 140) if 'sparking' in self.params else 140
+    drip_rate = self.params.get('drip_rate', 0.5) if 'drip_rate' in self.params else 0.5
     tt = self._t
     frame = np.zeros((w, h, 3), dtype=np.float32)
 
@@ -686,38 +687,46 @@ class TwinTorches(Effect):
       head_cx = int(tx)
       hw = self._head_w
 
-      # === INJECT HEAT at fuel mass (continuous source) ===
-      for dx in range(-hw, hw + 1):
+      # === INJECT HEAT at fuel mass — varied injection for swirling ===
+      inject = self._rng.uniform(0.08, 0.22, size=(2 * hw + 1,)).astype(np.float32)
+      for di, dx in enumerate(range(-hw, hw + 1)):
         sx = head_cx + dx
         if 0 <= sx < w:
+          # Inject unevenly — creates hot spots that generate swirls
           for row in range(max(0, head_top_local), min(fh, head_bot_local)):
-            heat[sx, row] = min(1.0, heat[sx, row] + 0.15 + self._rng.random() * 0.1)
+            # Vary by position and time for organic patterns
+            boost = inject[di] * (0.7 + 0.6 * np.sin(tt * 5 + dx * 3 + row * 0.5))
+            heat[sx, row] = min(1.0, heat[sx, row] + max(0, boost))
 
-      # === BUOYANCY — heat rises (shift upward with turbulent mixing) ===
+      # === BUOYANCY + STRONG DIFFUSION for swirling ===
       new_heat = np.zeros_like(heat)
-      if fh > 2:
-        # Average with neighbors (diffusion) + shift upward (buoyancy)
-        # Shift up by 1-2 rows with averaging
-        new_heat[:, :-2] += heat[:, 1:-1] * 0.35  # from below
-        new_heat[:, :-2] += heat[:, 2:] * 0.25    # from further below
-        # Horizontal diffusion
-        new_heat[1:, :] += heat[:-1, :] * 0.08    # from left
-        new_heat[:-1, :] += heat[1:, :] * 0.08    # from right
-        new_heat += heat * 0.15                     # self-retention
+      if fh > 3:
+        # Upward buoyancy — staggered for more variety
+        new_heat[:, :-3] += heat[:, 1:-2] * 0.28
+        new_heat[:, :-3] += heat[:, 2:-1] * 0.18
+        new_heat[:, :-3] += heat[:, 3:] * 0.08
+        # Strong horizontal diffusion — fire spreads sideways
+        new_heat[1:, :] += heat[:-1, :] * 0.12
+        new_heat[:-1, :] += heat[1:, :] * 0.12
+        # Diagonal diffusion — creates swirling vortices
+        new_heat[1:, :-1] += heat[:-1, 1:] * 0.04
+        new_heat[:-1, :-1] += heat[1:, 1:] * 0.04
+        new_heat += heat * 0.10  # self-retention (lower = more motion)
       heat[:] = new_heat
 
-      # === TURBULENCE — random perturbation for organic motion ===
-      turb = self._rng.uniform(-0.02, 0.02, size=heat.shape).astype(np.float32)
+      # === TURBULENCE — aggressive random perturbation ===
+      turb = self._rng.uniform(-0.03, 0.03, size=heat.shape).astype(np.float32)
       heat += turb
-      # Lateral wobble — shift heat sideways slightly
-      wobble_amt = np.sin(tt * 1.5 + ti * 2.3) * 0.4
-      if abs(wobble_amt) > 0.2:
-        shift = 1 if wobble_amt > 0 else -1
+      # Oscillating lateral shift — fire sways and swirls
+      wobble1 = np.sin(tt * 1.8 + ti * 2.3) * 0.5
+      wobble2 = np.sin(tt * 3.1 + ti * 1.1) * 0.3
+      if abs(wobble1 + wobble2) > 0.3:
+        shift = 1 if (wobble1 + wobble2) > 0 else -1
         heat_shifted = np.roll(heat, shift, axis=0)
-        heat[:] = heat * 0.85 + heat_shifted * 0.15
+        heat[:] = heat * 0.75 + heat_shifted * 0.25
 
-      # === COOLING — decay ===
-      cool = self._rng.uniform(0.01, 0.04, size=(w, fh)).astype(np.float32)
+      # === COOLING — varied decay for texture ===
+      cool = self._rng.uniform(0.015, 0.05, size=(w, fh)).astype(np.float32)
       heat[:] = np.maximum(0, heat - cool)
 
       # === RENDER fire from heat ===
@@ -739,16 +748,29 @@ class TwinTorches(Effect):
 
       frame[:, ft:fb] = np.maximum(frame[:, ft:fb], np.clip(contrib, 0, 255))
 
-    # === SPARKS ===
+    # === FIRE DRIPS — burning tallow/pitch falling from head ===
     for tx in self._torch_x:
-      if self._rng.random() < sparking / 255.0 * 1.5:
-        count = 1 + int(self._rng.random() > 0.7)
+      # Drips from bottom of head — rate controlled by slider
+      if self._rng.random() < drip_rate * dt * 4:
+        new = np.empty(1, dtype=self._SPARK_DTYPE)
+        new['x'] = tx + self._rng.uniform(-self._head_w * 0.8, self._head_w * 0.8, 1).astype(np.float32)
+        new['y'] = np.float32(self._head_bot + self._rng.uniform(0, 2, 1))
+        new['vx'] = self._rng.uniform(-0.5, 0.5, 1).astype(np.float32)
+        new['vy'] = self._rng.uniform(1, 4, 1).astype(np.float32)  # start slow, gravity accelerates
+        new['life'] = self._rng.uniform(0.6, 1.8, 1).astype(np.float32)
+        new['brightness'] = self._rng.uniform(0.7, 1.0, 1).astype(np.float32)
+        if len(self._sparks) < self._MAX_SPARKS:
+          self._sparks = np.concatenate([self._sparks, new]) if len(self._sparks) > 0 else new
+
+      # === UPWARD SPARKS — embers flying from flame tips ===
+      if self._rng.random() < sparking / 255.0 * 2.0:
+        count = 1 + int(self._rng.random() > 0.5)
         new = np.empty(count, dtype=self._SPARK_DTYPE)
         new['x'] = tx + self._rng.uniform(-2, 2, count).astype(np.float32)
-        new['y'] = self._rng.uniform(self._fire_top, self._head_top, count).astype(np.float32)
-        new['vx'] = self._rng.uniform(-2.5, 2.5, count).astype(np.float32)
-        new['vy'] = self._rng.uniform(-10, -3, count).astype(np.float32)
-        new['life'] = self._rng.uniform(0.2, 0.7, count).astype(np.float32)
+        new['y'] = self._rng.uniform(self._fire_top, self._fire_top + 5, count).astype(np.float32)
+        new['vx'] = self._rng.uniform(-3, 3, count).astype(np.float32)
+        new['vy'] = self._rng.uniform(-15, -5, count).astype(np.float32)  # strong upward
+        new['life'] = self._rng.uniform(0.3, 0.8, count).astype(np.float32)
         new['brightness'] = self._rng.uniform(0.6, 1.0, count).astype(np.float32)
         if len(self._sparks) < self._MAX_SPARKS:
           self._sparks = np.concatenate([self._sparks, new]) if len(self._sparks) > 0 else new
@@ -757,19 +779,29 @@ class TwinTorches(Effect):
       s = self._sparks
       s['x'] += s['vx'] * dt
       s['y'] += s['vy'] * dt
-      s['vy'] += 20 * dt
+      # Gravity — drips accelerate downward, sparks decelerate upward
+      s['vy'] += 30 * dt  # gravitational acceleration
       s['life'] -= dt
       alive = (s['life'] > 0) & (s['y'] >= 0) & (s['y'] < h)
       self._sparks = s[alive]
 
+    # Draw drips and sparks — drips are bigger/brighter, leave trails
     if len(self._sparks) > 0:
       s = self._sparks
       ix = np.clip(np.round(s['x']).astype(np.int32), 0, w - 1)
       iy = np.clip(np.round(s['y']).astype(np.int32), 0, h - 1)
-      fade = (s['life'] / 0.7) ** 0.5 * s['brightness']
-      np.add.at(frame[:, :, 0], (ix, iy), fade * 255)
-      np.add.at(frame[:, :, 1], (ix, iy), fade * 130)
-      np.add.at(frame[:, :, 2], (ix, iy), fade * 15)
+      fade = np.clip(s['life'] / 1.0, 0, 1) ** 0.5 * s['brightness']
+      # Amber/orange fire drips
+      np.add.at(frame[:, :, 0], (ix, iy), fade * 240)
+      np.add.at(frame[:, :, 1], (ix, iy), fade * 120)
+      np.add.at(frame[:, :, 2], (ix, iy), fade * 10)
+      # Trail — draw a pixel above each drip (motion blur)
+      iy_trail = np.clip(iy - 1, 0, h - 1)
+      np.add.at(frame[:, :, 0], (ix, iy_trail), fade * 150)
+      np.add.at(frame[:, :, 1], (ix, iy_trail), fade * 70)
+      iy_trail2 = np.clip(iy - 2, 0, h - 1)
+      np.add.at(frame[:, :, 0], (ix, iy_trail2), fade * 60)
+      np.add.at(frame[:, :, 1], (ix, iy_trail2), fade * 25)
 
     result = np.clip(frame, 0, 255).astype(np.uint8)
 

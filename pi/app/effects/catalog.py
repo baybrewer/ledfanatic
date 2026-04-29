@@ -137,6 +137,7 @@ class EffectCatalogService:
     ),
     'twin_torches': (
       {'name': 'sparking', 'label': 'Sparks', 'min': 30, 'max': 200, 'step': 5, 'default': 140, 'type': 'slider'},
+      {'name': 'drip_rate', 'label': 'Fire Drips', 'min': 0.0, 'max': 2.0, 'step': 0.1, 'default': 0.5, 'type': 'slider'},
     ),
     'sine_bands': (
       {'name': 'frequency', 'label': 'Frequency', 'min': 1, 'max': 10, 'step': 0.5, 'default': 3.0, 'type': 'slider'},
