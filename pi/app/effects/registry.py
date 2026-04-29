@@ -18,6 +18,7 @@ from .scrolltext import ScrollingText
 from .switcher import AnimationSwitcher
 from .games import GAME_EFFECTS as _GAMES
 from .negative_space import NEGATIVE_SPACE_EFFECTS as _NEGATIVE_SPACE
+from .three_body import THREE_BODY_EFFECTS as _THREE_BODY
 
 ALL_EFFECTS: dict[str, type] = {
     **_GENERATIVE,
@@ -34,4 +35,5 @@ ALL_EFFECTS: dict[str, type] = {
     'animation_switcher': AnimationSwitcher,
     **_GAMES,
     **_NEGATIVE_SPACE,
+    **_THREE_BODY,
 }

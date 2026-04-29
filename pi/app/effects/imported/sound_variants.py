@@ -71,6 +71,7 @@ class SRFeldstein(Effect):
     self._zo = self._rng.randint(0, 65535)
     self._hue = 0
     self._hue_accum = 0.0
+    self._prev_frame = None
     self._elapsed_ms = 0.0
     self._last_t = None
 
@@ -139,7 +140,11 @@ class SRFeldstein(Effect):
         self.buf.data.astype(np.int16) + layer.astype(np.int16), 0, 255
       ).astype(np.uint8)
 
-    return self.buf.get_frame()
+    frame = self.buf.get_frame()
+    if self._prev_frame is not None:
+      frame = (frame.astype(np.float32) * 0.5 + self._prev_frame.astype(np.float32) * 0.5).astype(np.uint8)
+    self._prev_frame = frame.copy()
+    return frame
 
   def _calc_dt_ms(self, t):
     if self._last_t is None:

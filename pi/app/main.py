@@ -396,6 +396,24 @@ def main():
       params=param_dicts,
     ))
 
+  # Register three-body effect in catalog
+  from .effects.three_body import THREE_BODY_EFFECTS as _three_body_effects
+  for fname, fcls in _three_body_effects.items():
+    param_dicts = tuple(
+      {'name': p.attr.lower(), 'label': p.label, 'min': p.lo, 'max': p.hi,
+       'step': p.step, 'default': p.default, 'type': 'slider'}
+      for p in fcls.PARAMS
+    )
+    effect_catalog.register_imported(fname, EffectMeta(
+      name=fname,
+      label=getattr(fcls, 'DISPLAY_NAME', fname.replace('_', ' ').title()),
+      group='sound',
+      description=getattr(fcls, 'DESCRIPTION', ''),
+      imported=True,
+      audio_requires=getattr(fcls, 'AUDIO_REQUIRES', ()),
+      params=param_dicts,
+    ))
+
   # Spatial map (optional front-projection geometry)
   spatial_map = load_spatial_map(config_dir)
   if spatial_map:

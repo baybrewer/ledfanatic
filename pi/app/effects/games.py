@@ -822,59 +822,60 @@ class MarioRunner(Effect):
     # Mario's fixed screen position (near bottom, above ground)
     mario_row = ground_row - 1 - int(self.mario_y)
 
-    # Draw level objects — each object at screen_row = ground_row - 1 - (ly - scroll)
-    # When ly == scroll, object is at mario's feet. ly > scroll = ahead (above on screen).
+    # Draw level objects — scroll along Y axis (tall dimension)
+    # Objects appear from above and scroll down toward Mario
     for ly, ltype, lparams in self.LEVEL_1_1:
-      offset = ly - scroll_int
-      base_row = ground_row - 1 - offset  # where the object's base sits on screen
+      # Screen row: object at ly scrolls into view as scroll increases
+      screen_row = int(ly - self.scroll) + mario_row
+      if screen_row < -8 or screen_row > h + 3:
+        continue
 
       if ltype == 'pipe':
         ph = lparams.get('h', 2)
-        px = w // 2 - 1
-        for py_off in range(ph + 1):
-          yr = base_row - py_off
+        px = lparams.get('x', w // 2 - 1) if 'x' in lparams else (hash(ly) % max(w - 3, 1))
+        for py_off in range(ph):
+          yr = screen_row - py_off
           if 0 <= yr < ground_row:
-            width_at = 3 if py_off < ph else 5  # cap is wider
-            start_x = px if py_off < ph else px - 1
-            for dx in range(width_at):
-              xx = start_x + dx
+            for dx in range(3):
+              xx = px + dx
               if 0 <= xx < w:
-                frame[xx, yr] = self.PIPE_GREEN if dx > 0 else self.PIPE_DARK
+                frame[xx, yr] = self.PIPE_GREEN if dx != 0 else self.PIPE_DARK
+        # Cap
+        yr = screen_row - ph
+        if 0 <= yr < ground_row:
+          for dx in range(-1, 4):
+            xx = px + dx
+            if 0 <= xx < w:
+              frame[xx, yr] = self.PIPE_GREEN
 
       elif ltype == 'goomba':
-        if 0 <= base_row < ground_row:
-          gx = w // 2
+        gx = (hash(ly * 7) % max(w - 2, 1))
+        if 0 <= screen_row < ground_row:
           for dx in range(2):
             if 0 <= gx + dx < w:
-              frame[gx + dx, base_row] = self.GOOMBA
+              frame[gx + dx, screen_row] = self.GOOMBA
 
       elif ltype == 'question':
-        yr = base_row - 4
-        qx = w // 2
+        qx = (hash(ly * 13) % max(w - 1, 1))
+        yr = screen_row - 3
         if 0 <= yr < h and 0 <= qx < w:
           frame[qx, yr] = self.QUESTION
 
       elif ltype == 'stair':
         sh = lparams.get('h', 4)
-        sx = w // 2 - 1
+        sx = (hash(ly * 11) % max(w - sh, 1))
         for step in range(sh):
-          yr = base_row - step
+          yr = screen_row - step
           if 0 <= yr < ground_row:
-            for dx in range(min(step + 1, w - sx)):
-              if 0 <= sx + dx < w:
-                frame[sx + dx, yr] = self.BRICK
-
-      elif ltype == 'gap':
-        gw = lparams.get('w', 2)
-        for gi in range(gw):
-          yr = base_row + gi
-          if 0 <= yr < h:
-            frame[:, yr] = self.SKY  # hole in ground
+            for dx in range(step + 1):
+              xx = sx + dx
+              if 0 <= xx < w:
+                frame[xx, yr] = self.BRICK
 
       elif ltype == 'flag':
         fx = w // 2
         for fy in range(8):
-          yr = base_row - fy
+          yr = screen_row - fy
           if 0 <= yr < h and 0 <= fx < w:
             frame[fx, yr] = self.FLAG if fy > 0 else self.COIN
 
