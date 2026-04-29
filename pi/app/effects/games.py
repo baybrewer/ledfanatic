@@ -639,6 +639,279 @@ class GameOfLife(Effect):
 
 
 # ──────────────────────────────────────────────────────────────────────
+#  Mario Runner — simplified World 1-1
+# ──────────────────────────────────────────────────────────────────────
+
+class MarioRunner(Effect):
+  """Simplified Mario 1-1 auto-scrolling runner. Jump to avoid obstacles."""
+
+  CATEGORY = "game"
+  DISPLAY_NAME = "Mario Runner"
+  DESCRIPTION = "Run through World 1-1 — tap jump to avoid pipes and goombas"
+  PARAMS = [
+    _P("Speed", "speed", 0.5, 3.0, 0.1, 1.0),
+  ]
+
+  # Colors (NES-inspired)
+  SKY = (92, 148, 252)
+  GROUND = (192, 112, 0)     # brown ground
+  BRICK = (160, 80, 0)       # darker brick
+  PIPE_GREEN = (0, 168, 0)
+  PIPE_DARK = (0, 120, 0)
+  QUESTION = (252, 188, 60)
+  QUESTION_HIT = (160, 80, 0)
+  MARIO = (228, 0, 0)        # red
+  MARIO_SKIN = (252, 188, 116)
+  GOOMBA = (172, 80, 48)
+  COIN = (252, 216, 0)
+  CLOUD = (252, 252, 252)
+  FLAG = (0, 168, 0)
+
+  # Level data: list of (y_position, type, params)
+  # Types: 'pipe', 'goomba', 'question', 'cloud', 'gap', 'stair', 'flag'
+  LEVEL_1_1 = [
+    (16, 'question', {}),
+    (25, 'goomba', {}),
+    (30, 'pipe', {'h': 2}),
+    (40, 'question', {}),
+    (42, 'question', {}),
+    (44, 'question', {}),
+    (50, 'goomba', {}),
+    (52, 'goomba', {}),
+    (58, 'pipe', {'h': 3}),
+    (68, 'pipe', {'h': 4}),
+    (75, 'goomba', {}),
+    (80, 'pipe', {'h': 4}),
+    (95, 'gap', {'w': 2}),
+    (105, 'question', {}),
+    (110, 'goomba', {}),
+    (115, 'goomba', {}),
+    (120, 'pipe', {'h': 2}),
+    (130, 'question', {}),
+    (135, 'goomba', {}),
+    (140, 'gap', {'w': 3}),
+    (150, 'stair', {'h': 4}),
+    (158, 'stair', {'h': 4}),
+    (165, 'pipe', {'h': 2}),
+    (175, 'goomba', {}),
+    (180, 'goomba', {}),
+    (190, 'stair', {'h': 8}),
+    (200, 'flag', {}),
+  ]
+
+  def __init__(self, width, height, params=None):
+    super().__init__(width, height, params)
+    self.auto_play = True
+    self.last_input = 0.0
+    self._input_queue = []
+    self._reset()
+
+  def _reset(self):
+    self.scroll = 0.0       # current scroll position (float)
+    self.mario_x = width // 2 if hasattr(self, 'width') else 5  # column
+    self.mario_y = 0.0      # height above ground (0 = on ground)
+    self.mario_vy = 0.0     # vertical velocity
+    self.on_ground = True
+    self.alive = True
+    self.score = 0
+    self.death_timer = 0.0
+    self.coins = 0
+    self.level_length = 210
+    self.won = False
+    self.ground_level = 2   # ground is 2 pixels from bottom
+
+  def get_game_status(self):
+    return {'score': self.score, 'game': 'mario', 'coins': self.coins}
+
+  def handle_input(self, action: str):
+    self._input_queue.append(action)
+    self.last_input = time.monotonic()
+    self.auto_play = False
+
+  def render(self, t, state):
+    if self._last_t is None:
+      self._last_t = t
+    dt = min(t - self._last_t, 0.05)
+    self._last_t = t
+    self._last_t_val = t
+
+    speed = self.params.get('speed', 1.0)
+    w, h = self.width, self.height
+
+    # Process input
+    for action in self._input_queue:
+      if action in ('rotate', 'up', 'drop', 'shoot') and self.on_ground and self.alive:
+        self.mario_vy = 12.0  # jump!
+        self.on_ground = False
+    self._input_queue.clear()
+
+    # Auto-play: jump over obstacles
+    if self.auto_play and self.alive and time.monotonic() - self.last_input > 5.0:
+      scroll_y = int(self.scroll)
+      for ly, ltype, lparams in self.LEVEL_1_1:
+        ahead = ly - scroll_y
+        if 2 <= ahead <= 5:
+          if ltype in ('pipe', 'goomba', 'gap', 'stair') and self.on_ground:
+            self.mario_vy = 12.0
+            self.on_ground = False
+            break
+
+    if not self.alive:
+      self.death_timer -= dt
+      if self.death_timer <= 0:
+        self._reset()
+
+    if self.won:
+      self.death_timer -= dt
+      if self.death_timer <= 0:
+        self._reset()
+
+    # Physics
+    if self.alive:
+      self.scroll += speed * 15 * dt
+
+      # Gravity
+      self.mario_vy -= 40 * dt
+      self.mario_y += self.mario_vy * dt
+
+      # Ground collision
+      if self.mario_y <= 0:
+        self.mario_y = 0
+        self.mario_vy = 0
+        self.on_ground = True
+
+      # Check level end
+      if self.scroll >= self.level_length:
+        self.won = True
+        self.death_timer = 3.0
+        self.score += 1000
+
+      # Check collisions with obstacles
+      scroll_y = int(self.scroll)
+      mario_screen_row = h - self.ground_level - 1 - int(self.mario_y)
+      for ly, ltype, lparams in self.LEVEL_1_1:
+        obj_screen = ly - scroll_y
+        if ltype == 'goomba' and abs(obj_screen - mario_screen_row) < 2 and self.mario_y < 1:
+          self.alive = False
+          self.death_timer = 2.0
+        elif ltype == 'pipe':
+          ph = lparams.get('h', 2)
+          if 0 <= obj_screen - mario_screen_row < ph and self.mario_y < ph:
+            if self.mario_vy <= 0 and self.mario_y < ph - 0.5:
+              self.alive = False
+              self.death_timer = 2.0
+        elif ltype == 'gap':
+          gw = lparams.get('w', 2)
+          if 0 <= mario_screen_row - obj_screen < gw and self.mario_y <= 0:
+            self.alive = False
+            self.death_timer = 2.0
+        elif ltype == 'question' and abs(obj_screen - (mario_screen_row - 4)) < 1 and self.mario_vy > 0:
+          self.score += 100
+          self.coins += 1
+
+    # Render
+    frame = np.zeros((w, h, 3), dtype=np.uint8)
+    scroll_y = int(self.scroll)
+
+    # Sky background
+    frame[:, :] = self.SKY
+
+    # Ground
+    frame[:, -self.ground_level:] = self.GROUND
+    # Brick pattern on ground
+    for gx in range(w):
+      if (gx + scroll_y) % 2 == 0:
+        frame[gx, -1] = self.BRICK
+
+    # Draw level objects
+    for ly, ltype, lparams in self.LEVEL_1_1:
+      screen_y = ly - scroll_y
+      if screen_y < -5 or screen_y >= h + 5:
+        continue
+
+      row = h - self.ground_level - 1 - max(0, screen_y - (h - self.ground_level - 1))
+      actual_row = h - self.ground_level - 1
+
+      if ltype == 'pipe':
+        ph = lparams.get('h', 2)
+        px = w // 2 - 1
+        for py_off in range(ph):
+          yr = actual_row - py_off
+          if 0 <= (ly - scroll_y) < h and 0 <= yr < h:
+            for dx in range(3):
+              if 0 <= px + dx < w:
+                frame[px + dx, yr] = self.PIPE_DARK if dx == 0 else self.PIPE_GREEN
+        # Pipe cap (wider)
+        yr = actual_row - ph
+        if 0 <= yr < h:
+          for dx in range(-1, 4):
+            if 0 <= px + dx < w:
+              frame[px + dx, yr] = self.PIPE_GREEN
+
+      elif ltype == 'goomba':
+        yr = actual_row
+        gx = w // 2
+        if 0 <= (ly - scroll_y) < h and 0 <= yr < h and 0 <= gx < w:
+          frame[gx, yr] = self.GOOMBA
+          if gx + 1 < w:
+            frame[gx + 1, yr] = self.GOOMBA
+
+      elif ltype == 'question':
+        yr = actual_row - 4  # floating above ground
+        qx = w // 2
+        if 0 <= yr < h and 0 <= qx < w:
+          frame[qx, yr] = self.QUESTION
+
+      elif ltype == 'stair':
+        sh = lparams.get('h', 4)
+        sx = w // 2 - 1
+        for step in range(sh):
+          yr = actual_row - step
+          if 0 <= yr < h:
+            for dx in range(step + 1):
+              if 0 <= sx + dx < w:
+                frame[sx + dx, yr] = self.BRICK
+
+      elif ltype == 'flag':
+        fx = w // 2
+        for fy in range(8):
+          yr = actual_row - fy
+          if 0 <= yr < h and 0 <= fx < w:
+            frame[fx, yr] = self.FLAG if fy > 0 else self.COIN
+
+    # Draw Mario
+    if self.alive:
+      mx = self.mario_x
+      my = h - self.ground_level - 1 - int(self.mario_y)
+      if 0 <= mx < w and 0 <= my < h:
+        frame[mx, my] = self.MARIO  # body
+      if 0 <= mx < w and 0 <= my - 1 < h:
+        frame[mx, my - 1] = self.MARIO_SKIN  # head
+
+    # Score flash on death
+    if not self.alive:
+      flash = int((self.death_timer * 4) % 2)
+      if flash:
+        frame[:, :] = (40, 0, 0)
+
+    # Win flash
+    if self.won:
+      flash = int((self.death_timer * 2) % 2)
+      if flash:
+        frame[:, :, 1] = np.minimum(frame[:, :, 1].astype(np.uint16) + 60, 255).astype(np.uint8)
+
+    return frame
+
+  @property
+  def _last_t(self):
+    return getattr(self, '_last_t_store', None)
+
+  @_last_t.setter
+  def _last_t(self, v):
+    self._last_t_store = v
+
+
+# ──────────────────────────────────────────────────────────────────────
 #  Registry
 # ──────────────────────────────────────────────────────────────────────
 
@@ -646,4 +919,5 @@ GAME_EFFECTS = {
   'space_invaders': SpaceInvaders,
   'snake_game': Snake,
   'game_of_life': GameOfLife,
+  'mario_runner': MarioRunner,
 }

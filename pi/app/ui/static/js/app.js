@@ -326,22 +326,24 @@ async function loadEffects() {
     filterBar.appendChild(btn);
   }
 
-  // "Show Hidden" toggle (only if there are hidden effects)
+  // "Show Hidden" toggle — always visible
   const hiddenCount = getHiddenEffects().length;
-  if (hiddenCount > 0) {
-    const hiddenToggle = document.createElement('button');
-    hiddenToggle.className = 'category-btn';
-    hiddenToggle.id = 'hidden-toggle-btn';
-    hiddenToggle.textContent = `Hidden (${hiddenCount})`;
-    hiddenToggle.style.marginLeft = 'auto';
+  const hiddenToggle = document.createElement('button');
+  hiddenToggle.className = 'category-btn';
+  hiddenToggle.id = 'hidden-toggle-btn';
+  hiddenToggle.textContent = hiddenCount > 0 ? `👁 Hidden (${hiddenCount})` : '👁 Hidden';
+  hiddenToggle.style.marginLeft = 'auto';
+  hiddenToggle.style.setProperty('--cat-color', '#636e72');
+  hiddenToggle.classList.toggle('active', showHiddenEffects);
+  hiddenToggle.addEventListener('click', () => {
+    showHiddenEffects = !showHiddenEffects;
     hiddenToggle.classList.toggle('active', showHiddenEffects);
-    hiddenToggle.addEventListener('click', () => {
-      showHiddenEffects = !showHiddenEffects;
-      hiddenToggle.classList.toggle('active', showHiddenEffects);
-      applyEffectsFilter();
-    });
-    filterBar.appendChild(hiddenToggle);
-  }
+    applyEffectsFilter();
+    // Update count
+    const newCount = getHiddenEffects().length;
+    hiddenToggle.textContent = newCount > 0 ? `👁 Hidden (${newCount})` : '👁 Hidden';
+  });
+  filterBar.appendChild(hiddenToggle);
 
   // Render effects grid
   const grid = document.getElementById('effects-grid');
@@ -405,6 +407,12 @@ function applyEffectsFilter() {
     if (b.id === 'hidden-toggle-btn') return;
     b.classList.toggle('active', b.textContent.startsWith(currentFilterCategory));
   });
+  // Update hidden count
+  const hiddenBtn = document.getElementById('hidden-toggle-btn');
+  if (hiddenBtn) {
+    const hc = hidden.length;
+    hiddenBtn.textContent = hc > 0 ? `👁 Hidden (${hc})` : '👁 Hidden';
+  }
 }
 
 function showEffectControls(name, meta) {
@@ -2182,6 +2190,7 @@ const GAME_TITLES = {
   space_invaders: 'SPACE INVADERS',
   snake_game: 'SNAKE',
   game_of_life: 'GAME OF LIFE',
+  mario_runner: 'MARIO',
 };
 
 function initGame() {
