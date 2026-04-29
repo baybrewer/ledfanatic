@@ -2192,13 +2192,20 @@ function initGame() {
     await api('POST', `/api/scenes/game-input/${action}`);
   }
 
-  // Game selector buttons
+  // Game selector buttons — auto-start on select
   document.querySelectorAll('.game-select-btn').forEach(btn => {
-    btn.addEventListener('click', () => {
+    btn.addEventListener('click', async () => {
       currentGame = btn.dataset.game;
       document.querySelectorAll('.game-select-btn').forEach(b => b.classList.remove('active'));
       btn.classList.add('active');
       document.getElementById('game-title').textContent = GAME_TITLES[currentGame] || currentGame.toUpperCase();
+      // Update button labels per game
+      const rotBtn = document.getElementById('game-rotate');
+      const dropEl = document.getElementById('game-drop');
+      if (rotBtn) rotBtn.innerHTML = currentGame === 'space_invaders' ? '🔫' : '&#8635;';
+      if (dropEl) dropEl.textContent = currentGame === 'space_invaders' ? 'Shoot' : currentGame === 'snake_game' ? 'Boost' : 'Drop';
+      // Auto-start the game
+      await api('POST', '/api/scenes/activate', {effect: currentGame, params: {}});
     });
   });
 
@@ -2215,23 +2222,29 @@ function initGame() {
   }
   bindGame('game-left', 'left');
   bindGame('game-right', 'right');
-  bindGame('game-rotate', 'rotate');
   bindGame('game-down', 'down');
   bindGame('game-fast', 'fast');
-  bindGame('game-drop', 'drop');  // also maps to 'shoot' for Space Invaders
 
-  // Drop/shoot button sends game-appropriate action
+  // Rotate button: sends 'rotate' for tetris/snake, 'shoot' for space invaders
+  const rotateBtn = document.getElementById('game-rotate');
+  if (rotateBtn) {
+    const rotateAction = () => {
+      const action = currentGame === 'space_invaders' ? 'shoot' : 'rotate';
+      gameInput(action);
+    };
+    rotateBtn.addEventListener('touchstart', (e) => { e.preventDefault(); rotateAction(); });
+    rotateBtn.addEventListener('mousedown', rotateAction);
+  }
+
+  // Drop button: sends 'drop' for tetris, 'shoot' for space invaders, 'drop' for snake
   const dropBtn = document.getElementById('game-drop');
   if (dropBtn) {
-    // Override to send 'shoot' for space invaders, 'drop' for others
-    dropBtn.removeEventListener('mousedown', dropBtn._handler);
-    dropBtn.removeEventListener('touchstart', dropBtn._handler);
-    const smartAction = () => {
+    const dropAction = () => {
       const action = currentGame === 'space_invaders' ? 'shoot' : 'drop';
       gameInput(action);
     };
-    dropBtn.addEventListener('touchstart', (e) => { e.preventDefault(); smartAction(); });
-    dropBtn.addEventListener('mousedown', smartAction);
+    dropBtn.addEventListener('touchstart', (e) => { e.preventDefault(); dropAction(); });
+    dropBtn.addEventListener('mousedown', dropAction);
   }
 
   // Keyboard (only when game tab is active and not typing in an input)
@@ -2245,6 +2258,31 @@ function initGame() {
     else if (e.key === 'ArrowDown') { gameInput('down'); e.preventDefault(); }
     else if (e.key === ' ') { gameInput('drop'); e.preventDefault(); }
   });
+
+  // Score polling
+  let gameScoreInterval = null;
+  function startScorePolling() {
+    stopScorePolling();
+    gameScoreInterval = setInterval(async () => {
+      const data = await api('GET', '/api/scenes/game-status');
+      if (data && data.score != null) {
+        document.getElementById('game-score').textContent = `Score: ${data.score}`;
+      }
+    }, 1000);
+  }
+  function stopScorePolling() {
+    if (gameScoreInterval) { clearInterval(gameScoreInterval); gameScoreInterval = null; }
+  }
+
+  // Start polling when game tab is active
+  const origActivateTab = window._origActivateTab || null;
+  const gameObserver = new MutationObserver(() => {
+    const gamePanel = document.getElementById('panel-game');
+    if (gamePanel && gamePanel.classList.contains('active')) startScorePolling();
+    else stopScorePolling();
+  });
+  const panelGame = document.getElementById('panel-game');
+  if (panelGame) gameObserver.observe(panelGame, { attributes: true, attributeFilter: ['class'] });
 }
 
 // --- Init ---

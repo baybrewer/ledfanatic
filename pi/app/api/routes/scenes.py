@@ -171,12 +171,23 @@ def create_router(deps, require_auth, broadcast_state) -> APIRouter:
 
     @router.post("/game-input/{action}")
     async def game_input(action: str):
-        """Send input to game effects (tetris). Actions: left, right, rotate, down, drop."""
+        """Send input to game effects. Actions: left, right, rotate, up, down, drop, shoot, fast."""
         effect = deps.renderer.current_effect
         if effect and hasattr(effect, 'handle_input'):
             effect.handle_input(action)
-            return {"status": "ok"}
+            status = {}
+            if hasattr(effect, 'get_game_status'):
+                status = effect.get_game_status()
+            return {"status": "ok", **status}
         return {"status": "ignored", "reason": "no active game effect"}
+
+    @router.get("/game-status")
+    async def game_status():
+        """Get current game score/state."""
+        effect = deps.renderer.current_effect
+        if effect and hasattr(effect, 'get_game_status'):
+            return effect.get_game_status()
+        return {"score": 0, "game": None}
 
     # --- Layer CRUD endpoints ---
 

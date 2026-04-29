@@ -107,6 +107,9 @@ class SpaceInvaders(Effect):
         if ax < self.width:
           self.aliens.append([ax, ay, row])
 
+  def get_game_status(self):
+    return {'score': self.score, 'game': 'space_invaders', 'aliens': len(self.aliens)}
+
   def handle_input(self, action: str):
     """Queue a player input: left, right, shoot."""
     self._input_queue.append(action)
@@ -354,6 +357,7 @@ class Snake(Effect):
     self._place_food()
     self.last_step = 0.0
     self.game_over_time = 0.0
+    self.score = 0
     self.grow_pending = 0
 
   def _place_food(self):
@@ -370,6 +374,9 @@ class Snake(Effect):
     else:
       # Snake fills entire grid — you win, restart
       self.game_over_time = time.monotonic()
+
+  def get_game_status(self):
+    return {'score': self.score, 'game': 'snake', 'length': len(self.snake)}
 
   def handle_input(self, action: str):
     """Queue a player input: left, right, up, down."""
@@ -491,6 +498,7 @@ class Snake(Effect):
       # Check food
       if self.food and (new_x, new_y) == self.food:
         self.grow_pending += 1
+        self.score += 10
         self._place_food()
 
       if self.grow_pending > 0:
