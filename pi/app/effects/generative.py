@@ -603,7 +603,7 @@ class FramedFire(Effect):
 
 
 class TwinTorches(Effect):
-  """Two torches on sticks with 2D swirly fire, sparks, and palette colors."""
+  """Two medieval dungeon torches — wrapped rag heads engulfed in fire."""
 
   PALETTE_SUPPORT = True
 
@@ -612,7 +612,7 @@ class TwinTorches(Effect):
     ('vx', np.float32), ('vy', np.float32),
     ('life', np.float32), ('brightness', np.float32),
   ])
-  _MAX_SPARKS = 80
+  _MAX_SPARKS = 60
 
   def __init__(self, *args, **kwargs):
     super().__init__(*args, **kwargs)
@@ -622,17 +622,23 @@ class TwinTorches(Effect):
     self._sparks = np.empty(0, dtype=self._SPARK_DTYPE)
     self._t = 0.0
     self._last_t = None
-    # Precompute grids
-    self._gx = np.arange(w, dtype=np.float32)[:, np.newaxis] * np.ones(h, dtype=np.float32)[np.newaxis, :]
-    self._gy = np.ones(w, dtype=np.float32)[:, np.newaxis] * np.arange(h, dtype=np.float32)[np.newaxis, :]
-    # Torch positions — two torches at 1/4 and 3/4 width
+    # Grids
+    self._gx = np.arange(w, dtype=np.float32)[:, np.newaxis] * np.ones(h)[np.newaxis, :]
+    self._gy = np.ones(w)[:, np.newaxis] * np.arange(h, dtype=np.float32)[np.newaxis, :]
+    # Two torches
     self._torch_x = [w * 0.25, w * 0.75]
-    # DUNGEON TORCH: long stick, small flame sitting on top
-    # Flame starts at 10% from top, extends to 25% (small torch flame)
-    self._flame_base = int(h * 0.25)  # flame base (where stick ends)
-    self._flame_top = int(h * 0.10)   # flame tip — 10% down from top
-    self._stick_top = self._flame_base
-    self._torch_head = self._stick_top - 1
+    # Anatomy of a dungeon torch:
+    #   [top 10%]  — flames licking upward above head
+    #   [10%-30%]  — TORCH HEAD: wrapped rags, fully engulfed in fire
+    #   [30%-50%]  — flames dripping/licking below head
+    #   [50%-100%] — wooden stick
+    self._head_top = int(h * 0.10)      # top of wrapped head
+    self._head_bot = int(h * 0.30)      # bottom of wrapped head
+    self._fire_top = int(h * 0.05)      # flames extend above head (10% margin from display top)
+    self._fire_bot = int(h * 0.40)      # flames drip below head
+    self._stick_top = int(h * 0.30)     # stick starts at bottom of head
+    # Head width (wider than stick — wrapped rags)
+    self._head_w = max(2, w // 4)
 
   def render(self, t: float, state) -> np.ndarray:
     if self._last_t is None:
@@ -642,116 +648,122 @@ class TwinTorches(Effect):
     self._t += dt
 
     w, h = self.width, self.height
-    pal_idx = _get_palette_idx(self.params, default=4)  # Lava default
-    speed = self.params.get('speed', 1.0) if 'speed' in self.params else 1.0
+    pal_idx = _get_palette_idx(self.params, default=4)
     sparking = self.params.get('sparking', 140) if 'sparking' in self.params else 140
-
     tt = self._t
     frame = np.zeros((w, h, 3), dtype=np.float32)
 
-    # === STICKS (dim purple — thick torch sticks) ===
-    stick_color = np.array([35, 8, 45], dtype=np.float32)
-    stick_highlight = np.array([50, 14, 65], dtype=np.float32)
-    head_color = np.array([55, 18, 70], dtype=np.float32)
-
-    for tx in self._torch_x:
+    for ti, tx in enumerate(self._torch_x):
       ix = int(tx)
-      # Stick shaft — 2px wide
+
+      # === STICK (dim purple, bottom 50%) ===
       for dx in range(-1, 2):
         sx = ix + dx
         if 0 <= sx < w:
-          frame[sx, self._stick_top:] = stick_highlight if dx == 0 else stick_color
-      # Torch head — wider bulge (3-4px) at top of stick
-      for dx in range(-2, 3):
+          c = np.array([50, 14, 65] if dx == 0 else [35, 8, 45], dtype=np.float32)
+          frame[sx, self._stick_top:] = c
+
+      # === TORCH HEAD (wrapped rags — dark reddish-brown, visible through fire) ===
+      hw = self._head_w
+      for dx in range(-hw, hw + 1):
         sx = ix + dx
         if 0 <= sx < w:
-          head_start = max(0, self._torch_head)
-          head_end = self._stick_top + 2
-          if head_start < head_end:
-            frame[sx, head_start:head_end] = head_color
+          # Wrapped texture — alternating dark bands
+          for row in range(self._head_top, self._head_bot):
+            band = ((row + dx) % 3 == 0)
+            c = [60, 25, 10] if band else [45, 18, 8]  # dark brown rags
+            frame[sx, row] = c
 
-    # === 2D FIRE (swirly, per torch) ===
-    flame_top = self._flame_top
-    flame_bot = self._flame_base
-    flame_height = flame_bot - flame_top
-    if flame_height > 0:
-      # Normalized coords for flame region only
-      fx = self._gx[:, flame_top:flame_bot]
-      fy = self._gy[:, flame_top:flame_bot]
+      # === FIRE ENGULFING THE HEAD ===
+      # Fire zone: from fire_top to fire_bot, centered on head
+      ft = self._fire_top
+      fb = self._fire_bot
+      fh = fb - ft
+      if fh <= 0:
+        continue
 
-      for ti, tx in enumerate(self._torch_x):
-        # Distance from torch center (horizontal)
-        dx_norm = (fx - tx) / max(w * 0.2, 1)
+      fx = self._gx[:, ft:fb]
+      fy = self._gy[:, ft:fb]
 
-        # Distance from flame base (0=tip at top, 1=base at bottom)
-        fy_local = fy - flame_top
-        fy_norm = 1.0 - fy_local / max(flame_height, 1)  # 1=base, 0=tip
+      # Normalized position within fire zone
+      dx_norm = (fx - tx) / max(w * 0.15, 1)
+      fy_local = (fy - ft) / max(fh, 1)  # 0=top, 1=bottom
 
-        # Small flickery dungeon torch flame — teardrop shape
-        phase = ti * 100
-        # Flicker noise — makes flame dance
-        n1 = np.sin(dx_norm * 6.0 + tt * 5.0 + phase) * 0.3
-        n2 = np.sin(fy_norm * 4.0 + tt * 3.5 + phase + 30) * 0.2
-        flicker = n1 + n2
+      # Head center is at ~35% of fire zone height
+      head_center_norm = (self._head_top + self._head_bot) / 2.0
+      head_center_in_fire = (head_center_norm - ft) / max(fh, 1)
 
-        # Narrow teardrop: wide at base (fy_norm=1), pinched at tip (fy_norm=0)
-        flame_width = (0.15 + fy_norm * 0.35) * (1.0 + flicker * 0.3)
+      # Fire shape: ENGULFS the head — widest at head center, tapers above and below
+      # Distance from head center (vertical)
+      dist_from_head = np.abs(fy_local - head_center_in_fire)
 
-        # Wobble — gentle sway like a torch in a draft
-        wobble = np.sin(tt * 1.8 + ti * 2.7) * 0.12 + np.sin(tt * 3.1 + ti) * 0.06
+      # Multi-layer noise for organic swirly fire
+      phase = ti * 77
+      n1 = np.sin(dx_norm * 5.0 + tt * 4.0 + phase) * 0.25
+      n2 = np.sin(fy_local * 6.0 - tt * 3.0 + phase + 40) * 0.2
+      n3 = np.cos(dx_norm * 3.0 + fy_local * 4.0 + tt * 2.5 + phase) * 0.15
+      swirl = n1 + n2 + n3
 
-        dist_from_center = np.abs(dx_norm - wobble + flicker * 0.08)
-        envelope = np.clip(1.0 - dist_from_center / np.maximum(flame_width, 0.01), 0, 1)
-        # Taper at tip — sharp point
-        tip_taper = np.clip(fy_norm * 1.5, 0, 1)
-        intensity = envelope * tip_taper
+      # Flame envelope — widest around head, tapers above and below
+      # At head: wide (hw pixels), above head: narrows to a licking tip, below: narrows quickly
+      above_head = fy_local < head_center_in_fire
+      width_above = 0.6 * (1.0 - (head_center_in_fire - fy_local) / max(head_center_in_fire, 0.01)) ** 0.7
+      width_below = 0.5 * (1.0 - (fy_local - head_center_in_fire) / max(1.0 - head_center_in_fire, 0.01)) ** 1.5
+      flame_width = np.where(above_head, width_above, width_below)
+      flame_width = np.clip(flame_width * (1.0 + swirl * 0.4), 0.05, 1.0)
 
-        # Color via palette — use intensity as palette position (no white)
-        hue = np.clip(intensity * 0.9, 0, 0.95)
-        fire_rgb = pal_color_grid(pal_idx, hue.astype(np.float32))
-        contrib = fire_rgb.astype(np.float32) * intensity[:, :, np.newaxis]
+      # Wobble — draft sway
+      wobble = np.sin(tt * 1.5 + ti * 2.3) * 0.08 + np.sin(tt * 2.8 + ti * 1.1) * 0.04
+      dist_from_center = np.abs(dx_norm - wobble + swirl * 0.06)
+      envelope = np.clip(1.0 - dist_from_center / np.maximum(flame_width, 0.01), 0, 1) ** 0.8
 
-        # Blend into flame region only (clamped)
-        frame[:, flame_top:flame_bot] = np.maximum(frame[:, flame_top:flame_bot], contrib)
+      # Vertical intensity — brightest at head, fades at tips
+      vert_intensity = np.clip(1.0 - dist_from_head * 2.5, 0.1, 1.0)
+      intensity = envelope * vert_intensity
+
+      # Color — palette driven, intensity maps to palette position
+      hue = np.clip(intensity * 0.85, 0, 0.95)
+      fire_rgb = pal_color_grid(pal_idx, hue.astype(np.float32))
+      contrib = fire_rgb.astype(np.float32) * intensity[:, :, np.newaxis]
+
+      # Additive blend fire over the head
+      frame[:, ft:fb] = np.maximum(frame[:, ft:fb], contrib)
 
     # === SPARKS ===
-    # Spawn sparks from flame area
     for tx in self._torch_x:
-      if self._rng.random() < sparking / 255.0 * 2:
-        count = 1 + int(self._rng.random() > 0.6)
+      if self._rng.random() < sparking / 255.0 * 1.5:
+        count = 1 + int(self._rng.random() > 0.7)
         new = np.empty(count, dtype=self._SPARK_DTYPE)
-        new['x'] = tx + self._rng.uniform(-1.5, 1.5, count).astype(np.float32)
-        new['y'] = self._rng.uniform(self._flame_top, self._flame_top + (self._flame_base - self._flame_top) * 0.4, count).astype(np.float32)
-        new['vx'] = self._rng.uniform(-2, 2, count).astype(np.float32)
-        new['vy'] = self._rng.uniform(-8, -3, count).astype(np.float32)
-        new['life'] = self._rng.uniform(0.3, 0.8, count).astype(np.float32)
-        new['brightness'] = self._rng.uniform(0.7, 1.0, count).astype(np.float32)
+        new['x'] = tx + self._rng.uniform(-2, 2, count).astype(np.float32)
+        new['y'] = self._rng.uniform(self._fire_top, self._head_top, count).astype(np.float32)
+        new['vx'] = self._rng.uniform(-2.5, 2.5, count).astype(np.float32)
+        new['vy'] = self._rng.uniform(-10, -3, count).astype(np.float32)
+        new['life'] = self._rng.uniform(0.2, 0.7, count).astype(np.float32)
+        new['brightness'] = self._rng.uniform(0.6, 1.0, count).astype(np.float32)
         if len(self._sparks) < self._MAX_SPARKS:
           self._sparks = np.concatenate([self._sparks, new]) if len(self._sparks) > 0 else new
 
-    # Update sparks
     if len(self._sparks) > 0:
       s = self._sparks
       s['x'] += s['vx'] * dt
       s['y'] += s['vy'] * dt
-      s['vy'] += 25 * dt  # gravity
+      s['vy'] += 20 * dt
       s['life'] -= dt
-      alive = (s['life'] > 0) & (s['y'] >= max(0, self._flame_top - 3)) & (s['y'] < h)
+      alive = (s['life'] > 0) & (s['y'] >= 0) & (s['y'] < h)
       self._sparks = s[alive]
 
-    # Draw sparks — amber/orange, no white
     if len(self._sparks) > 0:
       s = self._sparks
       ix = np.clip(np.round(s['x']).astype(np.int32), 0, w - 1)
       iy = np.clip(np.round(s['y']).astype(np.int32), 0, h - 1)
-      fade = (s['life'] / 0.8) ** 0.5 * s['brightness']
+      fade = (s['life'] / 0.7) ** 0.5 * s['brightness']
       np.add.at(frame[:, :, 0], (ix, iy), fade * 255)
-      np.add.at(frame[:, :, 1], (ix, iy), fade * 140)
-      np.add.at(frame[:, :, 2], (ix, iy), fade * 20)
+      np.add.at(frame[:, :, 1], (ix, iy), fade * 130)
+      np.add.at(frame[:, :, 2], (ix, iy), fade * 15)
 
     result = np.clip(frame, 0, 255).astype(np.uint8)
 
-    # Temporal smoothing — smooth fire flicker
+    # Smooth flicker — 55% blend with previous
     if self._prev_frame is not None:
       result = (result.astype(np.float32) * 0.45 + self._prev_frame.astype(np.float32) * 0.55).astype(np.uint8)
     self._prev_frame = result.copy()
