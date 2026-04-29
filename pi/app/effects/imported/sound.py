@@ -186,7 +186,7 @@ class VUMeter(Effect):
 
   PARAMS = [
     _Param("Gain", "gain", 0.2, 5.0, 0.1, 1.5),
-    _Param("Decay", "decay", 0.5, 0.99, 0.01, 0.9),
+    _Param("Decay", "decay", 0.5, 0.99, 0.01, 0.78),
   ]
   _SCALAR_PARAMS = {"gain": 1.5, "decay": 0.9}
   def __init__(self, width, height, params=None):
@@ -1153,7 +1153,7 @@ class SoundPlasma(Effect):
          + np.sin(y_g * scale * 0.035 + tt * 0.8)
          + np.sin(ax * 3 + y_g * 0.02 * scale + tt * 1.2)) / 3.0
 
-    bright = np.clip((v + 1) * 0.5 * (0.4 + local_vol * 0.8), 0, 1)
+    bright = np.clip((v + 1) * 0.5 * (0.7 + local_vol * 1.2), 0, 1)
     hue = (v + 1) * 0.5
 
     if self._drop_boost > 0.5:

@@ -429,6 +429,12 @@ function showEffectControls(name, meta) {
   const select = document.getElementById('effect-palette-select');
   select.innerHTML = '';
   const paletteList = (meta.palettes && meta.palettes.length > 0) ? meta.palettes : DEFAULT_PALETTES;
+  // Add "Random" option
+  const randomOpt = document.createElement('option');
+  randomOpt.value = -1;
+  randomOpt.textContent = '🎲 Random';
+  if (currentEffectParams.palette === -1) randomOpt.selected = true;
+  select.appendChild(randomOpt);
   paletteList.forEach((palName, idx) => {
     const opt = document.createElement('option');
     opt.value = idx;
@@ -437,7 +443,9 @@ function showEffectControls(name, meta) {
     select.appendChild(opt);
   });
   select.onchange = () => {
-    currentEffectParams.palette = parseInt(select.value);
+    let palVal = parseInt(select.value);
+    if (palVal === -1) palVal = Math.floor(Math.random() * paletteList.length);
+    currentEffectParams.palette = palVal;
     api('POST', '/api/scenes/activate', { effect: name, params: currentEffectParams });
     if (activeEffectName === name) {
       startEffectsPreview(name, currentEffectParams);

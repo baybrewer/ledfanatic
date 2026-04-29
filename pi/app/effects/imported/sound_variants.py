@@ -295,13 +295,13 @@ class SRMatrixRain(Effect):
     base_trail = int(self.params.get("trail", 25))
     pal_idx = _get_pal_idx(self.params, default=3)
 
+    cols = self.width
+    rows = self.height
+
     # Resample bands to match grid width — never hardcode column count
     raw_bands = np.asarray(audio.bands, dtype=np.float64) if audio.bands is not None else np.zeros(10)
     bands = AudioCompatAdapter.resample_bands(raw_bands, cols)
     trail = int(min(60, base_trail * (1.0 + audio.buildup * gain)))
-
-    cols = self.width
-    rows = self.height
 
     self.buf.clear()
 
@@ -468,7 +468,7 @@ class SRMoire(Effect):
       dx = np.where(np.abs(dx) > cols / 2, dx - np.sign(dx) * cols, dx)
       dy = (y_g - cy) * (cols / rows) * 5
       dist = np.sqrt(dx ** 2 + dy ** 2)
-      val += np.sin(dist * sc * 3 + tt * 2)
+      val += np.sin(dist * sc * 1.5 + tt * 1.2)
     val /= nc
 
     hue = (val + 1) * 0.5

@@ -213,8 +213,8 @@ class LavaLamp(Effect):
     val = np.zeros((cols, rows), dtype=np.float64)
     for bi in range(num_blobs):
       sx, sy = self._blob_seeds[bi]
-      bx = (cols / 2) + math.sin(tt * 0.7 + sx * 6.28) * cols * 0.4
-      by = (rows / 2) + math.sin(tt * 0.3 + sy * 6.28) * rows * 0.4
+      bx = (cols / 2) + math.sin(tt * 0.25 + sx * 6.28) * cols * 0.35
+      by = (rows / 2) + math.sin(tt * 0.6 + sy * 6.28) * rows * 0.45
       dx = (x_g - bx) / size_x
       dy = (y_g - by) / size_y
       dist_sq = dx * dx + dy * dy
