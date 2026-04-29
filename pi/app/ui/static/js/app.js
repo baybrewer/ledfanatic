@@ -2013,6 +2013,8 @@ function initGame() {
 document.addEventListener('DOMContentLoaded', () => {
   initAuth();
   initTabs();
+  // Effects is the default tab — load catalog immediately
+  loadEffects();
   initBrightness();
   initBlackout();
   initUpload();
