@@ -112,7 +112,7 @@ class SRShadowPulse(Effect):
     super().__init__(width, height, params)
     self._rings = np.empty(0, dtype=_RING_DTYPE)
     self._last_t = None
-    self._beat_cooldown = 0.0
+    self._spawn_accum = 0.0
     # Precompute coordinate grids
     xs = np.arange(width, dtype=np.float32)
     ys = np.arange(height, dtype=np.float32)
@@ -133,10 +133,12 @@ class SRShadowPulse(Effect):
     bass = state.audio_bass * gain
     level = state.audio_level * gain
 
-    # Continuous bass-driven spawning — more bass = more rings
-    spawn_rate = bass * 8.0  # rings per second at full bass
-    spawn_count = int(spawn_rate * dt + np.random.random() * 0.5)
+    # Continuous bass-driven spawning — accumulate fractional rings
+    spawn_rate = bass * 12.0  # rings per second at full bass
+    self._spawn_accum += spawn_rate * dt
+    spawn_count = int(self._spawn_accum)
     if spawn_count > 0 and len(self._rings) < _MAX_RINGS:
+      self._spawn_accum -= spawn_count
       count = min(spawn_count, _MAX_RINGS - len(self._rings))
       new = np.empty(count, dtype=_RING_DTYPE)
       new['cx'] = np.random.uniform(0, self.width, count).astype(np.float32)
@@ -465,6 +467,7 @@ class SRNegativeRain(Effect):
     self._drops = np.empty(0, dtype=_DROP_DTYPE)
     self._last_t = None
     self._prev_frame = None
+    self._spawn_accum = 0.0  # fractional spawn accumulator
     # Precompute coordinate grids
     xs = np.arange(width, dtype=np.float32)
     ys = np.arange(height, dtype=np.float32)
@@ -505,10 +508,12 @@ class SRNegativeRain(Effect):
     level = state.audio_level * gain
     mid = state.audio_mid * gain
 
-    # Continuous bass-driven spawning — more bass = heavier rain
-    spawn_rate = density * (0.2 + bass * 1.5) * self.width * 0.3
-    spawn_count = int(spawn_rate * dt + 0.5)
+    # Continuous bass-driven spawning — accumulate fractional drops
+    spawn_rate = density * (0.5 + bass * 3.0) * self.width * 0.5
+    self._spawn_accum += spawn_rate * dt
+    spawn_count = int(self._spawn_accum)
     if spawn_count > 0:
+      self._spawn_accum -= spawn_count
       self._spawn_drops(spawn_count, bass, speed_mult=0.8 + bass * 0.5)
 
     # Update drops
