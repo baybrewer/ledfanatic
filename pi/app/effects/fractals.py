@@ -231,6 +231,7 @@ class BurningShip(Effect):
     self._gx, self._gy = np.meshgrid(xs, ys, indexing='ij')
     aspect = width / max(height, 1)
     self._gx = self._gx * aspect
+    self._prev_frame = None
 
   def render(self, t: float, state) -> np.ndarray:
     elapsed = self.elapsed(t)
@@ -238,11 +239,15 @@ class BurningShip(Effect):
     max_iter = int(self.params.get('max_iter', 80))
     pal_idx = _get_palette_idx(self.params)
 
-    # Slow pan and zoom — oscillate around the interesting region
-    pan_re = self._CENTER_RE + 0.3 * np.sin(elapsed * speed * 0.15)
-    pan_im = self._CENTER_IM + 0.2 * np.cos(elapsed * speed * 0.12)
-    zoom = 2.0 * np.exp(-speed * elapsed * 0.3)
-    zoom = max(zoom, 1e-15)
+    # Looping zoom — zooms in then resets, pans between interesting spots
+    cycle = 30.0 / max(speed, 0.01)  # seconds per zoom cycle
+    phase = (elapsed % cycle) / cycle  # 0→1 per cycle
+    zoom = 2.0 * (1.0 - phase * 0.97)  # zoom from 2.0 down to 0.06, then reset
+    zoom = max(zoom, 0.05)
+    # Pan slowly between interesting regions of the burning ship
+    pan_phase = elapsed * speed * 0.05
+    pan_re = self._CENTER_RE + 0.15 * np.sin(pan_phase)
+    pan_im = self._CENTER_IM + 0.1 * np.cos(pan_phase * 0.7)
 
     c_re = pan_re + self._gx * zoom
     c_im = pan_im + self._gy * zoom
@@ -270,15 +275,19 @@ class BurningShip(Effect):
       if escaped.all():
         break
 
-    # Color mapping — use lava palette by default for ship-like drama
+    # Color mapping
     t_color = np.zeros_like(iterations, dtype=np.float32)
     mask = iterations > 0
     if mask.any():
       t_color[mask] = (iterations[mask] / max_iter).astype(np.float32)
-    t_color = (t_color + np.float32(elapsed * 0.15)) % 1.0
+    t_color = (t_color + np.float32(elapsed * 0.08)) % 1.0
 
     frame = pal_color_grid(pal_idx, t_color)
     frame[~escaped] = 0
+    # Smooth transitions between frames
+    if self._prev_frame is not None:
+      frame = ((frame.astype(np.float32) * 0.6 + self._prev_frame.astype(np.float32) * 0.4)).astype(np.uint8)
+    self._prev_frame = frame.copy()
     return frame
 
 
