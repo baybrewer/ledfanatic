@@ -124,7 +124,7 @@ async function api(method, path, body) {
 
 // --- Tab navigation ---
 
-let activePreviewCanvas = 'sim-canvas';
+let activePreviewCanvas = 'effects-sim-canvas';
 let activeEffectName = null;
 
 function activateTab(tab) {
@@ -286,11 +286,9 @@ async function loadEffects() {
     if (cat !== 'All' && !counts[cat]) continue;
     const btn = document.createElement('button');
     btn.className = `category-btn${cat === currentFilterCategory ? ' active' : ''}`;
-    btn.textContent = cat === 'All' ? `All (${categorized.length})` : `${cat} (${counts[cat]})`;
-    // Color-code category buttons
     const catColor = CATEGORY_COLORS[cat] || '#6c5ce7';
-    btn.style.borderColor = catColor + '60';
     btn.style.setProperty('--cat-color', catColor);
+    btn.innerHTML = `<span class="cat-btn-accent" style="background:${catColor}"></span>${cat === 'All' ? `All (${categorized.length})` : `${cat} (${counts[cat]})`}`;
     btn.addEventListener('click', () => {
       currentFilterCategory = cat;
       // Update active state on filter buttons
