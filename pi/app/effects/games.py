@@ -708,7 +708,8 @@ class MarioRunner(Effect):
 
   def _reset(self):
     self.scroll = 0.0       # current scroll position (float)
-    self.mario_x = width // 2 if hasattr(self, 'width') else 5  # column
+    self._prev_t = None
+    self.mario_x = self.width // 2  # column
     self.mario_y = 0.0      # height above ground (0 = on ground)
     self.mario_vy = 0.0     # vertical velocity
     self.on_ground = True
@@ -729,18 +730,17 @@ class MarioRunner(Effect):
     self.auto_play = False
 
   def render(self, t, state):
-    if self._last_t is None:
-      self._last_t = t
-    dt = min(t - self._last_t, 0.05)
-    self._last_t = t
-    self._last_t_val = t
+    if self._prev_t is None:
+      self._prev_t = t
+    dt = min(t - self._prev_t, 0.05)
+    self._prev_t = t
 
     speed = self.params.get('speed', 1.0)
     w, h = self.width, self.height
 
     # Process input
     for action in self._input_queue:
-      if action in ('rotate', 'up', 'drop', 'shoot') and self.on_ground and self.alive:
+      if action in ('jump', 'rotate', 'up', 'drop', 'shoot') and self.on_ground and self.alive:
         self.mario_vy = 12.0  # jump!
         self.on_ground = False
     self._input_queue.clear()
@@ -902,13 +902,6 @@ class MarioRunner(Effect):
 
     return frame
 
-  @property
-  def _last_t(self):
-    return getattr(self, '_last_t_store', None)
-
-  @_last_t.setter
-  def _last_t(self, v):
-    self._last_t_store = v
 
 
 # ──────────────────────────────────────────────────────────────────────

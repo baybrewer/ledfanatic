@@ -2208,11 +2208,7 @@ function initGame() {
       document.querySelectorAll('.game-select-btn').forEach(b => b.classList.remove('active'));
       btn.classList.add('active');
       document.getElementById('game-title').textContent = GAME_TITLES[currentGame] || currentGame.toUpperCase();
-      // Update button labels per game
-      const rotBtn = document.getElementById('game-rotate');
-      const dropEl = document.getElementById('game-drop');
-      if (rotBtn) rotBtn.innerHTML = currentGame === 'space_invaders' ? '🔫' : '&#8635;';
-      if (dropEl) dropEl.textContent = currentGame === 'space_invaders' ? 'Shoot' : currentGame === 'snake_game' ? 'Boost' : 'Drop';
+      renderGameControls();
       // Auto-start the game
       await api('POST', '/api/scenes/activate', {effect: currentGame, params: {}});
     });
@@ -2222,39 +2218,57 @@ function initGame() {
     await api('POST', '/api/scenes/activate', {effect: currentGame, params: {}});
   });
 
-  // Touch buttons
-  function bindGame(id, action) {
-    const el = document.getElementById(id);
-    if (!el) return;
-    el.addEventListener('touchstart', (e) => { e.preventDefault(); gameInput(action); });
-    el.addEventListener('mousedown', () => gameInput(action));
-  }
-  bindGame('game-left', 'left');
-  bindGame('game-right', 'right');
-  bindGame('game-down', 'down');
-  bindGame('game-fast', 'fast');
+  // Dynamic per-game controls
+  function renderGameControls() {
+    const container = document.getElementById('game-controls-container');
+    if (!container) return;
 
-  // Rotate button: sends 'rotate' for tetris/snake, 'shoot' for space invaders
-  const rotateBtn = document.getElementById('game-rotate');
-  if (rotateBtn) {
-    const rotateAction = () => {
-      const action = currentGame === 'space_invaders' ? 'shoot' : 'rotate';
-      gameInput(action);
+    const btn = (label, action, style = '') =>
+      `<button class="action-btn secondary game-btn" data-action="${action}" style="font-size:22px;min-height:70px;min-width:90px;touch-action:manipulation;${style}">${label}</button>`;
+
+    const layouts = {
+      tetris: `
+        <div style="display:grid;grid-template-columns:80px 80px 80px;gap:8px;justify-content:center;margin-bottom:8px;">
+          <div></div>${btn('&#8635;', 'rotate')}<div></div>
+          ${btn('&#9664;', 'left')}${btn('&#9660;', 'down')}${btn('&#9654;', 'right')}
+        </div>
+        <div style="display:flex;gap:8px;justify-content:center;">
+          ${btn('Drop', 'drop', 'flex:1;max-width:180px;background:#600;')}
+        </div>`,
+      space_invaders: `
+        <div style="display:flex;gap:24px;justify-content:center;align-items:center;">
+          <div style="display:flex;gap:8px;">
+            ${btn('&#9664;', 'left', 'width:90px;height:90px;font-size:32px;')}
+            ${btn('&#9654;', 'right', 'width:90px;height:90px;font-size:32px;')}
+          </div>
+          <div>
+            ${btn('🔫 FIRE', 'shoot', 'width:120px;height:90px;font-size:20px;background:#600;color:#ff6b6b;')}
+          </div>
+        </div>`,
+      snake_game: `
+        <div style="display:grid;grid-template-columns:80px 80px 80px;gap:8px;justify-content:center;">
+          <div></div>${btn('&#9650;', 'up')}<div></div>
+          ${btn('&#9664;', 'left')}${btn('&#9660;', 'down')}${btn('&#9654;', 'right')}
+        </div>`,
+      mario_runner: `
+        <div style="display:flex;justify-content:center;">
+          ${btn('🦘 JUMP', 'jump', 'width:200px;height:100px;font-size:24px;background:#060;color:#0f0;')}
+        </div>`,
+      game_of_life: `
+        <div style="color:var(--text-dim);padding:16px;">Runs automatically — watch and enjoy</div>`,
     };
-    rotateBtn.addEventListener('touchstart', (e) => { e.preventDefault(); rotateAction(); });
-    rotateBtn.addEventListener('mousedown', rotateAction);
+
+    container.innerHTML = layouts[currentGame] || layouts.tetris;
+
+    // Bind touch/click handlers
+    container.querySelectorAll('.game-btn[data-action]').forEach(el => {
+      const action = el.dataset.action;
+      el.addEventListener('touchstart', (e) => { e.preventDefault(); gameInput(action); });
+      el.addEventListener('mousedown', (e) => { e.preventDefault(); gameInput(action); });
+    });
   }
 
-  // Drop button: sends 'drop' for tetris, 'shoot' for space invaders, 'drop' for snake
-  const dropBtn = document.getElementById('game-drop');
-  if (dropBtn) {
-    const dropAction = () => {
-      const action = currentGame === 'space_invaders' ? 'shoot' : 'drop';
-      gameInput(action);
-    };
-    dropBtn.addEventListener('touchstart', (e) => { e.preventDefault(); dropAction(); });
-    dropBtn.addEventListener('mousedown', dropAction);
-  }
+  renderGameControls();
 
   // Keyboard (only when game tab is active and not typing in an input)
   document.addEventListener('keydown', (e) => {

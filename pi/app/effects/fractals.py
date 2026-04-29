@@ -51,9 +51,9 @@ class MandelbrotZoom(Effect):
   PALETTE_SUPPORT = True
 
   PARAMS = [
-    _P("Speed", "speed", 0.1, 2.0, 0.05, 0.3),
-    _P("Max Iter", "max_iter", 20, 200, 10, 80),
-    _P("Color Cycle", "color_speed", 0.0, 1.0, 0.05, 0.2),
+    _P("Speed", "speed", 0.02, 1.0, 0.02, 0.08),
+    _P("Max Iter", "max_iter", 20, 200, 10, 60),
+    _P("Color Cycle", "color_speed", 0.0, 0.5, 0.02, 0.05),
   ]
 
   # Deep spiral at the seahorse valley — visually rich at all zoom levels
@@ -69,6 +69,7 @@ class MandelbrotZoom(Effect):
     # Aspect ratio correction
     aspect = width / max(height, 1)
     self._gx = self._gx * aspect
+    self._prev_frame = None
 
   def render(self, t: float, state) -> np.ndarray:
     elapsed = self.elapsed(t)
@@ -122,6 +123,10 @@ class MandelbrotZoom(Effect):
     frame = pal_color_grid(pal_idx, t_color.astype(np.float32))
     # Black out interior
     frame[~escaped] = 0
+    # Temporal smoothing — blend with previous frame for smooth transitions
+    if self._prev_frame is not None:
+      frame = ((frame.astype(np.float32) * 0.6 + self._prev_frame.astype(np.float32) * 0.4)).astype(np.uint8)
+    self._prev_frame = frame.copy()
     return frame
 
 
@@ -138,8 +143,8 @@ class JuliaExplorer(Effect):
   PALETTE_SUPPORT = True
 
   PARAMS = [
-    _P("Speed", "speed", 0.1, 2.0, 0.05, 0.4),
-    _P("Max Iter", "max_iter", 20, 150, 10, 60),
+    _P("Speed", "speed", 0.02, 1.0, 0.02, 0.1),
+    _P("Max Iter", "max_iter", 20, 150, 10, 50),
     _P("Zoom", "zoom", 0.5, 4.0, 0.1, 1.5),
   ]
 
@@ -211,7 +216,7 @@ class BurningShip(Effect):
   PALETTE_SUPPORT = True
 
   PARAMS = [
-    _P("Speed", "speed", 0.1, 2.0, 0.05, 0.3),
+    _P("Speed", "speed", 0.02, 1.0, 0.02, 0.08),
     _P("Max Iter", "max_iter", 20, 200, 10, 80),
   ]
 
