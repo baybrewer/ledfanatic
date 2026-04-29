@@ -632,10 +632,10 @@ class TwinTorches(Effect):
     #   Wrapped fuel mass (thick bulge) at top of stick, ~15% of height
     #   Fire engulfs the mass — billows out from sides and top
     #   Flames are wider than tall, bulbous not teardrop
-    self._stick_top = int(h * 0.50)     # stick is bottom 50% (unchanged)
-    self._head_top = int(h * 0.44)      # fuel mass starts (5px lower)
+    self._stick_top = int(h * 0.50)     # stick is bottom 50%
+    self._head_top = int(h * 0.44)      # fuel mass starts
     self._head_bot = int(h * 0.58)      # fuel mass ends
-    self._fire_top = int(h * 0.16)      # flames reach up (5px lower)
+    self._fire_top = int(h * 0.06)      # flames lick 30% higher (was 0.16)
     self._fire_bot = int(h * 0.61)      # flames drip below head
     self._head_w = max(2, int(w * 0.35))  # FAT wrapped mass — 35% of width
 
@@ -698,35 +698,51 @@ class TwinTorches(Effect):
             boost = inject[di] * (0.7 + 0.6 * np.sin(tt * 5 + dx * 3 + row * 0.5))
             heat[sx, row] = min(1.0, heat[sx, row] + max(0, boost))
 
-      # === BUOYANCY + STRONG DIFFUSION for swirling ===
+      # === CONVECTIVE BUOYANCY with vortex shedding ===
       new_heat = np.zeros_like(heat)
       if fh > 3:
-        # Upward buoyancy — staggered for more variety
-        new_heat[:, :-3] += heat[:, 1:-2] * 0.28
-        new_heat[:, :-3] += heat[:, 2:-1] * 0.18
-        new_heat[:, :-3] += heat[:, 3:] * 0.08
-        # Strong horizontal diffusion — fire spreads sideways
-        new_heat[1:, :] += heat[:-1, :] * 0.12
-        new_heat[:-1, :] += heat[1:, :] * 0.12
-        # Diagonal diffusion — creates swirling vortices
-        new_heat[1:, :-1] += heat[:-1, 1:] * 0.04
-        new_heat[:-1, :-1] += heat[1:, 1:] * 0.04
-        new_heat += heat * 0.10  # self-retention (lower = more motion)
+        # Primary buoyancy — heat rises with velocity proportional to temperature
+        # Hotter regions rise faster (convective acceleration)
+        new_heat[:, :-3] += heat[:, 1:-2] * 0.25
+        new_heat[:, :-3] += heat[:, 2:-1] * 0.20
+        new_heat[:, :-3] += heat[:, 3:] * 0.10
+        # Horizontal diffusion — wider spread creates billowing
+        new_heat[1:, :] += heat[:-1, :] * 0.10
+        new_heat[:-1, :] += heat[1:, :] * 0.10
+        # Diagonal: creates rotational vortex shedding
+        # Alternating diagonal bias creates Karman-like vortex street
+        phase = int(tt * 6) % 2
+        if phase == 0:
+          new_heat[1:, :-1] += heat[:-1, 1:] * 0.06  # up-right
+          new_heat[:-1, :-1] += heat[1:, 1:] * 0.03  # up-left (weaker)
+        else:
+          new_heat[:-1, :-1] += heat[1:, 1:] * 0.06  # up-left
+          new_heat[1:, :-1] += heat[:-1, 1:] * 0.03  # up-right (weaker)
+        new_heat += heat * 0.08  # low self-retention = more motion
       heat[:] = new_heat
 
-      # === TURBULENCE — aggressive random perturbation ===
-      turb = self._rng.uniform(-0.03, 0.03, size=heat.shape).astype(np.float32)
+      # === TURBULENT CONVECTION — vortex-generating perturbation ===
+      # Varying turbulence intensity by height — more at flame tips
+      y_turb = np.linspace(0.04, 0.01, fh, dtype=np.float32)
+      turb = (self._rng.uniform(-1, 1, size=heat.shape) * y_turb[np.newaxis, :]).astype(np.float32)
       heat += turb
-      # Oscillating lateral shift — fire sways and swirls
-      wobble1 = np.sin(tt * 1.8 + ti * 2.3) * 0.5
-      wobble2 = np.sin(tt * 3.1 + ti * 1.1) * 0.3
-      if abs(wobble1 + wobble2) > 0.3:
-        shift = 1 if (wobble1 + wobble2) > 0 else -1
-        heat_shifted = np.roll(heat, shift, axis=0)
-        heat[:] = heat * 0.75 + heat_shifted * 0.25
 
-      # === COOLING — varied decay for texture ===
-      cool = self._rng.uniform(0.015, 0.05, size=(w, fh)).astype(np.float32)
+      # Oscillating lateral convection — simulates air currents
+      # Multiple frequencies for organic motion
+      w1 = np.sin(tt * 1.4 + ti * 2.3) * 0.4
+      w2 = np.sin(tt * 2.7 + ti * 1.1) * 0.3
+      w3 = np.sin(tt * 4.3 + ti * 0.7) * 0.15
+      wobble_total = w1 + w2 + w3
+      if abs(wobble_total) > 0.2:
+        shift = 1 if wobble_total > 0 else -1
+        blend = min(abs(wobble_total) * 0.4, 0.35)
+        heat_shifted = np.roll(heat, shift, axis=0)
+        heat[:] = heat * (1.0 - blend) + heat_shifted * blend
+
+      # === COOLING — height-dependent (tips cool faster) ===
+      # More cooling at top (thin flames), less at head (fuel source)
+      y_cool = np.linspace(0.06, 0.02, fh, dtype=np.float32)
+      cool = (self._rng.uniform(0.5, 1.5, size=heat.shape) * y_cool[np.newaxis, :]).astype(np.float32)
       heat[:] = np.maximum(0, heat - cool)
 
       # === RENDER fire from heat ===
@@ -762,33 +778,41 @@ class TwinTorches(Effect):
         if len(self._sparks) < self._MAX_SPARKS:
           self._sparks = np.concatenate([self._sparks, new]) if len(self._sparks) > 0 else new
 
-      # === UPWARD SPARKS — embers flying from flame tips ===
-      # Use negative life as a tag: life < -100 = drip, life > 0 = spark
-      # (we'll use brightness > 0.9 to identify sparks for lighter gravity)
-      if self._rng.random() < sparking / 255.0 * 2.0:
-        count = 1 + int(self._rng.random() > 0.5)
+      # === UPWARD SPARKS — embers caught in convective updraft ===
+      # Sparks are born HOT and BRIGHT, fade/cool as they rise
+      if self._rng.random() < sparking / 255.0 * 2.5:
+        count = 1 + int(self._rng.random() > 0.4)
         new = np.empty(count, dtype=self._SPARK_DTYPE)
-        new['x'] = tx + self._rng.uniform(-2, 2, count).astype(np.float32)
-        new['y'] = self._rng.uniform(self._fire_top + 2, self._head_top, count).astype(np.float32)
-        new['vx'] = self._rng.uniform(-4, 4, count).astype(np.float32)
-        new['vy'] = self._rng.uniform(-25, -10, count).astype(np.float32)  # very strong upward
-        new['life'] = self._rng.uniform(0.4, 1.0, count).astype(np.float32)
-        new['brightness'] = self._rng.uniform(1.5, 2.0, count).astype(np.float32)  # >1 = spark marker
+        new['x'] = tx + self._rng.uniform(-self._head_w * 0.6, self._head_w * 0.6, count).astype(np.float32)
+        new['y'] = self._rng.uniform(self._head_top - 2, self._head_top + 4, count).astype(np.float32)
+        # Convective velocity — sparks get lateral push from vortex shedding
+        vortex_vx = np.sin(tt * 3.5 + ti * 2) * 3 + self._rng.uniform(-2, 2, count)
+        new['vx'] = vortex_vx.astype(np.float32)
+        new['vy'] = self._rng.uniform(-20, -8, count).astype(np.float32)
+        new['life'] = self._rng.uniform(0.5, 1.2, count).astype(np.float32)
+        new['brightness'] = self._rng.uniform(2.0, 3.0, count).astype(np.float32)  # >1 = spark, starts very hot
         if len(self._sparks) < self._MAX_SPARKS:
           self._sparks = np.concatenate([self._sparks, new]) if len(self._sparks) > 0 else new
 
     if len(self._sparks) > 0:
       s = self._sparks
+      is_spark = s['brightness'] > 1.0
+
+      # Convective vortex influence on sparks — swirling updraft
+      # Sparks get pushed laterally by the oscillating convection field
+      vortex_push = np.sin(tt * 3.0 + s['y'] * 0.15) * 4.0
+      s['vx'] = np.where(is_spark, s['vx'] * 0.95 + vortex_push * dt * 5, s['vx'])
+
       s['x'] += s['vx'] * dt
       s['y'] += s['vy'] * dt
-      # Different gravity for sparks vs drips
-      # Sparks (brightness > 1.0): light embers, float with low gravity
-      # Drips (brightness <= 1.0): heavy tallow, full gravity
-      is_spark = s['brightness'] > 1.0
-      gravity = np.where(is_spark, 8.0, 35.0)  # sparks: gentle, drips: heavy
+      # Sparks: very light gravity (embers in updraft barely fall)
+      # Drips: heavy gravity (burning tallow)
+      gravity = np.where(is_spark, 5.0, 35.0)
       s['vy'] += gravity * dt
+      # Sparks cool over time — brightness decays (born hot, dims as they rise)
+      s['brightness'] = np.where(is_spark, s['brightness'] * (1.0 - dt * 0.8), s['brightness'])
       s['life'] -= dt
-      alive = (s['life'] > 0) & (s['y'] >= 0) & (s['y'] < h)
+      alive = (s['life'] > 0) & (s['y'] >= 0) & (s['y'] < h) & (s['brightness'] > 0.15)
       self._sparks = s[alive]
 
     if len(self._sparks) > 0:
@@ -798,14 +822,13 @@ class TwinTorches(Effect):
       is_spark = s['brightness'] > 1.0
 
       # Drips — amber orange with trailing motion blur
-      drip_mask = ~is_spark
+      drip_mask = ~is_spark & (s['brightness'] <= 1.0)
       if drip_mask.any():
-        dfade = np.clip(s['life'][drip_mask], 0, 1) ** 0.5 * np.clip(s['brightness'][drip_mask], 0, 1)
+        dfade = np.clip(s['life'][drip_mask], 0, 1) ** 0.5 * s['brightness'][drip_mask]
         dix, diy = ix[drip_mask], iy[drip_mask]
         np.add.at(frame[:, :, 0], (dix, diy), dfade * 240)
         np.add.at(frame[:, :, 1], (dix, diy), dfade * 120)
         np.add.at(frame[:, :, 2], (dix, diy), dfade * 10)
-        # Trail above drip
         diy1 = np.clip(diy - 1, 0, h - 1)
         np.add.at(frame[:, :, 0], (dix, diy1), dfade * 150)
         np.add.at(frame[:, :, 1], (dix, diy1), dfade * 70)
@@ -813,13 +836,18 @@ class TwinTorches(Effect):
         np.add.at(frame[:, :, 0], (dix, diy2), dfade * 60)
         np.add.at(frame[:, :, 1], (dix, diy2), dfade * 25)
 
-      # Sparks — bright yellow-orange embers, small and hot
-      if is_spark.any():
-        sfade = np.clip(s['life'][is_spark], 0, 1) ** 0.3
-        six, siy = ix[is_spark], iy[is_spark]
-        np.add.at(frame[:, :, 0], (six, siy), sfade * 255)
-        np.add.at(frame[:, :, 1], (six, siy), sfade * 160)
-        np.add.at(frame[:, :, 2], (six, siy), sfade * 30)
+      # Sparks — born white-hot, cool to orange then dim red as they rise
+      spark_mask = s['brightness'] > 0.15
+      if spark_mask.any():
+        sb = s['brightness'][spark_mask]
+        # Color temperature: hot (b>2)=yellow-white, warm (1-2)=orange, cool (<1)=dim red
+        sr = np.clip(sb * 120, 0, 255)
+        sg = np.clip((sb - 0.5) * 100, 0, 180)
+        sblu = np.clip((sb - 1.5) * 60, 0, 80)
+        six, siy = ix[spark_mask], iy[spark_mask]
+        np.add.at(frame[:, :, 0], (six, siy), sr)
+        np.add.at(frame[:, :, 1], (six, siy), sg)
+        np.add.at(frame[:, :, 2], (six, siy), sblu)
 
     result = np.clip(frame, 0, 255).astype(np.uint8)
 
