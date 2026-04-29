@@ -142,6 +142,33 @@ def create_router(deps, require_auth, broadcast_state) -> APIRouter:
             return deps.renderer.current_effect.get_switcher_status()
         return {"active": False}
 
+    @router.get("/playlists")
+    async def list_playlists():
+      """List all saved playlists."""
+      playlists = deps.state_manager.list_playlists()
+      return {"playlists": {
+        name: {"items": p["items"], "saved_at": p.get("saved_at", "")}
+        for name, p in playlists.items()
+      }}
+
+    @router.post("/playlists/save", dependencies=[Depends(require_auth)])
+    async def save_playlist(req: dict):
+      name = (req.get("name") or "").strip()
+      items = req.get("items", [])
+      if not name:
+        raise HTTPException(400, "Playlist name required")
+      deps.state_manager.save_playlist(name, items)
+      return {"status": "ok", "name": name}
+
+    @router.delete("/playlists/{name}", dependencies=[Depends(require_auth)])
+    async def delete_playlist(name: str):
+      playlists = deps.state_manager._state.get('playlists', {})
+      if name not in playlists:
+        raise HTTPException(404, f"Playlist '{name}' not found")
+      del playlists[name]
+      deps.state_manager.mark_dirty()
+      return {"status": "ok"}
+
     @router.post("/game-input/{action}")
     async def game_input(action: str):
         """Send input to game effects (tetris). Actions: left, right, rotate, down, drop."""

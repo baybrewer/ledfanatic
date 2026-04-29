@@ -520,6 +520,8 @@ function showEffectControls(name, meta) {
       switcherSelectedEffects = new Set(Array.isArray(saved) ? saved : []);
       switcherWrap.classList.remove('hidden');
       renderSwitcherControls();
+      loadPlaylistList();
+      initPlaylistButtons();
       startSwitcherStatusPolling();
     } else {
       switcherWrap.classList.add('hidden');
@@ -530,31 +532,42 @@ function showEffectControls(name, meta) {
   wrap.classList.remove('hidden');
 }
 
-function classifyEffectForSwitcher(name, meta) {
-  if (name === 'animation_switcher') return null;
-  if (name.startsWith('diag_')) return null;
-  if (meta.group === 'diagnostic') return null;
-  if (meta.group === 'sound' || meta.group === 'audio') return 'sr';
-  return 'other';
-}
-
 function renderSwitcherControls() {
-  const wrap = document.getElementById('switcher-controls');
-  if (!wrap || !effectsCatalog) return;
+  const container = document.getElementById('switcher-effect-list');
+  if (!container || !effectsCatalog) return;
+  container.innerHTML = '';
 
-  const srEntries = [];
-  const otherEntries = [];
+  // Group by category (same as main effects grid)
+  const groups = {};
   for (const [name, meta] of Object.entries(effectsCatalog)) {
-    const section = classifyEffectForSwitcher(name, meta);
-    if (section === 'sr') srEntries.push([name, meta]);
-    else if (section === 'other') otherEntries.push([name, meta]);
+    if (name === 'animation_switcher') continue;
+    if (name.startsWith('diag_')) continue;
+    const cat = effectCategory(meta.group || 'other');
+    if (!groups[cat]) groups[cat] = [];
+    groups[cat].push([name, meta]);
   }
-  const byName = (a, b) => compareByLabel(a[0], b[0]);
-  srEntries.sort(byName);
-  otherEntries.sort(byName);
 
-  const build = (container, entries) => {
-    container.innerHTML = '';
+  const order = ['Ambient', 'Sound Reactive', 'Simulation', 'Built-in', 'Classic', 'Game', 'Special'];
+  for (const cat of order) {
+    const entries = groups[cat];
+    if (!entries || entries.length === 0) continue;
+    entries.sort((a, b) => (a[1].label || a[0]).localeCompare(b[1].label || b[0]));
+
+    const catColor = CATEGORY_COLORS[cat] || '#6c5ce7';
+    const section = document.createElement('div');
+    section.className = 'switcher-section';
+    section.innerHTML = `
+      <div class="switcher-section-header">
+        <span class="switcher-section-title" style="color:${catColor}">${cat}</span>
+        <span class="switcher-section-actions">
+          <button type="button" class="switcher-select-all" data-cat="${cat}">All</button>
+          <button type="button" class="switcher-clear" data-cat="${cat}">None</button>
+        </span>
+      </div>
+    `;
+
+    const list = document.createElement('div');
+    list.className = 'switcher-checklist';
     for (const [name, meta] of entries) {
       const row = document.createElement('label');
       row.className = 'switcher-check-row';
@@ -565,14 +578,14 @@ function renderSwitcherControls() {
         <input type="checkbox" ${checked ? 'checked' : ''} data-name="${name}">
         <span>${meta.label || name}</span>
       `;
-      container.appendChild(row);
+      list.appendChild(row);
     }
-  };
+    section.appendChild(list);
+    container.appendChild(section);
+  }
 
-  build(document.getElementById('switcher-sr-list'), srEntries);
-  build(document.getElementById('switcher-other-list'), otherEntries);
-
-  wrap.querySelectorAll('.switcher-check-row input[type="checkbox"]').forEach(cb => {
+  // Re-attach checkbox event listeners
+  container.querySelectorAll('.switcher-check-row input[type="checkbox"]').forEach(cb => {
     cb.addEventListener('change', () => {
       const name = cb.dataset.name;
       if (cb.checked) switcherSelectedEffects.add(name);
@@ -582,24 +595,86 @@ function renderSwitcherControls() {
     });
   });
 
-  wrap.querySelectorAll('.switcher-select-all').forEach(btn => {
+  // All/None buttons
+  container.querySelectorAll('.switcher-select-all').forEach(btn => {
     btn.addEventListener('click', () => {
-      const section = btn.dataset.section;
-      const entries = section === 'sr' ? srEntries : otherEntries;
+      const cat = btn.dataset.cat;
+      const entries = groups[cat] || [];
       entries.forEach(([name]) => switcherSelectedEffects.add(name));
       renderSwitcherControls();
       scheduleSwitcherSave();
     });
   });
-  wrap.querySelectorAll('.switcher-clear').forEach(btn => {
+  container.querySelectorAll('.switcher-clear').forEach(btn => {
     btn.addEventListener('click', () => {
-      const section = btn.dataset.section;
-      const entries = section === 'sr' ? srEntries : otherEntries;
+      const cat = btn.dataset.cat;
+      const entries = groups[cat] || [];
       entries.forEach(([name]) => switcherSelectedEffects.delete(name));
       renderSwitcherControls();
       scheduleSwitcherSave();
     });
   });
+}
+
+function loadPlaylistList() {
+  api('GET', '/api/scenes/playlists').then(data => {
+    const select = document.getElementById('playlist-load-select');
+    if (!select || !data) return;
+    select.innerHTML = '<option value="">-- Load Playlist --</option>';
+    for (const [name, info] of Object.entries(data.playlists || {})) {
+      const opt = document.createElement('option');
+      opt.value = name;
+      const date = info.saved_at ? new Date(info.saved_at).toLocaleDateString() : '';
+      opt.textContent = `${name}${date ? ' (' + date + ')' : ''}`;
+      select.appendChild(opt);
+    }
+  });
+}
+
+function initPlaylistButtons() {
+  const saveBtn = document.getElementById('playlist-save-btn');
+  const loadBtn = document.getElementById('playlist-load-btn');
+  const deleteBtn = document.getElementById('playlist-delete-btn');
+  const nameInput = document.getElementById('playlist-save-name');
+  const loadSelect = document.getElementById('playlist-load-select');
+
+  if (saveBtn && !saveBtn._bound) {
+    saveBtn._bound = true;
+    saveBtn.addEventListener('click', async () => {
+      const name = nameInput.value.trim();
+      if (!name) { nameInput.focus(); return; }
+      const items = Array.from(switcherSelectedEffects);
+      await api('POST', '/api/scenes/playlists/save', { name, items });
+      nameInput.value = '';
+      loadPlaylistList();
+    });
+  }
+
+  if (loadBtn && !loadBtn._bound) {
+    loadBtn._bound = true;
+    loadBtn.addEventListener('click', async () => {
+      const name = loadSelect.value;
+      if (!name) return;
+      const data = await api('GET', '/api/scenes/playlists');
+      if (data && data.playlists && data.playlists[name]) {
+        const items = data.playlists[name].items || [];
+        switcherSelectedEffects = new Set(items);
+        renderSwitcherControls();
+        scheduleSwitcherSave();
+      }
+    });
+  }
+
+  if (deleteBtn && !deleteBtn._bound) {
+    deleteBtn._bound = true;
+    deleteBtn.addEventListener('click', async () => {
+      const name = loadSelect.value;
+      if (!name) return;
+      if (!confirm(`Delete playlist "${name}"?`)) return;
+      await api('DELETE', '/api/scenes/playlists/' + encodeURIComponent(name));
+      loadPlaylistList();
+    });
+  }
 }
 
 function scheduleSwitcherSave() {
