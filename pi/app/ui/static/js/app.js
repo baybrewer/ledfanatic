@@ -287,6 +287,10 @@ async function loadEffects() {
     const btn = document.createElement('button');
     btn.className = `category-btn${cat === currentFilterCategory ? ' active' : ''}`;
     btn.textContent = cat === 'All' ? `All (${categorized.length})` : `${cat} (${counts[cat]})`;
+    // Color-code category buttons
+    const catColor = CATEGORY_COLORS[cat] || '#6c5ce7';
+    btn.style.borderColor = catColor + '60';
+    btn.style.setProperty('--cat-color', catColor);
     btn.addEventListener('click', () => {
       currentFilterCategory = cat;
       // Update active state on filter buttons

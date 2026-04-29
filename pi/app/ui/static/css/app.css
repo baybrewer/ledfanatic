@@ -804,28 +804,37 @@ select:focus {
 }
 
 .category-btn {
-  padding: 6px 14px;
+  --cat-color: var(--accent);
+  padding: 8px 18px;
   border: 1px solid var(--border);
   border-radius: 20px;
   background: transparent;
   color: var(--text-dim);
-  font-size: 12px;
-  font-weight: 500;
+  font-size: 13px;
+  font-weight: 600;
   cursor: pointer;
   white-space: nowrap;
   transition: all var(--transition-fast);
 }
 
+@media (min-width: 641px) {
+  .category-btn {
+    padding: 10px 22px;
+    font-size: 14px;
+  }
+}
+
 .category-btn:hover {
-  border-color: var(--accent);
+  border-color: var(--cat-color);
   color: var(--text);
+  background: rgba(255, 255, 255, 0.03);
 }
 
 .category-btn.active {
-  background: var(--accent);
-  border-color: var(--accent);
+  background: var(--cat-color);
+  border-color: var(--cat-color);
   color: white;
-  box-shadow: 0 2px 8px var(--accent-glow);
+  box-shadow: 0 2px 10px rgba(0, 0, 0, 0.3);
 }
 
 .effect-controls,
