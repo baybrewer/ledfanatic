@@ -17,6 +17,7 @@ from .fireworks import SRFireworks
 from .scrolltext import ScrollingText
 from .switcher import AnimationSwitcher
 from .games import GAME_EFFECTS as _GAMES
+from .negative_space import NEGATIVE_SPACE_EFFECTS as _NEGATIVE_SPACE
 
 ALL_EFFECTS: dict[str, type] = {
     **_GENERATIVE,
@@ -32,4 +33,5 @@ ALL_EFFECTS: dict[str, type] = {
     'scrolling_text': ScrollingText,
     'animation_switcher': AnimationSwitcher,
     **_GAMES,
+    **_NEGATIVE_SPACE,
 }

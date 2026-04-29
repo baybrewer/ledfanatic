@@ -359,6 +359,24 @@ def main():
       params=param_dicts,
     ))
 
+  # Register negative-space effects in catalog
+  from .effects.negative_space import NEGATIVE_SPACE_EFFECTS as _neg_space_effects
+  for fname, fcls in _neg_space_effects.items():
+    param_dicts = tuple(
+      {'name': p.attr.lower(), 'label': p.label, 'min': p.lo, 'max': p.hi,
+       'step': p.step, 'default': p.default, 'type': 'slider'}
+      for p in fcls.PARAMS
+    )
+    effect_catalog.register_imported(fname, EffectMeta(
+      name=fname,
+      label=getattr(fcls, 'DISPLAY_NAME', fname.replace('_', ' ').title()),
+      group='sound',
+      description=getattr(fcls, 'DESCRIPTION', ''),
+      imported=True,
+      audio_requires=getattr(fcls, 'AUDIO_REQUIRES', ()),
+      params=param_dicts,
+    ))
+
   # Register game effects in catalog
   from .effects.games import GAME_EFFECTS as _game_effects
   for fname, fcls in _game_effects.items():
