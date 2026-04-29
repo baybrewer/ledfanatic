@@ -519,38 +519,43 @@ class WaveEquation(Effect):
         self._u_prev = self._u
         self._u = u_next
 
-        # Colorize — amplitude drives color
+        # Colorize — full rainbow palette from amplitude
         elapsed = self.elapsed(t)
         amplitude = self._u
-
-        # Map amplitude to hue (positive = warm, negative = cool)
-        hue_base = elapsed * color_speed
-        pos_mask = amplitude > 0
-        neg_mask = amplitude < 0
-
-        frame = np.zeros((w, h, 3), dtype=np.float32)
         abs_amp = np.abs(amplitude)
         brightness = np.clip(abs_amp * 3, 0, 1)
 
-        # Positive amplitude: red-yellow
-        frame[pos_mask, 0] = brightness[pos_mask]
-        frame[pos_mask, 1] = (brightness[pos_mask] * 0.4)
-        frame[pos_mask, 2] = (brightness[pos_mask] * 0.05)
+        # Map amplitude to hue across full spectrum
+        # Positive = warm hues (0-0.4), negative = cool hues (0.5-0.9)
+        hue = np.where(
+          amplitude >= 0,
+          amplitude * 0.8,   # positive: red → yellow → green
+          0.5 - amplitude * 0.8  # negative: cyan → blue → purple
+        )
+        hue = (hue + elapsed * color_speed) % 1.0
 
-        # Negative amplitude: blue-cyan
-        frame[neg_mask, 0] = (brightness[neg_mask] * 0.05)
-        frame[neg_mask, 1] = (brightness[neg_mask] * 0.3)
-        frame[neg_mask, 2] = brightness[neg_mask]
+        # HSV to RGB (vectorized)
+        h6 = (hue * 6.0).astype(np.float32)
+        sector = h6.astype(np.int32) % 6
+        f = h6 - np.floor(h6)
+        v = brightness
+        p = v * 0.0
+        q = v * (1.0 - f)
+        t_val = v * f
 
-        # Hue rotation over time
-        cos_h = math.cos(hue_base * 2 * math.pi)
-        sin_h = math.sin(hue_base * 2 * math.pi)
-        r = frame[:, :, 0] * cos_h - frame[:, :, 2] * sin_h
-        b = frame[:, :, 0] * sin_h + frame[:, :, 2] * cos_h
-        frame[:, :, 0] = np.abs(r)
-        frame[:, :, 2] = np.abs(b)
+        r = np.where(sector == 0, v, np.where(sector == 1, q, np.where(sector == 2, p,
+             np.where(sector == 3, p, np.where(sector == 4, t_val, v)))))
+        g = np.where(sector == 0, t_val, np.where(sector == 1, v, np.where(sector == 2, v,
+             np.where(sector == 3, q, np.where(sector == 4, p, p)))))
+        b = np.where(sector == 0, p, np.where(sector == 1, p, np.where(sector == 2, t_val,
+             np.where(sector == 3, v, np.where(sector == 4, v, q)))))
 
-        return np.clip(frame * 255, 0, 255).astype(np.uint8)
+        frame = np.zeros((w, h, 3), dtype=np.uint8)
+        frame[:, :, 0] = np.clip(r * 255, 0, 255).astype(np.uint8)
+        frame[:, :, 1] = np.clip(g * 255, 0, 255).astype(np.uint8)
+        frame[:, :, 2] = np.clip(b * 255, 0, 255).astype(np.uint8)
+
+        return frame
 
 
 # ──────────────────────────────────────────────────────────────────────
