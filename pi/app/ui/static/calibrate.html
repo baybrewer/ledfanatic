@@ -71,6 +71,31 @@
     }
     .progress-dot.active { background: #6c5ce7; box-shadow: 0 0 8px rgba(108, 92, 231, 0.4); }
     .progress-dot.done { background: #00cec9; }
+    .touch-controls { margin-top: 16px; display: flex; flex-direction: column; gap: 8px; }
+    .touch-row { display: flex; gap: 8px; justify-content: center; }
+    .cal-btn {
+      padding: 12px 18px;
+      border: 1px solid rgba(100, 100, 180, 0.2);
+      border-radius: 8px;
+      background: rgba(20, 20, 35, 0.8);
+      color: #e8e8f8;
+      font-size: 15px;
+      font-weight: 600;
+      cursor: pointer;
+      flex: 1;
+      min-height: 48px;
+      touch-action: manipulation;
+      -webkit-user-select: none;
+      user-select: none;
+    }
+    .cal-btn:active { transform: scale(0.95); }
+    .cal-btn-up { border-color: #00cec9; color: #00cec9; }
+    .cal-btn-up:active { background: rgba(0, 206, 201, 0.2); }
+    .cal-btn-down { border-color: #ff6b6b; color: #ff6b6b; }
+    .cal-btn-down:active { background: rgba(255, 107, 107, 0.2); }
+    .cal-btn-next-step { border-color: #6c5ce7; background: #6c5ce7; color: white; }
+    .cal-btn-save { border-color: #00cec9; background: #00cec9; color: #060610; }
+    .cal-btn-cancel { border-color: #ff6b6b; color: #ff6b6b; }
   </style>
 </head>
 <body>
@@ -97,13 +122,34 @@
 
     <div class="progress" id="cal-progress"></div>
 
-    <div class="controls">
-      <div><kbd>&larr;</kbd> <kbd>&rarr;</kbd> Select segment</div>
-      <div><kbd>&uarr;</kbd> <kbd>&darr;</kbd> Adjust +/-0.01</div>
-      <div><kbd>Shift+&uarr;</kbd> <kbd>Shift+&darr;</kbd> Adjust +/-0.05</div>
-      <div><kbd>Enter</kbd> Next level/color</div>
-      <div><kbd>S</kbd> Save to layout</div>
-      <div><kbd>Esc</kbd> Cancel & exit</div>
+    <!-- Touch controls -->
+    <div class="touch-controls">
+      <div class="touch-row">
+        <button class="cal-btn" id="cal-btn-prev">◀ Prev Seg</button>
+        <button class="cal-btn" id="cal-btn-next">Next Seg ▶</button>
+      </div>
+      <div class="touch-row">
+        <button class="cal-btn cal-btn-down" id="cal-btn-down-big">−0.05</button>
+        <button class="cal-btn cal-btn-down" id="cal-btn-down">−0.01</button>
+        <button class="cal-btn cal-btn-up" id="cal-btn-up">+0.01</button>
+        <button class="cal-btn cal-btn-up" id="cal-btn-up-big">+0.05</button>
+      </div>
+      <div class="touch-row">
+        <button class="cal-btn cal-btn-next-step" id="cal-btn-advance">Next Step ▶</button>
+      </div>
+      <div class="touch-row">
+        <button class="cal-btn cal-btn-save" id="cal-btn-save">💾 Save</button>
+        <button class="cal-btn cal-btn-cancel" id="cal-btn-cancel">Cancel</button>
+      </div>
+    </div>
+
+    <div class="controls" style="margin-top:12px;">
+      <div><kbd>←</kbd> <kbd>→</kbd> Segment</div>
+      <div><kbd>↑</kbd> <kbd>↓</kbd> ±0.01</div>
+      <div><kbd>Shift</kbd> ±0.05</div>
+      <div><kbd>Enter</kbd> Next</div>
+      <div><kbd>S</kbd> Save</div>
+      <div><kbd>Esc</kbd> Cancel</div>
     </div>
 
     <div class="status" id="cal-status"></div>
@@ -272,6 +318,24 @@ document.addEventListener('keydown', (e) => {
       break;
   }
 });
+
+// Touch button handlers
+function bindBtn(id, fn) {
+  const el = document.getElementById(id);
+  if (el) {
+    el.addEventListener('touchstart', (e) => { e.preventDefault(); fn(); });
+    el.addEventListener('click', fn);
+  }
+}
+bindBtn('cal-btn-prev', () => { segIdx = (segIdx - 1 + segments.length) % segments.length; updateDisplay(); sendPreview(); });
+bindBtn('cal-btn-next', () => { segIdx = (segIdx + 1) % segments.length; updateDisplay(); sendPreview(); });
+bindBtn('cal-btn-up', () => setMultiplier(getMultiplier() + 0.01));
+bindBtn('cal-btn-down', () => setMultiplier(getMultiplier() - 0.01));
+bindBtn('cal-btn-up-big', () => setMultiplier(getMultiplier() + 0.05));
+bindBtn('cal-btn-down-big', () => setMultiplier(getMultiplier() - 0.05));
+bindBtn('cal-btn-advance', advance);
+bindBtn('cal-btn-save', save);
+bindBtn('cal-btn-cancel', () => { apiFetch('POST', '/api/layout/test-off'); window.location.href = '/'; });
 
 init();
   </script>
