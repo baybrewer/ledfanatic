@@ -763,15 +763,17 @@ class TwinTorches(Effect):
           self._sparks = np.concatenate([self._sparks, new]) if len(self._sparks) > 0 else new
 
       # === UPWARD SPARKS — embers flying from flame tips ===
+      # Use negative life as a tag: life < -100 = drip, life > 0 = spark
+      # (we'll use brightness > 0.9 to identify sparks for lighter gravity)
       if self._rng.random() < sparking / 255.0 * 2.0:
         count = 1 + int(self._rng.random() > 0.5)
         new = np.empty(count, dtype=self._SPARK_DTYPE)
         new['x'] = tx + self._rng.uniform(-2, 2, count).astype(np.float32)
-        new['y'] = self._rng.uniform(self._head_top - 3, self._head_top + 3, count).astype(np.float32)
-        new['vx'] = self._rng.uniform(-3, 3, count).astype(np.float32)
-        new['vy'] = self._rng.uniform(-15, -5, count).astype(np.float32)  # strong upward
-        new['life'] = self._rng.uniform(0.3, 0.8, count).astype(np.float32)
-        new['brightness'] = self._rng.uniform(0.6, 1.0, count).astype(np.float32)
+        new['y'] = self._rng.uniform(self._fire_top + 2, self._head_top, count).astype(np.float32)
+        new['vx'] = self._rng.uniform(-4, 4, count).astype(np.float32)
+        new['vy'] = self._rng.uniform(-25, -10, count).astype(np.float32)  # very strong upward
+        new['life'] = self._rng.uniform(0.4, 1.0, count).astype(np.float32)
+        new['brightness'] = self._rng.uniform(1.5, 2.0, count).astype(np.float32)  # >1 = spark marker
         if len(self._sparks) < self._MAX_SPARKS:
           self._sparks = np.concatenate([self._sparks, new]) if len(self._sparks) > 0 else new
 
@@ -779,29 +781,45 @@ class TwinTorches(Effect):
       s = self._sparks
       s['x'] += s['vx'] * dt
       s['y'] += s['vy'] * dt
-      # Gravity — drips accelerate downward, sparks decelerate upward
-      s['vy'] += 30 * dt  # gravitational acceleration
+      # Different gravity for sparks vs drips
+      # Sparks (brightness > 1.0): light embers, float with low gravity
+      # Drips (brightness <= 1.0): heavy tallow, full gravity
+      is_spark = s['brightness'] > 1.0
+      gravity = np.where(is_spark, 8.0, 35.0)  # sparks: gentle, drips: heavy
+      s['vy'] += gravity * dt
       s['life'] -= dt
       alive = (s['life'] > 0) & (s['y'] >= 0) & (s['y'] < h)
       self._sparks = s[alive]
 
-    # Draw drips and sparks — drips are bigger/brighter, leave trails
     if len(self._sparks) > 0:
       s = self._sparks
       ix = np.clip(np.round(s['x']).astype(np.int32), 0, w - 1)
       iy = np.clip(np.round(s['y']).astype(np.int32), 0, h - 1)
-      fade = np.clip(s['life'] / 1.0, 0, 1) ** 0.5 * s['brightness']
-      # Amber/orange fire drips
-      np.add.at(frame[:, :, 0], (ix, iy), fade * 240)
-      np.add.at(frame[:, :, 1], (ix, iy), fade * 120)
-      np.add.at(frame[:, :, 2], (ix, iy), fade * 10)
-      # Trail — draw a pixel above each drip (motion blur)
-      iy_trail = np.clip(iy - 1, 0, h - 1)
-      np.add.at(frame[:, :, 0], (ix, iy_trail), fade * 150)
-      np.add.at(frame[:, :, 1], (ix, iy_trail), fade * 70)
-      iy_trail2 = np.clip(iy - 2, 0, h - 1)
-      np.add.at(frame[:, :, 0], (ix, iy_trail2), fade * 60)
-      np.add.at(frame[:, :, 1], (ix, iy_trail2), fade * 25)
+      is_spark = s['brightness'] > 1.0
+
+      # Drips — amber orange with trailing motion blur
+      drip_mask = ~is_spark
+      if drip_mask.any():
+        dfade = np.clip(s['life'][drip_mask], 0, 1) ** 0.5 * np.clip(s['brightness'][drip_mask], 0, 1)
+        dix, diy = ix[drip_mask], iy[drip_mask]
+        np.add.at(frame[:, :, 0], (dix, diy), dfade * 240)
+        np.add.at(frame[:, :, 1], (dix, diy), dfade * 120)
+        np.add.at(frame[:, :, 2], (dix, diy), dfade * 10)
+        # Trail above drip
+        diy1 = np.clip(diy - 1, 0, h - 1)
+        np.add.at(frame[:, :, 0], (dix, diy1), dfade * 150)
+        np.add.at(frame[:, :, 1], (dix, diy1), dfade * 70)
+        diy2 = np.clip(diy - 2, 0, h - 1)
+        np.add.at(frame[:, :, 0], (dix, diy2), dfade * 60)
+        np.add.at(frame[:, :, 1], (dix, diy2), dfade * 25)
+
+      # Sparks — bright yellow-orange embers, small and hot
+      if is_spark.any():
+        sfade = np.clip(s['life'][is_spark], 0, 1) ** 0.3
+        six, siy = ix[is_spark], iy[is_spark]
+        np.add.at(frame[:, :, 0], (six, siy), sfade * 255)
+        np.add.at(frame[:, :, 1], (six, siy), sfade * 160)
+        np.add.at(frame[:, :, 2], (six, siy), sfade * 30)
 
     result = np.clip(frame, 0, 255).astype(np.uint8)
 
