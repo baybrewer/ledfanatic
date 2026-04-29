@@ -240,6 +240,8 @@ class BurningShip(Effect):
     self._prev_frame = None
     self._zoom = 2.0
     self._stale_count = 0
+    self._resetting = False
+    self._reset_blend = 0.0
 
   def _render_ship(self, elapsed, speed, max_iter, pal_idx, mirror=False):
     """Render one burning ship panel."""
@@ -313,17 +315,30 @@ class BurningShip(Effect):
     if rw > 0:
       frame[lw:lw + rw] = right[:rw]
 
-    # Detect stale — if frame has very low variance, we've zoomed past detail
-    variance = np.var(frame.astype(np.float32))
-    if variance < 50:
+    # Detect stale — if no dark pixels (all lit), fractal detail is gone
+    dark_pixels = np.sum(frame.max(axis=2) < 15)  # count near-black pixels
+    if dark_pixels == 0:
       self._stale_count += 1
     else:
       self._stale_count = 0
 
-    # Reset zoom when stale for ~1 second (60 frames)
-    if self._stale_count > 60:
-      self._zoom = 2.0
-      self._stale_count = 0
+    # Start fade-reset when stale for ~0.5 second
+    if self._stale_count > 30 and not self._resetting:
+      self._resetting = True
+      self._reset_blend = 0.0
+      self._reset_frame = frame.copy()  # snapshot current frame
+
+    # Fade reset — blend current toward the new zoomed-out view
+    if self._resetting:
+      self._reset_blend += 0.02  # fade over ~50 frames (~0.8 sec)
+      if self._reset_blend >= 1.0:
+        self._zoom = 2.0
+        self._resetting = False
+        self._stale_count = 0
+        self._reset_blend = 0.0
+      else:
+        # Fade to black during reset
+        frame = (frame.astype(np.float32) * (1.0 - self._reset_blend)).astype(np.uint8)
 
     # Temporal smoothing
     if self._prev_frame is not None:
