@@ -386,6 +386,9 @@ class Snake(Effect):
     elif action == 'rotate':
       # Rotate clockwise
       self.direction = (self.direction + 1) % 4
+    elif action in ('drop', 'shoot', 'fast'):
+      # Speed boost — move immediately
+      self._move_snake()
 
   def _auto_move(self):
     """Simple AI: chase food while avoiding self-collision."""

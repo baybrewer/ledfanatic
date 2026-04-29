@@ -2176,6 +2176,14 @@ function renderSetupLiveFrame(ctx, canvas, width, height, pixels) {
 
 // --- Game (Tetris) ---
 
+let currentGame = 'tetris';
+const GAME_TITLES = {
+  tetris: 'TETRIS',
+  space_invaders: 'SPACE INVADERS',
+  snake_game: 'SNAKE',
+  game_of_life: 'GAME OF LIFE',
+};
+
 function initGame() {
   const startBtn = document.getElementById('game-start-btn');
   if (!startBtn) return;
@@ -2184,8 +2192,18 @@ function initGame() {
     await api('POST', `/api/scenes/game-input/${action}`);
   }
 
+  // Game selector buttons
+  document.querySelectorAll('.game-select-btn').forEach(btn => {
+    btn.addEventListener('click', () => {
+      currentGame = btn.dataset.game;
+      document.querySelectorAll('.game-select-btn').forEach(b => b.classList.remove('active'));
+      btn.classList.add('active');
+      document.getElementById('game-title').textContent = GAME_TITLES[currentGame] || currentGame.toUpperCase();
+    });
+  });
+
   startBtn.addEventListener('click', async () => {
-    await api('POST', '/api/scenes/activate', {effect: 'tetris', params: {}});
+    await api('POST', '/api/scenes/activate', {effect: currentGame, params: {}});
   });
 
   // Touch buttons
@@ -2200,13 +2218,27 @@ function initGame() {
   bindGame('game-rotate', 'rotate');
   bindGame('game-down', 'down');
   bindGame('game-fast', 'fast');
-  bindGame('game-drop', 'drop');
+  bindGame('game-drop', 'drop');  // also maps to 'shoot' for Space Invaders
+
+  // Drop/shoot button sends game-appropriate action
+  const dropBtn = document.getElementById('game-drop');
+  if (dropBtn) {
+    // Override to send 'shoot' for space invaders, 'drop' for others
+    dropBtn.removeEventListener('mousedown', dropBtn._handler);
+    dropBtn.removeEventListener('touchstart', dropBtn._handler);
+    const smartAction = () => {
+      const action = currentGame === 'space_invaders' ? 'shoot' : 'drop';
+      gameInput(action);
+    };
+    dropBtn.addEventListener('touchstart', (e) => { e.preventDefault(); smartAction(); });
+    dropBtn.addEventListener('mousedown', smartAction);
+  }
 
   // Keyboard (only when game tab is active and not typing in an input)
   document.addEventListener('keydown', (e) => {
     if (document.activeElement && (document.activeElement.tagName === 'INPUT' || document.activeElement.tagName === 'TEXTAREA')) return;
     const gamePanel = document.getElementById('panel-game');
-    if (!gamePanel || gamePanel.style.display === 'none') return;
+    if (!gamePanel || !gamePanel.classList.contains('active')) return;
     if (e.key === 'ArrowLeft') { gameInput('left'); e.preventDefault(); }
     else if (e.key === 'ArrowRight') { gameInput('right'); e.preventDefault(); }
     else if (e.key === 'ArrowUp') { gameInput('rotate'); e.preventDefault(); }

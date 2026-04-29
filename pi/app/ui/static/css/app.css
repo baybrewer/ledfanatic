@@ -1576,3 +1576,28 @@ input:focus-visible {
   white-space: pre-wrap;
   word-break: break-all;
 }
+
+/* Game selector buttons */
+.game-select-btn {
+  padding: 8px 16px;
+  border-radius: 8px;
+  font-size: 13px;
+  transition: all var(--transition-fast);
+}
+
+.game-select-btn.active {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: white;
+  box-shadow: 0 2px 8px var(--accent-glow);
+}
+
+.game-btn {
+  border-radius: var(--radius) !important;
+  transition: all var(--transition-fast);
+}
+
+.game-btn:active {
+  transform: scale(0.95);
+  background: var(--accent) !important;
+}

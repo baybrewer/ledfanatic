@@ -242,19 +242,26 @@
       <!-- GAME -->
       <section id="panel-game" class="panel" role="tabpanel" aria-labelledby="tab-game">
         <div style="text-align:center;padding:20px;">
-          <h2 style="color:#0ff;margin-bottom:16px;">TETRIS</h2>
+          <!-- Game selector -->
+          <div style="display:flex;gap:8px;justify-content:center;margin-bottom:16px;flex-wrap:wrap;">
+            <button class="action-btn game-select-btn active" data-game="tetris">Tetris</button>
+            <button class="action-btn game-select-btn" data-game="space_invaders">Space Invaders</button>
+            <button class="action-btn game-select-btn" data-game="snake_game">Snake</button>
+            <button class="action-btn game-select-btn" data-game="game_of_life">Game of Life</button>
+          </div>
+          <h2 id="game-title" style="color:#0ff;margin-bottom:16px;">TETRIS</h2>
           <button id="game-start-btn" class="action-btn primary" style="font-size:18px;padding:12px 32px;margin-bottom:24px;">Start Game</button>
           <div id="game-controls" style="display:grid;grid-template-columns:80px 80px 80px;gap:8px;justify-content:center;margin-bottom:12px;">
             <div></div>
             <button class="action-btn secondary game-btn" id="game-rotate" style="font-size:28px;height:80px;">&#8635;</button>
             <div></div>
             <button class="action-btn secondary game-btn" id="game-left" style="font-size:28px;height:80px;">&#9664;</button>
-            <button class="action-btn secondary game-btn" id="game-fast" style="font-size:22px;height:80px;">&#9660; Fast</button>
+            <button class="action-btn secondary game-btn" id="game-fast" style="font-size:22px;height:80px;">&#9660;</button>
             <button class="action-btn secondary game-btn" id="game-right" style="font-size:28px;height:80px;">&#9654;</button>
           </div>
-          <button class="action-btn secondary game-btn" id="game-down" style="font-size:22px;width:125px;height:64px;display:inline-block;">&#9660; Down</button>
-          <button class="action-btn secondary game-btn" id="game-drop" style="font-size:22px;width:125px;height:64px;display:inline-block;background:#600;">&#9660;&#9660; Drop</button>
-          <p style="margin-top:16px;color:#666;font-size:12px;">Keyboard: arrows + space. Auto-plays after 5s idle.</p>
+          <button class="action-btn secondary game-btn" id="game-down" style="font-size:22px;width:125px;height:64px;display:inline-block;">Down</button>
+          <button class="action-btn secondary game-btn" id="game-drop" style="font-size:22px;width:125px;height:64px;display:inline-block;background:#600;">Drop/Shoot</button>
+          <p style="margin-top:16px;color:#666;font-size:13px;">Keyboard: arrows + space. Auto-plays after 5s idle.</p>
         </div>
       </section>
 
