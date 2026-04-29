@@ -687,16 +687,15 @@ class TwinTorches(Effect):
       head_cx = int(tx)
       hw = self._head_w
 
-      # === INJECT HEAT at fuel mass — varied injection for swirling ===
-      inject = self._rng.uniform(0.08, 0.22, size=(2 * hw + 1,)).astype(np.float32)
-      for di, dx in enumerate(range(-hw, hw + 1)):
+      # === INJECT HEAT at fuel mass — strong, varied for swirling ===
+      for dx in range(-hw, hw + 1):
         sx = head_cx + dx
         if 0 <= sx < w:
-          # Inject unevenly — creates hot spots that generate swirls
           for row in range(max(0, head_top_local), min(fh, head_bot_local)):
-            # Vary by position and time for organic patterns
-            boost = inject[di] * (0.7 + 0.6 * np.sin(tt * 5 + dx * 3 + row * 0.5))
-            heat[sx, row] = min(1.0, heat[sx, row] + max(0, boost))
+            # Uneven injection — hot spots rotate around head for swirl
+            hot_spot = 0.5 + 0.5 * np.sin(tt * 6 + dx * 2.5 + row * 0.8)
+            boost = 0.18 * hot_spot + self._rng.random() * 0.08
+            heat[sx, row] = min(1.0, heat[sx, row] + boost)
 
       # === CONVECTIVE BUOYANCY with vortex shedding ===
       new_heat = np.zeros_like(heat)
@@ -710,15 +709,13 @@ class TwinTorches(Effect):
         new_heat[1:, :] += heat[:-1, :] * 0.10
         new_heat[:-1, :] += heat[1:, :] * 0.10
         # Diagonal: creates rotational vortex shedding
-        # Alternating diagonal bias creates Karman-like vortex street
-        phase = int(tt * 6) % 2
-        if phase == 0:
-          new_heat[1:, :-1] += heat[:-1, 1:] * 0.06  # up-right
-          new_heat[:-1, :-1] += heat[1:, 1:] * 0.03  # up-left (weaker)
-        else:
-          new_heat[:-1, :-1] += heat[1:, 1:] * 0.06  # up-left
-          new_heat[1:, :-1] += heat[:-1, 1:] * 0.03  # up-right (weaker)
-        new_heat += heat * 0.08  # low self-retention = more motion
+        # Alternating diagonal bias — swirl direction oscillates
+        phase = np.sin(tt * 4.0 + ti * 1.5)
+        r_wt = 0.04 + max(0, phase) * 0.05   # right-bias when positive
+        l_wt = 0.04 + max(0, -phase) * 0.05  # left-bias when negative
+        new_heat[1:, :-1] += heat[:-1, 1:] * r_wt
+        new_heat[:-1, :-1] += heat[1:, 1:] * l_wt
+        new_heat += heat * 0.14  # higher retention = more visible fire body
       heat[:] = new_heat
 
       # === TURBULENT CONVECTION — vortex-generating perturbation ===
@@ -740,8 +737,7 @@ class TwinTorches(Effect):
         heat[:] = heat * (1.0 - blend) + heat_shifted * blend
 
       # === COOLING — height-dependent (tips cool faster) ===
-      # More cooling at top (thin flames), less at head (fuel source)
-      y_cool = np.linspace(0.06, 0.02, fh, dtype=np.float32)
+      y_cool = np.linspace(0.04, 0.015, fh, dtype=np.float32)
       cool = (self._rng.uniform(0.5, 1.5, size=heat.shape) * y_cool[np.newaxis, :]).astype(np.float32)
       heat[:] = np.maximum(0, heat - cool)
 
@@ -784,7 +780,9 @@ class TwinTorches(Effect):
         count = 1 + int(self._rng.random() > 0.4)
         new = np.empty(count, dtype=self._SPARK_DTYPE)
         new['x'] = tx + self._rng.uniform(-self._head_w * 0.6, self._head_w * 0.6, count).astype(np.float32)
-        new['y'] = self._rng.uniform(self._head_top - 2, self._head_top + 4, count).astype(np.float32)
+        # Spawn at the flame TIPS (top of fire zone), not the head
+        flame_tip = self._fire_top + (self._head_top - self._fire_top) * 0.3
+        new['y'] = self._rng.uniform(self._fire_top + 1, flame_tip, count).astype(np.float32)
         # Convective velocity — sparks get lateral push from vortex shedding
         vortex_vx = np.sin(tt * 3.5 + ti * 2) * 3 + self._rng.uniform(-2, 2, count)
         new['vx'] = vortex_vx.astype(np.float32)
