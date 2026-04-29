@@ -292,7 +292,7 @@ _CRACK_DTYPE = np.dtype([
   ('life', np.float32), ('max_life', np.float32),
 ])
 
-_MAX_CRACK_POINTS = 2000
+_MAX_CRACK_POINTS = 800
 _MAX_CRACKS = 15
 
 
@@ -401,30 +401,31 @@ class SRLightningGap(Effect):
     # Vibrant plasma background
     frame_f = _plasma_bg(self._gx, self._gy, elapsed, self.width, self.height).astype(np.float32)
 
-    # Render crack points — vectorized distance computation
+    # Render crack points — rasterize directly (no distance matrix)
     if len(self._crack_points) > 0:
       pts = self._crack_points
       fade = pts['life'] / pts['max_life']
-
-      # Process in batches to avoid huge memory for distance arrays
-      batch_size = 500
       darkness = np.zeros((self.width, self.height), dtype=np.float32)
 
-      for i in range(0, len(pts), batch_size):
-        batch = pts[i:i + batch_size]
-        batch_fade = fade[i:i + batch_size]
+      # Rasterize each point into nearby pixels (much faster than full distance matrix)
+      ix = np.clip(np.round(pts['x']).astype(np.int32), 0, self.width - 1)
+      iy = np.clip(np.round(pts['y']).astype(np.int32), 0, self.height - 1)
+      cw = int(crack_width + 0.5)
 
-        dx = self._gx[:, :, np.newaxis] - batch['x'][np.newaxis, np.newaxis, :]
-        dy = self._gy[:, :, np.newaxis] - batch['y'][np.newaxis, np.newaxis, :]
-        dist = np.sqrt(dx * dx + dy * dy)
-
-        # Gaussian crack profile
-        w = crack_width * (0.5 + batch_fade * 0.5)
-        w = w[np.newaxis, np.newaxis, :]
-        crack_intensity = np.exp(-(dist * dist) / (2.0 * w * w))
-        crack_intensity *= batch_fade[np.newaxis, np.newaxis, :]
-
-        darkness = np.maximum(darkness, np.max(crack_intensity, axis=2))
+      # Scatter crack darkness into buffer
+      np.add.at(darkness, (ix, iy), fade * 0.8)
+      # Spread to neighbors for width
+      for dx in range(-cw, cw + 1):
+        for dy in range(-cw, cw + 1):
+          if dx == 0 and dy == 0:
+            continue
+          dist = (dx * dx + dy * dy) ** 0.5
+          if dist > cw + 0.5:
+            continue
+          falloff = max(0, 1.0 - dist / (cw + 0.5))
+          nx = np.clip(ix + dx, 0, self.width - 1)
+          ny = np.clip(iy + dy, 0, self.height - 1)
+          np.add.at(darkness, (nx, ny), fade * 0.5 * falloff)
 
       darkness = np.clip(darkness, 0, 1)
       frame_f *= (1.0 - darkness[:, :, np.newaxis] * darkness_strength)
