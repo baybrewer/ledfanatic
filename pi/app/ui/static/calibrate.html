@@ -1,0 +1,279 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>LED Fanatic — Brightness Calibration</title>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body {
+      font-family: -apple-system, system-ui, sans-serif;
+      background: #060610;
+      color: #e8e8f8;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      padding: 32px 16px;
+      min-height: 100vh;
+    }
+    h1 {
+      font-size: 24px;
+      margin-bottom: 8px;
+      background: linear-gradient(135deg, #6c5ce7, #a29bfe);
+      -webkit-background-clip: text;
+      -webkit-text-fill-color: transparent;
+    }
+    .subtitle { color: #7878a0; margin-bottom: 24px; font-size: 14px; }
+    .state-panel {
+      background: rgba(20, 20, 35, 0.8);
+      border: 1px solid rgba(100, 100, 180, 0.2);
+      border-radius: 16px;
+      padding: 24px 32px;
+      min-width: 400px;
+      max-width: 600px;
+      width: 100%;
+    }
+    .state-row {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      padding: 8px 0;
+      border-bottom: 1px solid rgba(100, 100, 180, 0.1);
+      font-size: 16px;
+    }
+    .state-row:last-child { border-bottom: none; }
+    .state-label { color: #7878a0; }
+    .state-value { font-weight: 700; font-size: 20px; }
+    .color-r { color: #ff6b6b; }
+    .color-g { color: #00cec9; }
+    .color-b { color: #6c5ce7; }
+    .multiplier { color: #ffeaa7; font-size: 28px; }
+    .controls {
+      margin-top: 24px;
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 8px;
+      font-size: 13px;
+      color: #7878a0;
+    }
+    .controls kbd {
+      background: rgba(100, 100, 180, 0.2);
+      padding: 2px 8px;
+      border-radius: 4px;
+      color: #e8e8f8;
+      font-family: monospace;
+    }
+    .status { margin-top: 16px; color: #00cec9; font-size: 14px; min-height: 20px; text-align: center; }
+    .progress { margin-top: 12px; display: flex; gap: 4px; justify-content: center; }
+    .progress-dot {
+      width: 12px; height: 12px; border-radius: 50%;
+      background: rgba(100, 100, 180, 0.2);
+    }
+    .progress-dot.active { background: #6c5ce7; box-shadow: 0 0 8px rgba(108, 92, 231, 0.4); }
+    .progress-dot.done { background: #00cec9; }
+  </style>
+</head>
+<body>
+  <h1>Brightness Calibration</h1>
+  <p class="subtitle">Adjust per-segment brightness for even output</p>
+
+  <div class="state-panel">
+    <div class="state-row">
+      <span class="state-label">Color</span>
+      <span class="state-value" id="cal-color">Red</span>
+    </div>
+    <div class="state-row">
+      <span class="state-label">Level</span>
+      <span class="state-value" id="cal-level">20%</span>
+    </div>
+    <div class="state-row">
+      <span class="state-label">Segment</span>
+      <span class="state-value" id="cal-segment">--</span>
+    </div>
+    <div class="state-row">
+      <span class="state-label">Multiplier</span>
+      <span class="state-value multiplier" id="cal-multiplier">1.00</span>
+    </div>
+
+    <div class="progress" id="cal-progress"></div>
+
+    <div class="controls">
+      <div><kbd>&larr;</kbd> <kbd>&rarr;</kbd> Select segment</div>
+      <div><kbd>&uarr;</kbd> <kbd>&darr;</kbd> Adjust +/-0.01</div>
+      <div><kbd>Shift+&uarr;</kbd> <kbd>Shift+&darr;</kbd> Adjust +/-0.05</div>
+      <div><kbd>Enter</kbd> Next level/color</div>
+      <div><kbd>S</kbd> Save to layout</div>
+      <div><kbd>Esc</kbd> Cancel & exit</div>
+    </div>
+
+    <div class="status" id="cal-status"></div>
+  </div>
+
+  <script>
+const token = localStorage.getItem('ledfanatic_token') || '';
+
+const COLORS = ['r', 'g', 'b'];
+const COLOR_NAMES = { r: 'Red', g: 'Green', b: 'Blue' };
+const COLOR_CLASSES = { r: 'color-r', g: 'color-g', b: 'color-b' };
+const LEVELS = [0.2, 0.5, 0.8];
+
+let segments = [];
+let calData = {};
+let colorIdx = 0;
+let levelIdx = 0;
+let segIdx = 0;
+
+async function apiFetch(method, path, body) {
+  const opts = { method, headers: { 'Authorization': `Bearer ${token}` } };
+  if (body) { opts.headers['Content-Type'] = 'application/json'; opts.body = JSON.stringify(body); }
+  const res = await fetch(path, opts);
+  return res.json();
+}
+
+async function init() {
+  const layout = await apiFetch('GET', '/api/layout/');
+  if (layout && layout.outputs) {
+    segments = [];
+    for (const out of layout.outputs) {
+      for (const seg of (out.segments || [])) {
+        if (seg.enabled !== false) {
+          segments.push({ key: `${out.id}:${seg.id}`, id: seg.id, outputId: out.id });
+        }
+      }
+    }
+  }
+
+  const calResult = await apiFetch('GET', '/api/layout/calibrate/data');
+  if (calResult && calResult.calibration) {
+    calData = calResult.calibration;
+  }
+  for (const seg of segments) {
+    if (!calData[seg.key]) {
+      calData[seg.key] = { r: [1.0, 1.0, 1.0], g: [1.0, 1.0, 1.0], b: [1.0, 1.0, 1.0] };
+    }
+  }
+
+  updateDisplay();
+  sendPreview();
+  document.getElementById('cal-status').textContent = `${segments.length} segments loaded`;
+}
+
+function currentColor() { return COLORS[colorIdx]; }
+function currentLevel() { return LEVELS[levelIdx]; }
+function currentSegment() { return segments[segIdx] || null; }
+
+function getMultiplier() {
+  const seg = currentSegment();
+  if (!seg) return 1.0;
+  const ch = calData[seg.key]?.[currentColor()];
+  return ch ? ch[levelIdx] : 1.0;
+}
+
+function setMultiplier(val) {
+  const seg = currentSegment();
+  if (!seg) return;
+  val = Math.round(Math.max(0.1, Math.min(2.0, val)) * 100) / 100;
+  if (!calData[seg.key]) calData[seg.key] = { r: [1, 1, 1], g: [1, 1, 1], b: [1, 1, 1] };
+  calData[seg.key][currentColor()][levelIdx] = val;
+  updateDisplay();
+  sendPreview();
+}
+
+function updateDisplay() {
+  const color = currentColor();
+  const colorEl = document.getElementById('cal-color');
+  colorEl.textContent = COLOR_NAMES[color];
+  colorEl.className = `state-value ${COLOR_CLASSES[color]}`;
+
+  document.getElementById('cal-level').textContent = `${Math.round(currentLevel() * 100)}%`;
+
+  const seg = currentSegment();
+  document.getElementById('cal-segment').textContent = seg ? `${seg.id} (${segIdx + 1}/${segments.length})` : '--';
+  document.getElementById('cal-multiplier').textContent = getMultiplier().toFixed(2);
+
+  const progress = document.getElementById('cal-progress');
+  const currentStep = colorIdx * 3 + levelIdx;
+  progress.innerHTML = '';
+  for (let i = 0; i < 9; i++) {
+    const dot = document.createElement('div');
+    dot.className = 'progress-dot' + (i < currentStep ? ' done' : i === currentStep ? ' active' : '');
+    progress.appendChild(dot);
+  }
+}
+
+async function sendPreview() {
+  const muls = {};
+  for (const seg of segments) {
+    const ch = calData[seg.key]?.[currentColor()];
+    muls[seg.id] = ch ? ch[levelIdx] : 1.0;
+  }
+  await apiFetch('POST', '/api/layout/calibrate/preview', {
+    color: currentColor(),
+    level: currentLevel(),
+    multipliers: muls,
+  });
+}
+
+function advance() {
+  levelIdx++;
+  if (levelIdx >= LEVELS.length) {
+    levelIdx = 0;
+    colorIdx++;
+    if (colorIdx >= COLORS.length) {
+      document.getElementById('cal-status').textContent = 'Calibration complete! Press S to save.';
+      colorIdx = COLORS.length - 1;
+      levelIdx = LEVELS.length - 1;
+      return;
+    }
+  }
+  updateDisplay();
+  sendPreview();
+}
+
+async function save() {
+  document.getElementById('cal-status').textContent = 'Saving...';
+  const result = await apiFetch('POST', '/api/layout/calibrate/save', { calibration: calData });
+  if (result && result.status === 'ok') {
+    document.getElementById('cal-status').textContent = `Saved calibration for ${result.segments} segments!`;
+  } else {
+    document.getElementById('cal-status').textContent = 'Save failed!';
+  }
+}
+
+document.addEventListener('keydown', (e) => {
+  e.preventDefault();
+  const shift = e.shiftKey;
+  switch (e.key) {
+    case 'ArrowLeft':
+      segIdx = (segIdx - 1 + segments.length) % segments.length;
+      updateDisplay();
+      sendPreview();
+      break;
+    case 'ArrowRight':
+      segIdx = (segIdx + 1) % segments.length;
+      updateDisplay();
+      sendPreview();
+      break;
+    case 'ArrowUp':
+      setMultiplier(getMultiplier() + (shift ? 0.05 : 0.01));
+      break;
+    case 'ArrowDown':
+      setMultiplier(getMultiplier() - (shift ? 0.05 : 0.01));
+      break;
+    case 'Enter':
+      advance();
+      break;
+    case 's': case 'S':
+      save();
+      break;
+    case 'Escape':
+      apiFetch('POST', '/api/layout/test-off');
+      window.location.href = '/';
+      break;
+  }
+});
+
+init();
+  </script>
+</body>
+</html>

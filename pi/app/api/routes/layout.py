@@ -12,7 +12,7 @@ from ...layout import (
     load_layout, save_layout, validate_layout, compile_layout,
     output_config_list, pack_frame,
 )
-from ...layout.schema import parse_layout
+from ...layout.schema import parse_layout, BrightnessCal
 
 logger = logging.getLogger(__name__)
 
@@ -246,6 +246,79 @@ def create_router(deps, require_auth) -> APIRouter:
             "led": led,
             "mapped_to": {"x": mapping[0], "y": mapping[1]} if mapping else None,
         }
+
+    # --- Brightness Calibration ---
+
+    @router.post("/calibrate/preview", dependencies=[Depends(require_auth)])
+    async def calibrate_preview(req: dict):
+        """Set all segments to a test color at a specific brightness level."""
+        color = req.get('color', 'r')
+        level = float(req.get('level', 0.5))
+        raw_muls = req.get('multipliers', {})
+        multipliers = {}
+        for k, v in raw_muls.items():
+            multipliers[k] = float(v)
+        deps.renderer.set_calibrate_preview(color, level, multipliers)
+        return {'status': 'ok'}
+
+    @router.get("/calibrate/data")
+    async def get_calibration_data():
+        """Get current brightness calibration for all segments."""
+        result = {}
+        for output in deps.layout_config.outputs:
+            for seg in output.segments:
+                key = f"{output.id}:{seg.id}"
+                cal = getattr(seg, 'brightness_cal', None)
+                if cal and cal != BrightnessCal():
+                    result[key] = {
+                        'r': list(cal.r),
+                        'g': list(cal.g),
+                        'b': list(cal.b),
+                    }
+                else:
+                    result[key] = {
+                        'r': [1.0, 1.0, 1.0],
+                        'g': [1.0, 1.0, 1.0],
+                        'b': [1.0, 1.0, 1.0],
+                    }
+        return {'calibration': result}
+
+    @router.post("/calibrate/save", dependencies=[Depends(require_auth)])
+    async def calibrate_save(req: dict):
+        """Save brightness calibration data to layout.yaml."""
+        import yaml as _yaml
+        cal_data = req.get('calibration', {})
+        if not cal_data:
+            raise HTTPException(400, "No calibration data")
+
+        # Load current layout yaml
+        layout_path = deps.config_dir / "layout.yaml"
+        with open(layout_path) as f:
+            raw = _yaml.safe_load(f)
+
+        # Update brightness_cal for each segment
+        for output_raw in raw.get('outputs', []):
+            for seg_raw in output_raw.get('segments', []):
+                key = f"{output_raw['id']}:{seg_raw['id']}"
+                if key in cal_data:
+                    seg_raw['brightness_cal'] = cal_data[key]
+
+        # Write back
+        with open(layout_path, 'w') as f:
+            _yaml.safe_dump(raw, f, default_flow_style=False, sort_keys=False)
+
+        # Reload and recompile layout
+        new_config = load_layout(deps.config_dir)
+        new_compiled = compile_layout(new_config)
+        deps.layout_config = new_config
+        deps.compiled_layout = new_compiled
+        deps.renderer.apply_layout(new_compiled, new_config)
+
+        # Clear calibrate preview
+        deps.renderer.set_test_strip(None)
+
+        logger.info(f"Saved brightness calibration for {len(cal_data)} segments")
+        return {'status': 'ok', 'segments': len(cal_data)}
 
     return router
 

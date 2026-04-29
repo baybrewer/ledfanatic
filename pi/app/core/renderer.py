@@ -227,6 +227,18 @@ class Renderer:
     self._test_mode = "probe"
     self._test_strip_until = time.monotonic() + 600  # 10 minutes
 
+  def set_calibrate_preview(self, color: str, level: float, multipliers: dict):
+    """Show all segments at a single color/brightness for calibration.
+    color: 'r', 'g', 'b'
+    level: 0.2, 0.5, 0.8
+    multipliers: dict of seg_id -> float
+    """
+    self._cal_color = color
+    self._cal_level = level
+    self._cal_multipliers = multipliers
+    self._test_mode = "calibrate"
+    self._test_strip_until = time.monotonic() + 600  # 10 min timeout
+
   def _set_scene(self, scene_name: str, params: Optional[dict] = None):
     if scene_name not in self.effect_registry:
       logger.warning(f"Unknown effect: {scene_name}")
@@ -442,6 +454,18 @@ class Renderer:
                 for x, y in self._segment_positions.get(seg_id, []):
                   if x < logical_frame.shape[0] and y < logical_frame.shape[1]:
                     logical_frame[x, y] = color
+
+          elif self._test_mode == "calibrate":
+            # Show all segments at one color/level, with per-segment multipliers
+            val = int(getattr(self, '_cal_level', 0.5) * 255)
+            ch_idx = {'r': 0, 'g': 1, 'b': 2}.get(getattr(self, '_cal_color', 'r'), 0)
+            cal_muls = getattr(self, '_cal_multipliers', {})
+            for seg_id, positions in self._segment_positions.items():
+              mul = cal_muls.get(seg_id, 1.0)
+              adjusted = min(255, max(0, int(val * mul)))
+              for x, y in positions:
+                if x < logical_frame.shape[0] and y < logical_frame.shape[1]:
+                  logical_frame[x, y, ch_idx] = adjusted
 
           elif self._test_mode == "probe":
             # Single LED by strip/wire position — write directly to output buffer
