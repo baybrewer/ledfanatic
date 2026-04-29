@@ -330,22 +330,21 @@ class SRLightningGap(Effect):
     start_x = np.random.uniform(0, self.width)
     start_y = np.random.uniform(0, self.height)
     branch_prob = self.params.get('branch_prob', 0.15)
-    crack_life = self.params.get('crack_life', 2.0) * (0.8 + bass * 0.4)
+    crack_life = self.params.get('crack_life', 2.0) * (0.3 + bass * 0.4)
 
-    # Generate crack segments using random walk
-    max_segments = min(60 + int(bass * 40), 150)
+    # Short punchy blotches — tight clusters of points, not long walks
+    max_segments = min(8 + int(bass * 15), 30)
     points = []
 
-    # Stack-based branching: (x, y, angle, remaining_steps)
+    # Stack-based branching with SHORT steps
     stack = [(start_x, start_y, np.random.uniform(-np.pi, np.pi), max_segments)]
 
     while stack and len(points) < _MAX_CRACK_POINTS - len(self._crack_points):
       cx, cy, angle, remaining = stack.pop()
-      step_len = np.random.uniform(0.5, 2.0)
+      step_len = np.random.uniform(0.3, 1.0)
 
       for _ in range(remaining):
-        # Walk
-        angle += np.random.uniform(-0.6, 0.6)
+        angle += np.random.uniform(-1.0, 1.0)
         cx += np.cos(angle) * step_len
         cy += np.sin(angle) * step_len
 
@@ -354,10 +353,10 @@ class SRLightningGap(Effect):
 
         points.append((cx, cy, crack_life, crack_life))
 
-        # Branch
-        if np.random.random() < branch_prob and len(stack) < 8:
-          branch_angle = angle + np.random.choice([-1, 1]) * np.random.uniform(0.4, 1.2)
-          stack.append((cx, cy, branch_angle, remaining // 3))
+        # Branch more aggressively
+        if np.random.random() < branch_prob and len(stack) < 12:
+          branch_angle = angle + np.random.choice([-1, 1]) * np.random.uniform(0.5, 1.5)
+          stack.append((cx, cy, branch_angle, remaining // 2))
 
         remaining -= 1
         if remaining <= 0:
@@ -389,14 +388,14 @@ class SRLightningGap(Effect):
     level = state.audio_level * gain
     high = state.audio_high * gain
 
-    # Bass-reactive crack spawning — every bass surge triggers a crack
-    bass_delta = max(0, bass - self._prev_bass)  # rising edge of bass
-    self._prev_bass = bass * 0.7 + self._prev_bass * 0.3  # smooth tracking
+    # Bass-reactive — every bass surge fires blotches
+    bass_delta = max(0, bass - self._prev_bass)
+    self._prev_bass = bass * 0.5 + self._prev_bass * 0.5  # faster tracking
 
-    # Spawn on bass amplitude — accumulate fractional spawns
-    spawn_rate = bass * 6.0 + bass_delta * 20.0  # steady + transient response
+    # Aggressive spawning — bass drives it hard
+    spawn_rate = bass * 15.0 + bass_delta * 40.0
     self._spawn_accum += spawn_rate * dt
-    while self._spawn_accum >= 1.0 and len(self._crack_points) < _MAX_CRACK_POINTS * 0.8:
+    while self._spawn_accum >= 1.0 and len(self._crack_points) < _MAX_CRACK_POINTS * 0.9:
       self._spawn_accum -= 1.0
       self._spawn_crack(bass)
 
