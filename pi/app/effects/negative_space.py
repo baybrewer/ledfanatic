@@ -317,7 +317,8 @@ class SRLightningGap(Effect):
     super().__init__(width, height, params)
     self._crack_points = np.empty(0, dtype=_CRACK_DTYPE)
     self._last_t = None
-    self._beat_cooldown = 0.0
+    self._spawn_accum = 0.0
+    self._prev_bass = 0.0
     # Precompute coordinate grids
     xs = np.arange(width, dtype=np.float32)
     ys = np.arange(height, dtype=np.float32)
@@ -388,8 +389,15 @@ class SRLightningGap(Effect):
     level = state.audio_level * gain
     high = state.audio_high * gain
 
-    # Continuous bass-driven crack spawning
-    if bass > 0.2 and np.random.random() < bass * dt * 3 and len(self._crack_points) < _MAX_CRACK_POINTS * 0.7:
+    # Bass-reactive crack spawning — every bass surge triggers a crack
+    bass_delta = max(0, bass - self._prev_bass)  # rising edge of bass
+    self._prev_bass = bass * 0.7 + self._prev_bass * 0.3  # smooth tracking
+
+    # Spawn on bass amplitude — accumulate fractional spawns
+    spawn_rate = bass * 6.0 + bass_delta * 20.0  # steady + transient response
+    self._spawn_accum += spawn_rate * dt
+    while self._spawn_accum >= 1.0 and len(self._crack_points) < _MAX_CRACK_POINTS * 0.8:
+      self._spawn_accum -= 1.0
       self._spawn_crack(bass)
 
     # Update crack lifetimes
