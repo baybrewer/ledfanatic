@@ -105,7 +105,7 @@ class SRShadowPulse(Effect):
     _P("Gain", "gain", 0.5, 5.0, 0.1, 2.0),
     _P("Ring Speed", "ring_speed", 5.0, 60.0, 1.0, 25.0),
     _P("Ring Width", "ring_width", 1.0, 8.0, 0.5, 3.0),
-    _P("Bg Hue Speed", "hue_speed", 0.0, 0.5, 0.01, 0.05),
+    _P("Darkness", "darkness", 0.5, 1.0, 0.05, 0.95),
   ]
 
   def __init__(self, width, height, params=None):
@@ -128,7 +128,7 @@ class SRShadowPulse(Effect):
     gain = self.params.get('gain', 2.0)
     ring_speed = self.params.get('ring_speed', 25.0)
     ring_width = self.params.get('ring_width', 3.0)
-    hue_speed = self.params.get('hue_speed', 0.05)
+    darkness_strength = self.params.get('darkness', 0.95)
 
     bass = state.audio_bass * gain
     beat = state.audio_beat
@@ -136,10 +136,10 @@ class SRShadowPulse(Effect):
 
     self._beat_cooldown = max(0, self._beat_cooldown - dt)
 
-    # Spawn rings on beat
+    # Spawn rings on beat — lots of them
     if beat and self._beat_cooldown <= 0 and len(self._rings) < _MAX_RINGS:
-      self._beat_cooldown = 0.12
-      count = 1 + int(bass > 0.6)
+      self._beat_cooldown = 0.08
+      count = 2 + int(bass > 0.4) + int(bass > 0.7)
       new = np.empty(count, dtype=_RING_DTYPE)
       new['cx'] = np.random.uniform(0, self.width, count).astype(np.float32)
       new['cy'] = np.random.uniform(0, self.height, count).astype(np.float32)
@@ -154,8 +154,8 @@ class SRShadowPulse(Effect):
       else:
         self._rings = np.concatenate([self._rings, new])
 
-    # Auto-spawn on sustained bass
-    if bass > 0.5 and np.random.random() < bass * dt * 2 and len(self._rings) < _MAX_RINGS:
+    # Auto-spawn on sustained bass — aggressive
+    if bass > 0.3 and np.random.random() < bass * dt * 4 and len(self._rings) < _MAX_RINGS:
       new = np.empty(1, dtype=_RING_DTYPE)
       new['cx'] = np.random.uniform(0, self.width, 1).astype(np.float32)
       new['cy'] = np.random.uniform(0, self.height, 1).astype(np.float32)
@@ -200,8 +200,8 @@ class SRShadowPulse(Effect):
       darkness = np.max(ring_mask, axis=2)
       darkness = np.clip(darkness * (0.7 + level * 0.5), 0.0, 1.0)
 
-      # Apply STRONG darkness
-      frame *= (1.0 - darkness[:, :, np.newaxis])
+      # Apply darkness controlled by slider
+      frame *= (1.0 - darkness[:, :, np.newaxis] * darkness_strength)
 
     return np.clip(frame, 0, 255).astype(np.uint8)
 
@@ -224,6 +224,7 @@ class SRVoidBreath(Effect):
     _P("Min Radius", "min_radius", 0.05, 0.3, 0.01, 0.1),
     _P("Max Radius", "max_radius", 0.3, 0.9, 0.05, 0.7),
     _P("Edge Detail", "edge_detail", 1.0, 8.0, 0.5, 3.0),
+    _P("Darkness", "darkness", 0.5, 1.0, 0.05, 0.95),
   ]
 
   def __init__(self, width, height, params=None):
@@ -249,6 +250,7 @@ class SRVoidBreath(Effect):
     min_r = self.params.get('min_radius', 0.1)
     max_r = self.params.get('max_radius', 0.7)
     edge_detail = self.params.get('edge_detail', 3.0)
+    darkness_strength = self.params.get('darkness', 0.95)
 
     bass = state.audio_bass * gain
     mid = state.audio_mid * gain
@@ -282,8 +284,8 @@ class SRVoidBreath(Effect):
     edge_width = 0.03 + level * 0.02
     void_mask = np.clip((noisy_radius - self._dist) / max(edge_width, 0.001), 0, 1)
 
-    # Apply void (darken toward black — full black inside)
-    frame_f *= (1.0 - void_mask[:, :, np.newaxis])
+    # Apply void
+    frame_f *= (1.0 - void_mask[:, :, np.newaxis] * darkness_strength)
 
     # Subtle glow at void edge
     edge_glow = np.exp(-((self._dist - noisy_radius) ** 2) / (0.002 + level * 0.003))
@@ -323,6 +325,7 @@ class SRLightningGap(Effect):
     _P("Branch Prob", "branch_prob", 0.05, 0.5, 0.01, 0.15),
     _P("Crack Life", "crack_life", 0.5, 4.0, 0.1, 2.0),
     _P("Crack Width", "crack_width", 0.5, 3.0, 0.25, 1.0),
+    _P("Darkness", "darkness", 0.5, 1.0, 0.05, 0.95),
   ]
 
   def __init__(self, width, height, params=None):
@@ -394,6 +397,7 @@ class SRLightningGap(Effect):
 
     gain = self.params.get('gain', 2.0)
     crack_width = self.params.get('crack_width', 1.0)
+    darkness_strength = self.params.get('darkness', 0.95)
 
     bass = state.audio_bass * gain
     beat = state.audio_beat
@@ -442,7 +446,7 @@ class SRLightningGap(Effect):
         darkness = np.maximum(darkness, np.max(crack_intensity, axis=2))
 
       darkness = np.clip(darkness, 0, 1)
-      frame_f *= (1.0 - darkness[:, :, np.newaxis])
+      frame_f *= (1.0 - darkness[:, :, np.newaxis] * darkness_strength)
 
     return np.clip(frame_f, 0, 255).astype(np.uint8)
 
@@ -474,6 +478,7 @@ class SRNegativeRain(Effect):
     _P("Drop Speed", "drop_speed", 5.0, 40.0, 1.0, 15.0),
     _P("Trail Length", "trail_length", 1.0, 8.0, 0.5, 3.0),
     _P("Density", "density", 0.5, 5.0, 0.1, 2.0),
+    _P("Darkness", "darkness", 0.5, 1.0, 0.05, 0.95),
   ]
 
   def __init__(self, width, height, params=None):
@@ -515,21 +520,22 @@ class SRNegativeRain(Effect):
 
     gain = self.params.get('gain', 2.0)
     density = self.params.get('density', 2.0)
+    darkness_strength = self.params.get('darkness', 0.95)
 
     bass = state.audio_bass * gain
     beat = state.audio_beat
     level = state.audio_level * gain
     mid = state.audio_mid * gain
 
-    # Continuous spawning based on bass/level
-    spawn_rate = density * (0.3 + bass * 0.7) * self.width * 0.1
+    # Continuous spawning — aggressive
+    spawn_rate = density * (0.5 + bass * 1.0) * self.width * 0.2
     spawn_count = int(spawn_rate * dt + 0.5)
     if spawn_count > 0:
       self._spawn_drops(spawn_count, bass)
 
-    # Burst on beat
+    # Burst on beat — heavy
     if beat:
-      burst = int(3 + bass * 8)
+      burst = int(5 + bass * 12)
       self._spawn_drops(burst, bass, speed_mult=1.5)
 
     # Update drops
@@ -577,7 +583,7 @@ class SRNegativeRain(Effect):
           darkness[col] = np.maximum(darkness[col], trail_intensity[j])
 
       darkness = np.clip(darkness * (0.7 + level * 0.5), 0, 1)
-      frame_f *= (1.0 - darkness[:, :, np.newaxis])
+      frame_f *= (1.0 - darkness[:, :, np.newaxis] * darkness_strength)
 
     result = np.clip(frame_f, 0, 255).astype(np.uint8)
 
@@ -620,6 +626,7 @@ class SRSilhouette(Effect):
     _P("Blob Speed", "blob_speed", 1.0, 15.0, 0.5, 5.0),
     _P("Min Size", "min_size", 1.0, 5.0, 0.5, 2.0),
     _P("Max Size", "max_size", 3.0, 12.0, 0.5, 6.0),
+    _P("Darkness", "darkness", 0.5, 1.0, 0.05, 0.95),
   ]
 
   def __init__(self, width, height, params=None):
@@ -669,6 +676,7 @@ class SRSilhouette(Effect):
     gain = self.params.get('gain', 2.0)
     min_size = self.params.get('min_size', 2.0)
     max_size = self.params.get('max_size', 6.0)
+    darkness_strength = self.params.get('darkness', 0.95)
 
     bass = state.audio_bass * gain
     beat = state.audio_beat
@@ -677,10 +685,14 @@ class SRSilhouette(Effect):
 
     self._beat_cooldown = max(0, self._beat_cooldown - dt)
 
-    # Spawn on beat
+    # Spawn on beat — aggressive
     if beat and self._beat_cooldown <= 0:
-      self._beat_cooldown = 0.2
-      self._spawn_blobs(1 + int(bass > 0.5), bass)
+      self._beat_cooldown = 0.12
+      self._spawn_blobs(2 + int(bass > 0.4), bass)
+
+    # Auto-spawn on sustained bass
+    if bass > 0.3 and np.random.random() < bass * dt * 3 and len(self._blobs) < _MAX_BLOBS:
+      self._spawn_blobs(1, bass)
 
     # Update blobs
     if len(self._blobs) > 0:
@@ -712,9 +724,9 @@ class SRSilhouette(Effect):
       alive = blobs['life'] > 0
       self._blobs = blobs[alive]
 
-    # Keep minimum blob count
-    if len(self._blobs) < 3:
-      self._spawn_blobs(2, bass)
+    # Keep minimum blob count — always active
+    if len(self._blobs) < 5:
+      self._spawn_blobs(3, bass)
 
     # Vibrant plasma background
     frame_f = _plasma_bg(self._gx, self._gy, elapsed, self.width, self.height).astype(np.float32)
@@ -751,8 +763,8 @@ class SRSilhouette(Effect):
       darkness = np.clip((field - 0.5) * 2.0, 0, 1)
       darkness = np.clip(darkness * (0.7 + level * 0.5), 0, 1)
 
-      # Apply STRONG darkness — full black inside blobs
-      frame_f *= (1.0 - darkness[:, :, np.newaxis])
+      # Apply darkness
+      frame_f *= (1.0 - darkness[:, :, np.newaxis] * darkness_strength)
 
       # Subtle edge highlight where field ~ 1.0
       edge_band = np.exp(-((field - 1.0) ** 2) * 10)
