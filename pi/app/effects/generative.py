@@ -972,11 +972,23 @@ class FireBubbles(Effect):
           spark_life = self._rng.uniform(0.3, 1.0, n_sparks).astype(np.float32)
           new_s['life'] = spark_life
           new_s['max_life'] = spark_life
-          # Fire colors — hot center, warm edges
-          hue_base = bub['hue']
-          new_s['r'] = np.clip(200 + self._rng.uniform(-30, 55, n_sparks), 0, 255).astype(np.float32)
-          new_s['g'] = np.clip(100 + self._rng.uniform(-40, 60, n_sparks), 0, 255).astype(np.float32)
-          new_s['b'] = np.clip(20 + self._rng.uniform(-10, 30, n_sparks), 0, 255).astype(np.float32)
+          # Colors derived from bubble's palette hue with warm perturbation
+          base_hue = float(bub['hue'])
+          spark_hues = np.clip(base_hue + self._rng.uniform(-0.1, 0.1, n_sparks), 0, 1).astype(np.float32)
+          # HSV to RGB — high saturation, brightness varies
+          h6 = spark_hues * 6.0
+          hi = h6.astype(np.int32) % 6
+          f = h6 - np.floor(h6)
+          sv = self._rng.uniform(0.7, 1.0, n_sparks).astype(np.float32)  # brightness
+          p = sv * 0.1
+          q = sv * (1.0 - 0.9 * f)
+          t_v = sv * (1.0 - 0.9 * (1.0 - f))
+          new_s['r'] = np.where(hi==0, sv, np.where(hi==1, q, np.where(hi==2, p,
+                       np.where(hi==3, p, np.where(hi==4, t_v, sv))))) * 255
+          new_s['g'] = np.where(hi==0, t_v, np.where(hi==1, sv, np.where(hi==2, sv,
+                       np.where(hi==3, q, np.where(hi==4, p, p))))) * 255
+          new_s['b'] = np.where(hi==0, p, np.where(hi==1, p, np.where(hi==2, t_v,
+                       np.where(hi==3, sv, np.where(hi==4, sv, q))))) * 255
           if len(self._sparks) == 0:
             self._sparks = new_s
           else:
@@ -985,6 +997,52 @@ class FireBubbles(Effect):
       b['popped'] |= should_pop
       # Remove popped bubbles
       self._bubbles = b[~b['popped']]
+
+    # === CHAIN REACTION — falling sparks pop bubbles they hit ===
+    if len(self._sparks) > 0 and len(self._bubbles) > 0:
+      s = self._sparks
+      b = self._bubbles
+      # Check each bubble against all sparks (vectorized per-bubble)
+      chain_pops = np.zeros(len(b), dtype=bool)
+      for bi in range(len(b)):
+        if b[bi]['popped']:
+          continue
+        dx = s['x'] - b[bi]['x']
+        dx = np.where(np.abs(dx) > w / 2, dx - np.sign(dx) * w, dx)
+        dy = s['y'] - b[bi]['y']
+        dist = np.sqrt(dx * dx + dy * dy)
+        hit = (dist < b[bi]['radius'] + 0.5).any()
+        if hit:
+          chain_pops[bi] = True
+      # Pop chain-hit bubbles (reuse the pop loop above by marking them)
+      if chain_pops.any():
+        chain_indices = np.where(chain_pops & ~self._bubbles['popped'])[0]
+        for pi in chain_indices:
+          bub = self._bubbles[pi]
+          n_sparks = int(6 + bub['radius'] * 3 * spark_intensity)
+          n_sparks = min(n_sparks, self._MAX_SPARKS - len(self._sparks))
+          if n_sparks > 0:
+            new_s = np.empty(n_sparks, dtype=self._SPARK_DTYPE)
+            angles = self._rng.uniform(0, 6.28, n_sparks).astype(np.float32)
+            speeds = self._rng.uniform(4, 20, n_sparks).astype(np.float32) * (0.5 + bub['radius'] * 0.3)
+            new_s['x'] = bub['x']
+            new_s['y'] = bub['y']
+            new_s['vx'] = np.cos(angles) * speeds
+            new_s['vy'] = np.sin(angles) * speeds
+            spark_life = self._rng.uniform(0.2, 0.8, n_sparks).astype(np.float32)
+            new_s['life'] = spark_life
+            new_s['max_life'] = spark_life
+            base_hue = float(bub['hue'])
+            sh = np.clip(base_hue + self._rng.uniform(-0.1, 0.1, n_sparks), 0, 1).astype(np.float32)
+            h6 = sh * 6.0; hi = h6.astype(np.int32) % 6; f = h6 - np.floor(h6)
+            sv = self._rng.uniform(0.7, 1.0, n_sparks).astype(np.float32)
+            p = sv * 0.1; q = sv * (1 - 0.9 * f); t_v = sv * (1 - 0.9 * (1 - f))
+            new_s['r'] = np.where(hi==0,sv,np.where(hi==1,q,np.where(hi==2,p,np.where(hi==3,p,np.where(hi==4,t_v,sv)))))*255
+            new_s['g'] = np.where(hi==0,t_v,np.where(hi==1,sv,np.where(hi==2,sv,np.where(hi==3,q,np.where(hi==4,p,p)))))*255
+            new_s['b'] = np.where(hi==0,p,np.where(hi==1,p,np.where(hi==2,t_v,np.where(hi==3,sv,np.where(hi==4,sv,q)))))*255
+            self._sparks = np.concatenate([self._sparks, new_s])
+        self._bubbles['popped'] |= chain_pops
+        self._bubbles = self._bubbles[~self._bubbles['popped']]
 
     # === UPDATE SPARKS — fire physics ===
     if len(self._sparks) > 0:
