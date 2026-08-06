@@ -205,7 +205,7 @@ class SRNegativeJets(_NegativeFieldEffect):
 #  2. SRNegativeFlow
 # ──────────────────────────────────────────────────────────────────────
 
-_FLOW_TRACERS = 110
+_FLOW_TRACERS = 80
 
 
 class SRNegativeFlow(_NegativeFieldEffect):
@@ -217,7 +217,7 @@ class SRNegativeFlow(_NegativeFieldEffect):
   PARAMS = [
     _P("Flow Speed", "flow_speed", 0.3, 3.0, 0.1, 1.0),
     _P("Swirl Scale", "swirl_scale", 0.05, 0.4, 0.01, 0.16),
-    *_common_params(fade=1.6, softness=1.6),
+    *_common_params(fade=1.1, softness=1.6),
   ]
 
   def __init__(self, width, height, params=None):
@@ -385,7 +385,7 @@ class SRNegativeSnow(_NegativeFieldEffect):
     fall_speed = self._param('fall_speed', 3.5)
     sway = self._param('sway', 1.2)
 
-    rate = density * self.width * 0.35 * (0.7 + level * 0.6)
+    rate = density * self.width * 0.5 * (0.7 + level * 0.6)
     self._spawn_accum += rate * dt
     count = int(self._spawn_accum)
     if count > 0 and len(self._flakes) < _MAX_FLAKES:
@@ -398,7 +398,7 @@ class SRNegativeSnow(_NegativeFieldEffect):
       new['phase'] = np.random.uniform(0, 2 * np.pi, count).astype(np.float32)
       new['freq'] = np.random.uniform(0.5, 1.8, count).astype(np.float32)
       new['r'] = np.random.uniform(0.5, 1.2, count).astype(np.float32)
-      new['amp'] = np.random.uniform(0.5, 0.85, count).astype(np.float32)
+      new['amp'] = np.random.uniform(0.65, 0.95, count).astype(np.float32)
       self._flakes = new if len(self._flakes) == 0 else np.concatenate([self._flakes, new])
 
     f = self._flakes
@@ -479,7 +479,7 @@ class SRNegativeComets(_NegativeFieldEffect):
 #  6. SRNegativeVortex
 # ──────────────────────────────────────────────────────────────────────
 
-_VORTEX_PARTICLES = 90
+_VORTEX_PARTICLES = 70
 
 
 class SRNegativeVortex(_NegativeFieldEffect):
@@ -491,7 +491,7 @@ class SRNegativeVortex(_NegativeFieldEffect):
   PARAMS = [
     _P("Spin", "spin", 0.2, 3.0, 0.1, 1.0),
     _P("Drift", "drift", 0.0, 2.0, 0.1, 0.6),
-    *_common_params(fade=1.4, softness=1.5),
+    *_common_params(fade=0.9, softness=1.5),
   ]
 
   def __init__(self, width, height, params=None):
@@ -512,8 +512,8 @@ class SRNegativeVortex(_NegativeFieldEffect):
 
     px = self.width * 0.5 + np.cos(self._angle) * self._nr * self.width * 0.95
     py = self.height * 0.5 + np.sin(self._angle) * self._nr * self.height * 0.95
-    radii = np.full(_VORTEX_PARTICLES, 0.7, dtype=np.float32) + self._nr * 0.8
-    amps = np.full(_VORTEX_PARTICLES, 0.8, dtype=np.float32)
+    radii = np.full(_VORTEX_PARTICLES, 0.5, dtype=np.float32) + self._nr * 0.6
+    amps = np.full(_VORTEX_PARTICLES, 0.72, dtype=np.float32)
     self._stamp_gaussian(px.astype(np.float32), py.astype(np.float32), radii, amps)
 
 
@@ -529,14 +529,14 @@ class SRNegativeAurora(_NegativeFieldEffect):
 
   PARAMS = [
     _P("Wave Speed", "wave_speed", 0.2, 3.0, 0.1, 1.0),
-    _P("Curtains", "curtains", 1, 4, 1, 3),
+    _P("Curtains", "curtains", 1, 4, 1, 2),
     _P("Curtain Width", "curtain_width", 0.6, 3.0, 0.1, 1.4),
     *_common_params(fade=0.5, softness=1.2),
   ]
 
   def _update(self, dt, elapsed, bass, mid, high, level):
     speed = self._param('wave_speed', 1.0)
-    curtains = max(1, int(self._param('curtains', 3)))
+    curtains = max(1, int(self._param('curtains', 2)))
     cw = self._param('curtain_width', 1.4) * (1.0 + mid * 0.5)
 
     for i in range(curtains):
