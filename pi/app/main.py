@@ -359,9 +359,10 @@ def main():
       params=param_dicts,
     ))
 
-  # Register negative-space effects in catalog
+  # Register negative-space effects in catalog (originals + spin-offs)
   from .effects.negative_space import NEGATIVE_SPACE_EFFECTS as _neg_space_effects
-  for fname, fcls in _neg_space_effects.items():
+  from .effects.negative_spinoffs import NEGATIVE_SPINOFF_EFFECTS as _neg_spinoff_effects
+  for fname, fcls in {**_neg_space_effects, **_neg_spinoff_effects}.items():
     param_dicts = tuple(
       {'name': p.attr.lower(), 'label': p.label, 'min': p.lo, 'max': p.hi,
        'step': p.step, 'default': p.default, 'type': 'slider'}
