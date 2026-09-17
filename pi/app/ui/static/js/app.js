@@ -217,6 +217,10 @@ let effectsCatalog = null;
 let currentEffectParams = {};
 let currentFilterCategory = 'All';
 let favoriteEffects = [];
+let lastCategorizedEffects = [];
+
+// Category display order (also drives filter-bar order, with 'Favorites' inserted after 'All')
+const CATEGORY_ORDER = ['All', 'Ambient', 'Sound Reactive', 'Simulation', 'Built-in', 'Classic', 'Game', 'Special'];
 
 const CATEGORY_MAP = {
   imported_sound: 'Sound Reactive',
@@ -273,36 +277,10 @@ function toggleHideEffect(name) {
 
 let showHiddenEffects = false;
 
-async function loadEffects() {
-  const data = await api('GET', '/api/effects/catalog');
-  if (!data) return;
-  effectsCatalog = data.effects;
-
-  const favData = await api('GET', '/api/effects/favorites');
-  favoriteEffects = (favData && favData.favorites) || [];
-
-  // Restore saved params from state.json
-  if (data.current_params && Object.keys(data.current_params).length > 0) {
-    currentEffectParams = { ...data.current_params };
-  }
-
-  // Build categorized list
-  const categorized = [];
-  for (const [name, info] of Object.entries(data.effects)) {
-    if (name.startsWith('diag_')) continue;
-    const cat = effectCategory(info.group || 'other');
-    categorized.push({ name, category: cat, ...info });
-  }
-
-  // Sort effects: within each category, alphabetically by label
-  const categoryOrder = ['All', 'Ambient', 'Sound Reactive', 'Simulation', 'Built-in', 'Classic', 'Game', 'Special'];
-  categorized.sort((a, b) => {
-    const catA = categoryOrder.indexOf(a.category);
-    const catB = categoryOrder.indexOf(b.category);
-    if (catA !== catB) return catA - catB;
-    return (a.label || a.name).localeCompare(b.label || b.name);
-  });
-
+// Builds the category filter bar (including the Favorites pill and the Show Hidden toggle)
+// from a categorized effects list. Called on initial load and again after any favorite
+// toggle so the Favorites pill's presence/count stays live without refetching the catalog.
+function renderEffectsFilterBar(categorized) {
   // Count per category
   const counts = {};
   for (const eff of categorized) {
@@ -314,7 +292,7 @@ async function loadEffects() {
   const filterBar = document.getElementById('effects-filter-bar');
   filterBar.innerHTML = '';
 
-  const filterCategoryOrder = [categoryOrder[0], 'Favorites', ...categoryOrder.slice(1)];
+  const filterCategoryOrder = [CATEGORY_ORDER[0], 'Favorites', ...CATEGORY_ORDER.slice(1)];
   for (const cat of filterCategoryOrder) {
     if (cat !== 'All' && !counts[cat]) continue;
     const btn = document.createElement('button');
@@ -351,6 +329,39 @@ async function loadEffects() {
     hiddenToggle.textContent = newCount > 0 ? `👁 Hidden (${newCount})` : '👁 Hidden';
   });
   filterBar.appendChild(hiddenToggle);
+}
+
+async function loadEffects() {
+  const data = await api('GET', '/api/effects/catalog');
+  if (!data) return;
+  effectsCatalog = data.effects;
+
+  const favData = await api('GET', '/api/effects/favorites');
+  favoriteEffects = (favData && favData.favorites) || [];
+
+  // Restore saved params from state.json
+  if (data.current_params && Object.keys(data.current_params).length > 0) {
+    currentEffectParams = { ...data.current_params };
+  }
+
+  // Build categorized list
+  const categorized = [];
+  for (const [name, info] of Object.entries(data.effects)) {
+    if (name.startsWith('diag_')) continue;
+    const cat = effectCategory(info.group || 'other');
+    categorized.push({ name, category: cat, ...info });
+  }
+
+  // Sort effects: within each category, alphabetically by label
+  categorized.sort((a, b) => {
+    const catA = CATEGORY_ORDER.indexOf(a.category);
+    const catB = CATEGORY_ORDER.indexOf(b.category);
+    if (catA !== catB) return catA - catB;
+    return (a.label || a.name).localeCompare(b.label || b.name);
+  });
+
+  lastCategorizedEffects = categorized;
+  renderEffectsFilterBar(categorized);
 
   // Render effects grid
   const grid = document.getElementById('effects-grid');
@@ -398,6 +409,12 @@ async function loadEffects() {
         else favoriteEffects.splice(favoriteEffects.indexOf(eff.name), 1);
         favBtn.classList.toggle('faved', idx >= 0);
       }
+      // Removing the last favorite while filtered on Favorites would strand the user
+      // on an empty grid with no pill left to click out of — fall back to All.
+      if (currentFilterCategory === 'Favorites' && favoriteEffects.length === 0) {
+        currentFilterCategory = 'All';
+      }
+      renderEffectsFilterBar(lastCategorizedEffects);
       applyEffectsFilter();
     });
     btn.appendChild(favBtn);
