@@ -122,6 +122,16 @@ async function api(method, path, body) {
   }
 }
 
+// --- Toast ---
+
+function showToast(message) {
+  const toast = document.createElement('div');
+  toast.className = 'toast';
+  toast.textContent = message;
+  document.body.appendChild(toast);
+  setTimeout(() => toast.remove(), 3000);
+}
+
 // --- Tab navigation ---
 
 let activePreviewCanvas = 'effects-sim-canvas';
@@ -394,20 +404,28 @@ async function loadEffects() {
     btn.querySelector('.effect-card-body').appendChild(hideBtn);
 
     const favBtn = document.createElement('span');
+    const favLabel = eff.label || eff.name.replace(/_/g, ' ');
     favBtn.className = 'effect-card-fav' + (favoriteEffects.includes(eff.name) ? ' faved' : '');
     favBtn.textContent = '★';
     favBtn.title = 'Toggle favorite';
-    favBtn.addEventListener('click', async (e) => {
-      e.stopPropagation();
+    favBtn.setAttribute('role', 'button');
+    favBtn.setAttribute('tabindex', '0');
+    favBtn.setAttribute('aria-pressed', String(favoriteEffects.includes(eff.name)));
+    favBtn.setAttribute('aria-label', `Favorite ${favLabel}`);
+
+    async function toggleFavorite() {
       const idx = favoriteEffects.indexOf(eff.name);
       if (idx >= 0) favoriteEffects.splice(idx, 1);
       else favoriteEffects.push(eff.name);
       favBtn.classList.toggle('faved', idx < 0);
+      favBtn.setAttribute('aria-pressed', String(idx < 0));
       const res = await api('POST', '/api/effects/favorites', { favorites: favoriteEffects });
       if (!res) { // auth failure — revert
         if (idx >= 0) favoriteEffects.push(eff.name);
         else favoriteEffects.splice(favoriteEffects.indexOf(eff.name), 1);
         favBtn.classList.toggle('faved', idx >= 0);
+        favBtn.setAttribute('aria-pressed', String(idx >= 0));
+        showToast('Failed to save — set your auth token in System > Admin');
       }
       // Removing the last favorite while filtered on Favorites would strand the user
       // on an empty grid with no pill left to click out of — fall back to All.
@@ -416,6 +434,18 @@ async function loadEffects() {
       }
       renderEffectsFilterBar(lastCategorizedEffects);
       applyEffectsFilter();
+    }
+
+    favBtn.addEventListener('click', (e) => {
+      e.stopPropagation();
+      toggleFavorite();
+    });
+    favBtn.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter' || e.key === ' ') {
+        e.preventDefault();
+        e.stopPropagation();
+        toggleFavorite();
+      }
     });
     btn.appendChild(favBtn);
 
@@ -1113,7 +1143,10 @@ function initKnobToggles() {
     if (!box) continue;
     box.addEventListener('change', async () => {
       const res = await api('POST', '/api/pots/config', { [key]: box.checked });
-      if (!res) box.checked = !box.checked; // revert on auth failure
+      if (!res) {
+        box.checked = !box.checked; // revert on auth failure
+        showToast('Failed to save — set your auth token in System > Admin');
+      }
     });
   }
 }

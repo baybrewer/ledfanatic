@@ -777,7 +777,7 @@ select:focus {
 }
 
 .effect-card-body {
-  padding: 10px 12px;
+  padding: 10px 12px 10px 30px;
   display: flex;
   flex-direction: column;
   gap: 2px;
@@ -1604,12 +1604,12 @@ input:focus-visible {
 
 /* --- Knob enable toggles (System tab) --- */
 .knob-toggles { display: flex; flex-direction: column; gap: 10px; max-width: 320px; }
-.knob-toggle-row { display: flex; justify-content: space-between; align-items: center; cursor: pointer; }
+.knob-toggle-row { display: flex; justify-content: space-between; align-items: center; cursor: pointer; padding: 8px 0; }
 .toggle-switch { position: relative; width: 44px; height: 24px; flex: 0 0 auto; }
 .toggle-switch input { opacity: 0; width: 0; height: 0; }
 .toggle-slider {
   position: absolute; inset: 0; border-radius: 24px;
-  background: rgba(255, 255, 255, 0.15); transition: background 0.2s;
+  background: rgba(255, 255, 255, 0.22); transition: background 0.2s;
 }
 .toggle-slider::before {
   content: ''; position: absolute; width: 18px; height: 18px; border-radius: 50%;
@@ -1617,10 +1617,37 @@ input:focus-visible {
 }
 .toggle-switch input:checked + .toggle-slider { background: #00b894; }
 .toggle-switch input:checked + .toggle-slider::before { transform: translateX(20px); }
+.toggle-switch input:focus-visible + .toggle-slider { outline: 2px solid #00b894; outline-offset: 2px; }
 
 /* --- Favorites star on effect cards --- */
 .effect-card-fav {
-  position: absolute; top: 4px; left: 8px; font-size: 14px;
-  color: rgba(255, 255, 255, 0.25); cursor: pointer; z-index: 2;
+  position: absolute; top: 2px; left: 2px; width: 24px; height: 24px;
+  display: flex; align-items: center; justify-content: center;
+  font-size: 14px; color: rgba(255, 255, 255, 0.45); cursor: pointer; z-index: 2;
 }
 .effect-card-fav.faved { color: #fdcb6e; }
+
+/* --- Toast (transient failure notice) --- */
+.toast {
+  position: fixed;
+  bottom: calc(var(--safe-bottom) + 24px);
+  left: 50%;
+  transform: translateX(-50%);
+  max-width: calc(100% - 32px);
+  padding: 10px 16px;
+  background: var(--glass-bg);
+  border: 1px solid var(--glass-border);
+  border-radius: var(--radius);
+  color: var(--text);
+  font-size: 13px;
+  text-align: center;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.5);
+  z-index: 2000;
+}
+
+@supports (backdrop-filter: blur(1px)) or (-webkit-backdrop-filter: blur(1px)) {
+  .toast {
+    backdrop-filter: blur(var(--glass-blur));
+    -webkit-backdrop-filter: blur(var(--glass-blur));
+  }
+}
