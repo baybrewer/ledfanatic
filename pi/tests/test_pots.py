@@ -165,6 +165,31 @@ class TestDisable:
     events = ctl.handle_raw(raw(m=0.5, p=0.9), now=0.5)  # settle
     assert not any(k == 'activate' for k, _ in events)
 
+  def test_pattern_enabled_idle_uses_absolute_fallback(self):
+    # Regression: pattern pot enabled at boot but never moved must still
+    # fall back to its absolute position (trusted), not default to index 0.
+    ctl, _ = make_controller()
+    ctl.handle_raw(raw(m=0.1, p=0.6), now=0.0)          # baseline, pattern resting at 0.6
+    ctl.handle_raw(raw(m=0.5, p=0.6), now=0.05)         # menu -> Ambient, pattern unmoved
+    events = ctl.handle_raw(raw(m=0.5, p=0.6), now=0.4)  # settle
+    assert ('activate', 'amb_b') in events  # 0.6 -> index 1 of 3 Ambient effects
+
+  def test_disabled_menu_reenable_without_movement_still_blocks_activation(self):
+    # Menu disabled at boot (never legitimately established); pattern moves
+    # and settles -> no activate. Menu is then re-enabled without moving,
+    # so it still isn't trusted; pattern moves again and settles -> still
+    # no activate.
+    ctl, flags = make_controller(enabled={'brightness': True, 'menu': False, 'pattern': True})
+    ctl.handle_raw(raw(m=0.5, p=0.1), now=0.0)            # baseline, menu disabled
+    ctl.handle_raw(raw(m=0.5, p=0.9), now=0.05)           # pattern moves for real
+    events1 = ctl.handle_raw(raw(m=0.5, p=0.9), now=0.5)  # settle
+    assert not any(k == 'activate' for k, _ in events1)
+    flags['menu'] = True
+    ctl.handle_raw(raw(m=0.5, p=0.9), now=0.55)           # menu re-enabled, not moved
+    ctl.handle_raw(raw(m=0.5, p=0.2), now=0.6)            # pattern moves again
+    events2 = ctl.handle_raw(raw(m=0.5, p=0.2), now=0.95)  # settle
+    assert not any(k == 'activate' for k, _ in events2)
+
   def test_status_survives_menu_shrink(self):
     menu_state = {'items': list(MENU)}
     ctl = PotController(

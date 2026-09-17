@@ -64,7 +64,10 @@ class PotController:
     self._menu_idx: Optional[int] = None
     self._pattern_idx: Optional[int] = None
     self._pending_selection = False
-    self._pattern_live = False   # True once pattern has moved since last (re)enable
+    # Trusted position per selector pot [menu, pattern]: whether its current
+    # absolute reading (or last-moved index) reflects a legitimate user
+    # action rather than drift while disabled or an unmoved boot position.
+    self._trusted: list = [True, True]
     self.last_values: tuple = (0.0, 0.0, 0.0)
 
   def handle_raw(self, raw: tuple, now: float) -> list:
@@ -81,8 +84,12 @@ class PotController:
       if not pot_on or just_reenabled or self._settled[i] is None:
         # Disabled, freshly re-enabled, or first packet: silently rebaseline.
         self._settled[i] = values[i]
-        if i == POT_PATTERN:
-          self._pattern_live = False
+        if i == POT_MENU:
+          # Baseline while enabled (boot, never touched) is trusted; disabled
+          # or a just-re-enabled rebaseline is not.
+          self._trusted[0] = pot_on and not just_reenabled
+        elif i == POT_PATTERN:
+          self._trusted[1] = pot_on and not just_reenabled
         continue
 
       if abs(values[i] - self._settled[i]) <= self._deadband:
@@ -94,6 +101,7 @@ class PotController:
       elif i == POT_MENU:
         self._last_move[0] = now
         self._pending_selection = True
+        self._trusted[0] = True
         menu = self._menu_provider()
         new_idx = select_index(values[i], len(menu), self._menu_idx)
         if new_idx is not None and new_idx != self._menu_idx:
@@ -104,7 +112,7 @@ class PotController:
       elif i == POT_PATTERN:
         self._last_move[1] = now
         self._pending_selection = True
-        self._pattern_live = True
+        self._trusted[1] = True
 
     if self._pending_selection:
       moves = [t for t in self._last_move if t is not None]
@@ -120,13 +128,12 @@ class PotController:
     menu = self._menu_provider()
     if not menu:
       return None
-    enabled = self._enabled_provider()
-    menu_on = bool(enabled.get(_POT_KEYS[POT_MENU], True))
 
     menu_idx = self._menu_idx
     if menu_idx is None:
-      if not menu_on:
-        # Disabled and never legitimately established: nothing to activate.
+      if not self._trusted[0]:
+        # Never legitimately established (disabled, or re-enabled but not
+        # yet moved): nothing to activate.
         return None
       # Menu knob never moved: fall back to its absolute position.
       menu_idx = select_index(self.last_values[POT_MENU], len(menu), None)
@@ -136,7 +143,7 @@ class PotController:
     if not effect_names:
       return None
 
-    if self._pattern_live:
+    if self._trusted[1]:
       self._pattern_idx = select_index(
         self.last_values[POT_PATTERN], len(effect_names), self._pattern_idx)
     else:
