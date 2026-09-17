@@ -202,3 +202,43 @@ class TestDisable:
     menu_state['items'] = [('Ambient', ['amb_a'])]  # shrink below the previously-set index
     status = ctl.get_status()  # must not raise IndexError
     assert status['category'] is None
+
+
+import numpy as np
+
+from app.core.renderer import Renderer
+
+
+class TestOverlayState:
+  def _bare_renderer(self):
+    # Renderer without transport dependency — we only exercise overlay helpers
+    r = Renderer.__new__(Renderer)
+    r._overlay_text = None
+    r._overlay_until = 0.0
+    r._overlay_img = None
+    r._overlay_img_key = None
+    r.overlay_region = None
+    return r
+
+  def test_set_overlay_text_arms_timer(self):
+    r = self._bare_renderer()
+    r.set_overlay_text('Ambient')
+    assert r._overlay_text == 'Ambient'
+    assert r._overlay_until > 0
+
+  def test_apply_overlay_writes_pixels(self):
+    r = self._bare_renderer()
+    r.set_overlay_text('AB')
+    frame = np.zeros((20, 40, 3), dtype=np.uint8)
+    out = r._apply_overlay(frame, 20, 40)
+    assert out.sum() > 0
+    assert (out[10:] == 0).all()  # right half untouched (default region = left half)
+
+  def test_expired_overlay_is_identity(self):
+    import time as _time
+    r = self._bare_renderer()
+    r.set_overlay_text('AB', linger=0.0)
+    r._overlay_until = _time.monotonic() - 1.0
+    frame = np.full((20, 40, 3), 7, dtype=np.uint8)
+    out = r._apply_overlay(frame, 20, 40)
+    assert (out == frame).all()

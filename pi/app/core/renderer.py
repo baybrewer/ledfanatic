@@ -11,6 +11,7 @@ from typing import Optional
 
 import numpy as np
 
+from ..effects.textrender import render_spine_text, composite_spine_overlay
 from ..layout import pack_frame, CompiledLayout, _expand_segment
 from ..transport.usb import TeensyTransport
 from .brightness import BrightnessEngine
@@ -157,6 +158,12 @@ class Renderer:
     self._last_frame_start: float = 0.0
     # Segment positions cache for test pattern support
     self._segment_positions: dict[str, list[tuple[int, int]]] = {}
+    # Pot-menu category overlay (book-spine text on the left panel)
+    self._overlay_text: Optional[str] = None
+    self._overlay_until: float = 0.0
+    self._overlay_img = None
+    self._overlay_img_key = None
+    self.overlay_region: Optional[tuple] = None  # (x0, x1); None = left half
     # Last logical (width×height×3 uint8) frame — snapshot after brightness+gamma,
     # read by live-preview WebSocket. Ring buffer of one frame.
     self._last_logical_frame = np.zeros((layout.width, layout.height, 3), dtype=np.uint8)
@@ -422,6 +429,9 @@ class Renderer:
     # Post-processing pipeline (brightness, gamma, test patterns) —
     # skip for blackout and no-effect branches which already set logical_frame
     if not self.state.blackout and (self.current_effect is not None or (self.compositor and self.compositor.layers)):
+      # Pot-menu category overlay (before brightness so caps apply to it too)
+      logical_frame = self._apply_overlay(logical_frame, w, h)
+
       # Apply effective brightness from engine
       effective = self.brightness_engine.get_effective_brightness(
         datetime.now(timezone.utc)
@@ -533,3 +543,38 @@ class Renderer:
   def update_gamma(self, gamma: float):
     self.state.gamma = gamma
     self._gamma_lut = _build_gamma_lut(gamma)
+
+  OVERLAY_FADE_S = 0.3
+  OVERLAY_SCROLL_PX_S = 8.0
+
+  def set_overlay_text(self, text: str, linger: float = 1.5):
+    """Show category text on the overlay region; call repeatedly to extend."""
+    self._overlay_text = text
+    self._overlay_until = time.monotonic() + linger
+
+  def _apply_overlay(self, logical_frame, w: int, h: int):
+    now = time.monotonic()
+    if not self._overlay_text or now >= self._overlay_until:
+      return logical_frame
+    x0, x1 = self.overlay_region or (0, max(1, w // 2))
+    x0 = max(0, min(x0, w - 1))
+    x1 = max(x0 + 1, min(x1, w))
+
+    key = (self._overlay_text, x1 - x0)
+    if key != self._overlay_img_key:
+      self._overlay_img = render_spine_text(self._overlay_text, x1 - x0)
+      self._overlay_img_key = key
+
+    # Fade out over the last OVERLAY_FADE_S
+    remaining = self._overlay_until - now
+    alpha = min(1.0, remaining / self.OVERLAY_FADE_S)
+
+    # Scroll long names top-to-bottom, holding briefly at the start
+    text_len = self._overlay_img.shape[1]
+    y_offset = 0
+    if text_len > h:
+      overflow = text_len - h
+      y_offset = int(min(overflow, max(0.0, (now % (overflow / self.OVERLAY_SCROLL_PX_S
+                    + 2.0)) - 1.0) * self.OVERLAY_SCROLL_PX_S))
+
+    return composite_spine_overlay(logical_frame, self._overlay_img, x0, y_offset, alpha)
