@@ -17,6 +17,32 @@ from .engine.palettes import PALETTE_NAMES
 logger = logging.getLogger(__name__)
 
 
+# Canonical group -> display category mapping (UI mirrors this; keep in sync
+# with CATEGORY_MAP in pi/app/ui/static/js/app.js)
+DISPLAY_CATEGORY_MAP = {
+  'imported_sound': 'Sound Reactive',
+  'sound': 'Sound Reactive',
+  'audio': 'Sound Reactive',
+  'classic': 'Classic',
+  'imported_classic': 'Classic',
+  'ambient': 'Ambient',
+  'imported_ambient': 'Ambient',
+  'generative': 'Built-in',
+  'special': 'Special',
+  'simulation': 'Simulation',
+  'game': 'Game',
+}
+
+DISPLAY_CATEGORY_ORDER = [
+  'Ambient', 'Sound Reactive', 'Simulation', 'Built-in',
+  'Classic', 'Game', 'Special', 'Other',
+]
+
+
+def display_category(group: str) -> str:
+  return DISPLAY_CATEGORY_MAP.get(group, 'Other')
+
+
 @dataclass(frozen=True)
 class EffectMeta:
   name: str
@@ -205,3 +231,20 @@ class EffectCatalogService:
 
   def get_meta(self, name: str) -> Optional[EffectMeta]:
     return self._catalog.get(name)
+
+  def get_display_categories(self) -> list:
+    """Ordered (category_label, [effect names sorted by label]) for pot menus.
+
+    Excludes diagnostic effects and empty categories.
+    """
+    catalog = self.get_catalog()
+    buckets: dict = {}
+    for name, meta in catalog.items():
+      if name.startswith('diag_'):
+        continue
+      buckets.setdefault(display_category(meta.group), []).append((meta.label, name))
+    result = []
+    for cat in DISPLAY_CATEGORY_ORDER:
+      if cat in buckets:
+        result.append((cat, [n for _, n in sorted(buckets[cat])]))
+    return result

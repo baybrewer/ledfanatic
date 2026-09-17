@@ -103,3 +103,23 @@ class TestScenesListCompatibility:
     """Frontend skips effects starting with diag_ — verify they exist."""
     diag_count = sum(1 for name in DIAGNOSTIC_EFFECTS if name.startswith('diag_'))
     assert diag_count > 0
+
+
+class TestDisplayCategories:
+  def test_ordered_nonempty_categories(self):
+    svc = EffectCatalogService()
+    cats = svc.get_display_categories()
+    labels = [label for label, _ in cats]
+    assert 'Built-in' in labels
+    assert 'Sound Reactive' in labels
+    # Every category non-empty, no diagnostics anywhere
+    for label, names in cats:
+      assert names, f"category {label} is empty"
+      assert not any(n.startswith('diag_') for n in names)
+
+  def test_names_sorted_by_label(self):
+    svc = EffectCatalogService()
+    catalog = svc.get_catalog()
+    for label, names in svc.get_display_categories():
+      labels = [catalog[n].label for n in names]
+      assert labels == sorted(labels)
