@@ -9,9 +9,9 @@ from app.models.protocol import (
   build_packet, verify_packet, PacketType,
   cobs_encode, cobs_decode, frame_packet,
   build_hello_payload, build_frame_payload, build_blackout_payload,
-  parse_caps_payload, parse_stats_payload,
+  parse_caps_payload, parse_stats_payload, parse_pots_payload,
   MAGIC, PROTOCOL_VERSION, HEADER_SIZE, CRC_SIZE,
-  STATS_PAYLOAD_SIZE, STATS_STRUCT_FMT,
+  STATS_PAYLOAD_SIZE, STATS_STRUCT_FMT, POTS_PAYLOAD_SIZE,
 )
 
 
@@ -477,3 +477,26 @@ class TestCRC32CrossLanguage:
     stored_crc = struct.unpack('<I', pkt[-4:])[0]
     computed = zlib.crc32(pkt[:-4]) & 0xFFFFFFFF
     assert stored_crc == computed
+
+
+class TestPotsPayload:
+  def test_parse_valid(self):
+    payload = struct.pack('<HHH', 0, 512, 1023)
+    assert parse_pots_payload(payload) == (0, 512, 1023)
+
+  def test_too_short_rejected(self):
+    assert parse_pots_payload(b'\x00' * 5) is None
+
+  def test_extra_bytes_ok(self):
+    payload = struct.pack('<HHH', 1, 2, 3) + b'\xAA\xBB'
+    assert parse_pots_payload(payload) == (1, 2, 3)
+
+  def test_packet_round_trip(self):
+    pkt = build_packet(PacketType.POTS, struct.pack('<HHH', 10, 20, 30))
+    framed = frame_packet(pkt)
+    assert framed.endswith(b'\x00')
+    decoded = cobs_decode(framed[:-1])
+    header, payload = verify_packet(decoded)
+    assert header.packet_type == PacketType.POTS
+    assert len(payload) == POTS_PAYLOAD_SIZE
+    assert parse_pots_payload(payload) == (10, 20, 30)

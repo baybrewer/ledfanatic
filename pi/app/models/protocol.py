@@ -26,6 +26,8 @@ STATS_PAYLOAD_SIZE = 28  # 7 x uint32_t
 STATS_STRUCT_FMT = '<IIIIIII'
 CAPS_PAYLOAD_SIZE = 56
 HELLO_PAYLOAD_SIZE = 48
+POTS_PAYLOAD_SIZE = 6  # 3 x uint16 LE (brightness, menu, pattern), ADC range 0-1023
+POTS_STRUCT_FMT = '<HHH'
 
 
 class PacketType(IntEnum):
@@ -38,6 +40,7 @@ class PacketType(IntEnum):
   PING = 0x20
   PONG = 0x21
   STATS = 0x30
+  POTS = 0x31
   TEST_PATTERN = 0x40
   BLACKOUT = 0x41
   BRIGHTNESS = 0x42
@@ -288,3 +291,10 @@ def parse_stats_payload(payload: bytes) -> Optional[dict]:
     'dropped_pending': values[5],
     'output_fps': values[6],
   }
+
+
+def parse_pots_payload(payload: bytes) -> Optional[tuple[int, int, int]]:
+  """Parse POTS payload from Teensy: (brightness, menu, pattern) raw ADC values."""
+  if len(payload) < POTS_PAYLOAD_SIZE:
+    return None
+  return struct.unpack(POTS_STRUCT_FMT, payload[:POTS_PAYLOAD_SIZE])
