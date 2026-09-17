@@ -1,0 +1,148 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Pot Debug — LED Fanatic</title>
+<style>
+  :root { color-scheme: dark; }
+  * { box-sizing: border-box; margin: 0; }
+  body {
+    font-family: -apple-system, "Segoe UI", Roboto, sans-serif;
+    background: #0d0d1a; color: #e8e8f0; padding: 16px; max-width: 720px; margin: 0 auto;
+  }
+  h1 { font-size: 1.2rem; margin-bottom: 4px; }
+  .sub { color: #8888a0; font-size: 0.85rem; margin-bottom: 16px; }
+  .pot { background: rgba(255,255,255,0.05); border: 1px solid rgba(255,255,255,0.1);
+         border-radius: 12px; padding: 14px 16px; margin-bottom: 14px; }
+  .pot-head { display: flex; justify-content: space-between; align-items: baseline; margin-bottom: 8px; }
+  .pot-name { font-weight: 600; font-size: 1rem; }
+  .pot-val { font-variant-numeric: tabular-nums; font-size: 1.4rem; font-weight: 700; }
+  .pot-raw { color: #8888a0; font-size: 0.8rem; font-variant-numeric: tabular-nums; }
+  .bar-wrap { position: relative; height: 26px; background: rgba(255,255,255,0.08);
+              border-radius: 13px; overflow: hidden; }
+  .bar { position: absolute; inset: 0 auto 0 0; width: 0%; border-radius: 13px;
+         background: #00b894; transition: width 80ms linear; }
+  .bar.moving { background: #fdcb6e; }
+  .mark { position: absolute; top: 0; bottom: 0; width: 2px; background: rgba(255,255,255,0.45); }
+  .range { color: #8888a0; font-size: 0.78rem; margin-top: 6px; font-variant-numeric: tabular-nums; }
+  .disabled-tag { color: #ff7675; font-size: 0.78rem; font-weight: 600; }
+  .statusline { display: flex; gap: 16px; flex-wrap: wrap; background: rgba(255,255,255,0.05);
+                border: 1px solid rgba(255,255,255,0.1); border-radius: 12px;
+                padding: 10px 16px; font-size: 0.85rem; margin-bottom: 14px; }
+  .statusline b { color: #00b894; }
+  .stale { color: #ff7675; font-weight: 700; }
+  button { background: rgba(255,255,255,0.1); color: #e8e8f0; border: 1px solid rgba(255,255,255,0.2);
+           border-radius: 8px; padding: 10px 16px; font-size: 0.9rem; cursor: pointer; }
+  button:focus-visible { outline: 2px solid #00b894; outline-offset: 2px; }
+  #log { margin-top: 14px; font-size: 0.78rem; color: #8888a0; font-family: ui-monospace, monospace;
+         max-height: 180px; overflow-y: auto; }
+  #log div { padding: 1px 0; }
+</style>
+</head>
+<body>
+  <h1>Pot Debug</h1>
+  <p class="sub">Pins 24 (A10) / 25 (A11) / 26 (A12) &middot; polling /api/pots at 10 Hz. Sweep each knob fully — the white ticks record the min/max seen.</p>
+
+  <div class="statusline">
+    <span>Link: <b id="link">—</b></span>
+    <span>Category: <b id="category">—</b></span>
+    <span>Scene: <b id="scene">—</b></span>
+  </div>
+
+  <div id="pots"></div>
+  <button id="reset">Reset min/max marks</button>
+  <div id="log" aria-live="off"></div>
+
+<script>
+  const POTS = ['brightness', 'menu', 'pattern'];
+  const state = {};
+  const potsEl = document.getElementById('pots');
+
+  for (const name of POTS) {
+    state[name] = { last: null, min: 1, max: 0 };
+    const div = document.createElement('div');
+    div.className = 'pot';
+    div.innerHTML = `
+      <div class="pot-head">
+        <span class="pot-name">${name[0].toUpperCase() + name.slice(1)}
+          <span class="disabled-tag" id="dis-${name}" hidden>DISABLED</span></span>
+        <span><span class="pot-val" id="val-${name}">—</span>
+          <span class="pot-raw" id="raw-${name}"></span></span>
+      </div>
+      <div class="bar-wrap">
+        <div class="bar" id="bar-${name}"></div>
+        <div class="mark" id="min-${name}" style="left:0%" hidden></div>
+        <div class="mark" id="max-${name}" style="left:0%" hidden></div>
+      </div>
+      <div class="range" id="rng-${name}">range seen: —</div>`;
+    potsEl.appendChild(div);
+  }
+
+  const logEl = document.getElementById('log');
+  function log(msg) {
+    const d = document.createElement('div');
+    d.textContent = `${new Date().toLocaleTimeString()}  ${msg}`;
+    logEl.prepend(d);
+    while (logEl.childElementCount > 60) logEl.lastChild.remove();
+  }
+
+  document.getElementById('reset').addEventListener('click', () => {
+    for (const name of POTS) { state[name].min = 1; state[name].max = 0; }
+    log('min/max marks reset');
+  });
+
+  let lastOk = 0;
+  async function poll() {
+    try {
+      const res = await fetch('/api/pots');
+      const data = await res.json();
+      lastOk = Date.now();
+      document.getElementById('category').textContent = data.category || '—';
+      for (const name of POTS) {
+        const v = data.values ? data.values[name] : null;
+        if (v == null) continue;
+        const s = state[name];
+        const moving = s.last !== null && Math.abs(v - s.last) > 0.004;
+        if (moving && (s.last === null || Math.abs(v - s.last) > 0.02)) {
+          log(`${name} → ${(v * 100).toFixed(1)}%`);
+        }
+        s.last = v;
+        s.min = Math.min(s.min, v); s.max = Math.max(s.max, v);
+        document.getElementById('val-' + name).textContent = (v * 100).toFixed(1) + '%';
+        document.getElementById('raw-' + name).textContent = '~' + Math.round(v * 1023) + ' ADC';
+        const bar = document.getElementById('bar-' + name);
+        bar.style.width = (v * 100) + '%';
+        bar.classList.toggle('moving', moving);
+        const minEl = document.getElementById('min-' + name);
+        const maxEl = document.getElementById('max-' + name);
+        minEl.hidden = maxEl.hidden = false;
+        minEl.style.left = (s.min * 100) + '%';
+        maxEl.style.left = (s.max * 100) + '%';
+        document.getElementById('rng-' + name).textContent =
+          `range seen: ${(s.min * 100).toFixed(1)}% – ${(s.max * 100).toFixed(1)}%` +
+          ((s.max - s.min) > 0.9 ? '  ✓ full sweep' : '');
+        document.getElementById('dis-' + name).hidden = !data.enabled || data.enabled[name] !== false;
+      }
+    } catch (e) { /* shown via staleness below */ }
+    const stale = Date.now() - lastOk > 1500;
+    const link = document.getElementById('link');
+    link.textContent = stale ? 'STALE' : 'live';
+    link.className = stale ? 'stale' : '';
+  }
+
+  async function pollScene() {
+    try {
+      const res = await fetch('/api/system/status');
+      const data = await res.json();
+      const scene = (data.render && data.render.current_scene) || data.current_scene || '—';
+      document.getElementById('scene').textContent = scene;
+    } catch (e) { /* ignore */ }
+  }
+
+  setInterval(poll, 100);
+  setInterval(pollScene, 1000);
+  poll(); pollScene();
+</script>
+</body>
+</html>
