@@ -471,7 +471,8 @@ void readPots() {
 void sendPots() {
   uint8_t payload[6];
   for (int i = 0; i < 3; i++) {
-    uint16_t v = (uint16_t)potFiltered[i];
+    // Inverted: pots are wired with 3.3V/GND swapped, so raw max = knob CCW.
+    uint16_t v = 1023 - (uint16_t)potFiltered[i];
     payload[i * 2] = v & 0xFF;
     payload[i * 2 + 1] = (v >> 8) & 0xFF;
   }
