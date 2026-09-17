@@ -140,3 +140,40 @@ class TestDisable:
     ctl.handle_raw(raw(m=0.1), now=0.0)
     events = ctl.handle_raw(raw(m=0.9), now=0.05)
     assert not any(k == 'overlay' for k, _ in events)
+
+  def test_disabled_pattern_drift_does_not_leak_into_activation(self):
+    # Reproduction: pattern pot gets disabled, drifts to a new resting
+    # position, gets re-enabled without moving again, and then the menu's
+    # settle timer fires. The drifted position must not determine the
+    # activated effect — the pattern's last legitimate index (none ever
+    # established here) must win, defaulting to index 0 of the category.
+    ctl, flags = make_controller(enabled={'brightness': True, 'menu': True, 'pattern': True})
+    ctl.handle_raw(raw(m=0.1, p=0.1), now=0.0)          # baseline, all enabled
+    flags['pattern'] = False
+    ctl.handle_raw(raw(m=0.5, p=0.1), now=0.05)         # menu -> Ambient, overlay ok
+    ctl.handle_raw(raw(m=0.5, p=0.9), now=0.10)         # pattern (disabled) drifts: silent
+    flags['pattern'] = True
+    events_reenable = ctl.handle_raw(raw(m=0.5, p=0.9), now=0.15)  # re-enabled, not moved
+    assert not any(k == 'activate' for k, _ in events_reenable)
+    events = ctl.handle_raw(raw(m=0.5, p=0.9), now=0.40)  # menu settle fires
+    assert ('activate', 'amb_a') in events
+
+  def test_disabled_menu_never_established_blocks_activation(self):
+    ctl, _ = make_controller(enabled={'brightness': True, 'menu': False, 'pattern': True})
+    ctl.handle_raw(raw(m=0.5, p=0.1), now=0.0)   # baseline (menu disabled)
+    ctl.handle_raw(raw(m=0.5, p=0.9), now=0.05)  # pattern moves for real; menu never established
+    events = ctl.handle_raw(raw(m=0.5, p=0.9), now=0.5)  # settle
+    assert not any(k == 'activate' for k, _ in events)
+
+  def test_status_survives_menu_shrink(self):
+    menu_state = {'items': list(MENU)}
+    ctl = PotController(
+      menu_provider=lambda: menu_state['items'],
+      enabled_provider=lambda: dict(ALL_ON),
+    )
+    ctl.handle_raw(raw(m=0.1, p=0.1), now=0.0)
+    overlay_events = ctl.handle_raw(raw(m=0.9, p=0.1), now=0.05)  # menu -> 'Game' (last category)
+    assert ('overlay', 'Game') in overlay_events
+    menu_state['items'] = [('Ambient', ['amb_a'])]  # shrink below the previously-set index
+    status = ctl.get_status()  # must not raise IndexError
+    assert status['category'] is None

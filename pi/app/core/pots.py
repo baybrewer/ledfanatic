@@ -64,6 +64,7 @@ class PotController:
     self._menu_idx: Optional[int] = None
     self._pattern_idx: Optional[int] = None
     self._pending_selection = False
+    self._pattern_live = False   # True once pattern has moved since last (re)enable
     self.last_values: tuple = (0.0, 0.0, 0.0)
 
   def handle_raw(self, raw: tuple, now: float) -> list:
@@ -80,6 +81,8 @@ class PotController:
       if not pot_on or just_reenabled or self._settled[i] is None:
         # Disabled, freshly re-enabled, or first packet: silently rebaseline.
         self._settled[i] = values[i]
+        if i == POT_PATTERN:
+          self._pattern_live = False
         continue
 
       if abs(values[i] - self._settled[i]) <= self._deadband:
@@ -101,6 +104,7 @@ class PotController:
       elif i == POT_PATTERN:
         self._last_move[1] = now
         self._pending_selection = True
+        self._pattern_live = True
 
     if self._pending_selection:
       moves = [t for t in self._last_move if t is not None]
@@ -116,22 +120,40 @@ class PotController:
     menu = self._menu_provider()
     if not menu:
       return None
+    enabled = self._enabled_provider()
+    menu_on = bool(enabled.get(_POT_KEYS[POT_MENU], True))
+
     menu_idx = self._menu_idx
     if menu_idx is None:
+      if not menu_on:
+        # Disabled and never legitimately established: nothing to activate.
+        return None
       # Menu knob never moved: fall back to its absolute position.
       menu_idx = select_index(self.last_values[POT_MENU], len(menu), None)
     menu_idx = min(menu_idx, len(menu) - 1)
     self._menu_idx = menu_idx
-    label, effect_names = menu[menu_idx]
+    effect_names = menu[menu_idx][1]
     if not effect_names:
       return None
-    self._pattern_idx = select_index(
-      self.last_values[POT_PATTERN], len(effect_names), self._pattern_idx)
+
+    if self._pattern_live:
+      self._pattern_idx = select_index(
+        self.last_values[POT_PATTERN], len(effect_names), self._pattern_idx)
+    else:
+      # Pattern position isn't trustworthy right now (disabled, or enabled
+      # but hasn't moved since it was last (re)enabled): keep the last
+      # legitimate index instead of consuming its raw position.
+      if self._pattern_idx is None:
+        self._pattern_idx = 0
+      else:
+        self._pattern_idx = min(max(self._pattern_idx, 0), len(effect_names) - 1)
     return effect_names[self._pattern_idx]
 
   def get_status(self) -> dict:
     menu = self._menu_provider()
-    category = menu[self._menu_idx][0] if (self._menu_idx is not None and menu) else None
+    category = None
+    if self._menu_idx is not None and menu and 0 <= self._menu_idx < len(menu):
+      category = menu[self._menu_idx][0]
     return {
       'values': {k: round(v, 3) for k, v in zip(_POT_KEYS, self.last_values)},
       'enabled': self._enabled_provider(),
