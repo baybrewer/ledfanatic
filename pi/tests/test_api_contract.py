@@ -20,6 +20,7 @@ from app.core.brightness import BrightnessEngine
 from app.transport.usb import TeensyTransport
 from app.media.manager import MediaManager, MediaItem
 from app.audio.analyzer import AudioAnalyzer
+from app.core.pots import PotController
 
 
 # --- Fixtures ---
@@ -66,6 +67,11 @@ def mock_deps(tmp_path):
 
     config = {'auth': {'token': 'test-token-123'}}
 
+    pot_controller = PotController(
+        menu_provider=lambda: [],
+        enabled_provider=lambda: state_manager.pots_enabled,
+    )
+
     return {
         'transport': transport,
         'renderer': renderer,
@@ -75,6 +81,7 @@ def mock_deps(tmp_path):
         'media_manager': media_manager,
         'audio_analyzer': audio_analyzer,
         'config': config,
+        'pot_controller': pot_controller,
     }
 
 
@@ -465,3 +472,51 @@ class TestNonexistentRoutes:
     def test_aspirational_routes_do_not_exist(self, client, path):
         resp = client.get(path)
         assert resp.status_code in (404, 405), f"Unexpected route exists: {path}"
+
+
+# --- Pots API ---
+
+class TestPotsApi:
+    def test_get_pots_public(self, client):
+        res = client.get('/api/pots')
+        assert res.status_code == 200
+        body = res.json()
+        assert set(body['enabled'].keys()) == {'brightness', 'menu', 'pattern'}
+
+    def test_post_config_requires_auth(self, client):
+        res = client.post('/api/pots/config', json={'pattern': False})
+        assert res.status_code == 401
+
+    def test_post_config_updates(self, client, auth_header):
+        res = client.post('/api/pots/config', json={'pattern': False},
+                          headers=auth_header)
+        assert res.status_code == 200
+        assert res.json()['enabled']['pattern'] is False
+        assert client.get('/api/pots').json()['enabled']['pattern'] is False
+
+
+# --- Favorites API ---
+
+class TestFavoritesApi:
+    def test_get_favorites_public(self, client):
+        res = client.get('/api/effects/favorites')
+        assert res.status_code == 200
+        assert isinstance(res.json()['favorites'], list)
+
+    def test_post_requires_auth(self, client):
+        res = client.post('/api/effects/favorites', json={'favorites': []})
+        assert res.status_code == 401
+
+    def test_post_rejects_unknown_effect(self, client, auth_header):
+        res = client.post('/api/effects/favorites',
+                          json={'favorites': ['definitely_not_an_effect']},
+                          headers=auth_header)
+        assert res.status_code == 400
+
+    def test_post_roundtrip(self, client, auth_header):
+        catalog = client.get('/api/effects/catalog').json()['effects']
+        name = next(iter(catalog))
+        res = client.post('/api/effects/favorites', json={'favorites': [name]},
+                          headers=auth_header)
+        assert res.status_code == 200
+        assert client.get('/api/effects/favorites').json()['favorites'] == [name]

@@ -43,6 +43,16 @@ class AudioConfigRequest(BaseModel):
     treble_sensitivity: Optional[float] = None
 
 
+class PotsConfigRequest(BaseModel):
+    brightness: Optional[bool] = None
+    menu: Optional[bool] = None
+    pattern: Optional[bool] = None
+
+
+class FavoritesRequest(BaseModel):
+    favorites: list[str]
+
+
 class StripConfigRequest(BaseModel):
     channel: Optional[int] = None
     offset: Optional[int] = None

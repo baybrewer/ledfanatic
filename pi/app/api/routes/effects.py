@@ -6,14 +6,15 @@ Routes only; service logic lives in pi/app/effects/catalog.py.
 
 import logging
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Depends
 
 from ...effects.catalog import EffectCatalogService
+from ..schemas import FavoritesRequest
 
 logger = logging.getLogger(__name__)
 
 
-def create_router(deps) -> APIRouter:
+def create_router(deps, require_auth) -> APIRouter:
   router = APIRouter(prefix="/api/effects", tags=["effects"])
 
   @router.get("/catalog")
@@ -29,6 +30,22 @@ def create_router(deps) -> APIRouter:
       'current': deps.render_state.current_scene,
       'current_params': deps.state_manager.current_params,
     }
+
+  @router.get("/favorites")
+  async def get_favorites():
+    return {'favorites': deps.state_manager.favorites}
+
+  @router.post("/favorites", dependencies=[Depends(require_auth)])
+  async def set_favorites(req: FavoritesRequest):
+    if hasattr(deps, 'effect_catalog') and deps.effect_catalog:
+      catalog = deps.effect_catalog.get_catalog()
+    else:
+      catalog = EffectCatalogService().get_catalog()
+    unknown = [n for n in req.favorites if n not in catalog]
+    if unknown:
+      raise HTTPException(400, f"Unknown effects: {unknown}")
+    deps.state_manager.favorites = req.favorites
+    return {'favorites': deps.state_manager.favorites}
 
   @router.get("/{name}")
   async def get_effect_meta(name: str):
