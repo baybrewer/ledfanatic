@@ -58,9 +58,9 @@
 #define STATS_INTERVAL_MS      1000
 
 // --- Potentiometer inputs ---
-#define POT_PIN_BRIGHTNESS  38   // A14
-#define POT_PIN_MENU        39   // A15
-#define POT_PIN_PATTERN     40   // A16
+#define POT_PIN_BRIGHTNESS  24   // A10
+#define POT_PIN_MENU        25   // A11
+#define POT_PIN_PATTERN     26   // A12
 #define POTS_INTERVAL_MS    50
 
 // --- Color order ---
