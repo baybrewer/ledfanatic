@@ -41,6 +41,7 @@ def create_app(
     layout_config=None,
     compiled_layout=None,
     config_dir=None,
+    pot_controller=None,
 ) -> FastAPI:
 
     app = FastAPI(title="LED Fanatic", version="1.0.0")
@@ -66,6 +67,7 @@ def create_app(
         layout_config=layout_config,
         compiled_layout=compiled_layout,
         config_dir=config_dir,
+        pot_controller=pot_controller,
     )
 
     # Expose deps on app.state for startup handlers in main.py

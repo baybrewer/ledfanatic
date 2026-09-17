@@ -29,3 +29,4 @@ class AppDeps:
     layout_config: Optional[object] = None
     compiled_layout: Optional[object] = None
     config_dir: Optional[Path] = None
+    pot_controller: Optional[object] = None

@@ -48,3 +48,10 @@ logging:
   level: "INFO"
   max_log_size_mb: 10
   max_log_files: 5
+
+# Physical pot control (optional). Overlay region for the category name;
+# defaults to the left half of the grid when omitted.
+# pots:
+#   overlay:
+#     x0: 0
+#     x1: 10

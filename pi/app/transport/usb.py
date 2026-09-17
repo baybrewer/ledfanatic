@@ -292,6 +292,32 @@ class TeensyTransport:
   async def send_test_pattern(self, pattern_id: int) -> bool:
     return await self.send_command(PacketType.TEST_PATTERN, struct.pack('<B', pattern_id))
 
+  async def drain_incoming(self) -> list:
+    """Read and return all fully-buffered incoming packets without blocking.
+
+    Used by the pot poll loop to receive Teensy-pushed packets (PKT_POTS).
+    Holds the lock briefly so it can't interleave with request/response
+    exchanges (stats, config) that expect to consume replies themselves.
+
+    Guarded on self.caps: connected flips True BEFORE the handshake, and the
+    handshake's CAPS read does not hold the lock — draining during that
+    window would steal the CAPS packet and break every reconnect.
+    """
+    if not self.connected or not self.serial or self.caps is None:
+      return []
+    packets = []
+    async with self._lock:
+      try:
+        while True:
+          result = self._read_packet()
+          if result is None:
+            break
+          packets.append(result)
+      except (serial.SerialException, OSError) as e:
+        logger.error(f"drain_incoming failed: {e}")
+        self.connected = False
+    return packets
+
   async def request_stats(self) -> Optional[dict]:
     """Send PING and wait for STATS response. Holds lock to avoid stealing CONFIG responses."""
     if not self.connected or not self.serial:

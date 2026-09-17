@@ -12,8 +12,12 @@ deadband from its last settled position. The first packet after startup
 (or after re-enable) only establishes a baseline.
 """
 
+import asyncio
 import logging
+import time
 from typing import Callable, Optional
+
+from ..models.protocol import PacketType, parse_pots_payload
 
 logger = logging.getLogger(__name__)
 
@@ -166,3 +170,27 @@ class PotController:
       'enabled': self._enabled_provider(),
       'category': category,
     }
+
+
+async def pots_poll_loop(transport, controller: PotController, dispatch,
+                         interval: float = 0.05):
+  """Background task: drain Teensy packets, feed POTS to the controller,
+  dispatch resulting events. Never dies on a single bad iteration."""
+  while True:
+    try:
+      packets = await transport.drain_incoming()
+      for header, payload in packets:
+        if header.packet_type != PacketType.POTS:
+          continue
+        raw = parse_pots_payload(payload)
+        if raw is None:
+          continue
+        events = controller.handle_raw(raw, time.monotonic())
+        if events:
+          await dispatch(events)
+      await asyncio.sleep(interval)
+    except asyncio.CancelledError:
+      break
+    except Exception as e:
+      logger.error(f"pots_poll_loop error: {e}", exc_info=True)
+      await asyncio.sleep(1.0)

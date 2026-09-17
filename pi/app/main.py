@@ -469,6 +469,48 @@ def main():
   # Preview service
   preview_service = PreviewService(renderer)
 
+  # --- Pot controller (physical knobs via Teensy PKT_POTS) ---
+  from datetime import datetime, timezone
+  from .core.pots import PotController, pots_poll_loop
+
+  def _pot_menu():
+    menu = []
+    known = set(renderer.effect_registry.keys())
+    favorites = [n for n in state_manager.favorites if n in known]
+    if favorites:
+      fav_sorted = sorted(favorites)
+      menu.append(('Favorites', fav_sorted))
+    menu.extend(effect_catalog.get_display_categories())
+    return menu
+
+  pot_controller = PotController(
+    menu_provider=_pot_menu,
+    enabled_provider=lambda: state_manager.pots_enabled,
+  )
+
+  async def _dispatch_pot_events(events):
+    for kind, value in events:
+      if kind == 'brightness':
+        brightness_engine.manual_cap = value
+        state_manager.brightness_manual_cap = value
+        effective = brightness_engine.get_effective_brightness(
+          datetime.now(timezone.utc))
+        await transport.send_brightness(effective)
+      elif kind == 'overlay':
+        renderer.set_overlay_text(value)
+      elif kind == 'activate':
+        params = state_manager.get_effect_params(value)
+        if renderer.activate_scene(value, params, media_manager=media_manager):
+          state_manager.current_scene = value
+          state_manager.current_params = params
+          logger.info(f"Pot-activated effect: {value}")
+
+  # Overlay region from system.yaml (pots.overlay.x0/x1); default = left half
+  pots_conf = sys_conf.get('pots', {}) or {}
+  overlay_conf = pots_conf.get('overlay', {}) or {}
+  if 'x0' in overlay_conf and 'x1' in overlay_conf:
+    renderer.overlay_region = (int(overlay_conf['x0']), int(overlay_conf['x1']))
+
   # Create app
   app = create_app(
     transport=transport,
@@ -485,6 +527,7 @@ def main():
     layout_config=layout_config,
     compiled_layout=compiled_layout,
     config_dir=config_dir,
+    pot_controller=pot_controller,
   )
 
   # Track background tasks for clean shutdown
@@ -512,6 +555,8 @@ def main():
     _background_tasks.append(asyncio.create_task(transport.reconnect_loop()))
     _background_tasks.append(asyncio.create_task(renderer.run()))
     _background_tasks.append(asyncio.create_task(state_manager.flush_loop()))
+    _background_tasks.append(asyncio.create_task(
+      pots_poll_loop(transport, pot_controller, _dispatch_pot_events)))
     logger.info("Background tasks started")
 
   @app.on_event("shutdown")
