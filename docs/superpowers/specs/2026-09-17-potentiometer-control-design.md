@@ -40,6 +40,23 @@ Receives normalized pot values from the transport read loop (same dispatch path 
 - Empty favorites list → the favorites slot is skipped in the menu mapping.
 - Mapping/hysteresis logic implemented as pure functions for unit testing; the controller is a thin stateful wrapper.
 
+## Category overlay (LED feedback while turning the menu pot)
+
+- While the **menu pot** is moving (and for ~1.5 s after it settles), the current category name is drawn on the **left panel** as an overlay on top of the running effect, then fades out (~300 ms).
+- **Book-spine orientation:** glyphs rotated 90° clockwise (letter tops face right), reading top-to-bottom. Names taller than the panel scroll vertically.
+- Rendered by the renderer after the effect frame (before pack/y-flip handling), reusing scrolltext's PIL text rasterization — extracted into a small shared helper so scrolltext and the overlay share one font path (DRY).
+- Overlay region is configurable in `system.yaml` (`pots.overlay: {x0, x1}`), defaulting to the left half of the grid (columns 0 to width/2 − 1). No hardcoded geometry.
+- Pattern pot gets **no** text overlay (deliberate) — you judge effect selection by watching the effect change.
+- Text is white at full effective brightness with a dark backing box over the panel region for legibility.
+
+## Per-knob software disable
+
+- Each pot (brightness / menu / pattern) can be individually disabled so e.g. random guests can't change the pattern.
+- State: `pots_enabled: {brightness, menu, pattern}` booleans in `state.json` (live-override tier, defaults all true).
+- API: `GET /api/pots` (public — current values + enabled flags), `POST /api/pots/config` (auth — set enabled flags).
+- A disabled pot's input is fully ignored: no activation, no overlay, no brightness change. Re-enabling does **not** immediately apply the pot's resting position — it must move past the deadband again (last-writer-wins preserved).
+- UI: three toggles in the System tab.
+
 ## Favorites (server-side — needed independently)
 
 - `favorites: list[str]` (effect names) in `state.json` (schema-versioned migration).
@@ -49,13 +66,15 @@ Receives normalized pot values from the transport read loop (same dispatch path 
 ## Testing
 
 - `test_protocol.py`: PKT_POTS golden vector (framing + CRC).
-- Unit tests for pure mapping functions: deadband, hysteresis zones, group/effect index mapping, favorites-empty case.
-- Live: deploy to Pi, flash Teensy, turn knobs, confirm brightness + selection + app interplay.
+- Unit tests for pure mapping functions: deadband, hysteresis zones, group/effect index mapping, favorites-empty case, disabled-pot ignore + re-enable semantics.
+- Unit test for spine-text rasterization (orientation: letter tops face right; scroll for long names).
+- Live: deploy to Pi, flash Teensy, turn knobs, confirm brightness + selection + overlay + app interplay + disable toggles.
 
 ## Out of scope
 
 - No pots for effect parameters (speed/palette) — future.
-- No display/feedback hardware; the app UI remains the readout of current state.
+- No extra display/feedback hardware — feedback is the LED category overlay plus the app UI.
+- No effect-name overlay for the pattern pot (decided against).
 - No selector switches or encoders.
 
 ## Config precedence note
