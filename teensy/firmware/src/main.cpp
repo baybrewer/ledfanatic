@@ -69,6 +69,11 @@ struct Stats {
 static uint32_t fpsCounter = 0;
 static uint32_t lastFpsTime = 0;
 
+// --- Pot inputs (raw 10-bit, exponentially smoothed) ---
+static int32_t potFiltered[3] = {-1, -1, -1};
+static uint32_t lastPotsSend = 0;
+static const uint8_t POT_PINS[3] = {POT_PIN_BRIGHTNESS, POT_PIN_MENU, POT_PIN_PATTERN};
+
 // --- Forward declarations ---
 void handlePacket(const uint8_t* data, size_t len);
 void handleHello(const uint8_t* payload, size_t len);
@@ -81,6 +86,8 @@ void sendStats();
 void sendAck();
 void sendNak();
 void sendPacket(uint8_t type, const uint8_t* payload, size_t len);
+void readPots();
+void sendPots();
 void applyPendingFrame();
 void recalcGeometry();
 void reconfigureOcto();
@@ -249,6 +256,13 @@ void loop() {
   }
 
   stats.uptimeMs = now;
+
+  // --- Pot inputs ---
+  readPots();
+  if (now - lastPotsSend >= POTS_INTERVAL_MS) {
+    sendPots();
+    lastPotsSend = now;
+  }
 }
 
 // -------------------------------------------------------------------
@@ -441,6 +455,27 @@ void sendStats() {
   memcpy(payload + 20, &stats.droppedPending, 4);
   memcpy(payload + 24, &stats.outputFps, 4);
   sendPacket(PKT_STATS, payload, sizeof(payload));
+}
+
+void readPots() {
+  for (int i = 0; i < 3; i++) {
+    int32_t raw = analogRead(POT_PINS[i]);  // 10-bit default: 0-1023
+    if (potFiltered[i] < 0) {
+      potFiltered[i] = raw;
+    } else {
+      potFiltered[i] += (raw - potFiltered[i]) >> 3;  // EMA, alpha = 1/8
+    }
+  }
+}
+
+void sendPots() {
+  uint8_t payload[6];
+  for (int i = 0; i < 3; i++) {
+    uint16_t v = (uint16_t)potFiltered[i];
+    payload[i * 2] = v & 0xFF;
+    payload[i * 2 + 1] = (v >> 8) & 0xFF;
+  }
+  sendPacket(PKT_POTS, payload, sizeof(payload));
 }
 
 void sendAck() {

@@ -32,6 +32,7 @@
 #define PKT_PING               0x20
 #define PKT_PONG               0x21
 #define PKT_STATS              0x30
+#define PKT_POTS               0x31
 #define PKT_TEST_PATTERN       0x40
 #define PKT_BLACKOUT           0x41
 #define PKT_BRIGHTNESS         0x42
@@ -56,6 +57,12 @@
 #define USB_READ_CHUNK         4096
 #define STATS_INTERVAL_MS      1000
 
+// --- Potentiometer inputs ---
+#define POT_PIN_BRIGHTNESS  38   // A14
+#define POT_PIN_MENU        39   // A15
+#define POT_PIN_PATTERN     40   // A16
+#define POTS_INTERVAL_MS    50
+
 // --- Color order ---
 #define COLOR_ORDER_RGB  0
 #define COLOR_ORDER_GRB  1
@@ -66,5 +73,5 @@
 #define DEFAULT_COLOR_ORDER  COLOR_ORDER_BGR
 
 // --- Firmware info ---
-#define FIRMWARE_VERSION "1.1.0"
+#define FIRMWARE_VERSION "1.2.0"
 #define FIRMWARE_NAME    "pillar-teensy"
