@@ -55,7 +55,7 @@ Receives normalized pot values from the transport read loop (same dispatch path 
 - State: `pots_enabled: {brightness, menu, pattern}` booleans in `state.json` (live-override tier, defaults all true).
 - API: `GET /api/pots` (public — current values + enabled flags), `POST /api/pots/config` (auth — set enabled flags).
 - A disabled pot's input is fully ignored: no activation, no overlay, no brightness change. Re-enabling does **not** immediately apply the pot's resting position — it must move past the deadband again (last-writer-wins preserved).
-- UI: three toggles in the System tab.
+- UI: three checkboxes in the System tab of the web app ("Brightness knob", "Menu knob", "Pattern knob"), wired to `POST /api/pots/config`.
 
 ## Favorites (server-side — needed independently)
 
