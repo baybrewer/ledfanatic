@@ -8,6 +8,7 @@ and horizontal (right→left) scrolling, with 1-4 panel repeats.
 import numpy as np
 from PIL import Image, ImageDraw, ImageFont
 from .base import Effect
+from .textrender import get_font
 
 
 class _Param:
@@ -40,15 +41,7 @@ class ScrollingText(Effect):
         self._render_text()
 
     def _get_font(self, size):
-        for path in [
-            "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf",
-            "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
-        ]:
-            try:
-                return ImageFont.truetype(path, size)
-            except (OSError, IOError):
-                continue
-        return ImageFont.load_default()
+        return get_font(size)
 
     def _parse_color(self):
         color_hex = self.params.get('color', '#00FFFF')
