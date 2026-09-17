@@ -1,6 +1,6 @@
-"""Tests for pot mapping logic: deadband, hysteresis, settle-debounce, disable."""
+"""Tests for pot mapping logic: deadband, hysteresis, live activation, disable."""
 
-from app.core.pots import PotController, normalize_raw, select_index
+from app.core.pots import LIVE_INTERVAL_S, PotController, normalize_raw, select_index
 
 
 MENU = [
@@ -78,29 +78,41 @@ class TestMenuAndPattern:
     ctl.handle_raw(raw(m=0.1), now=0.0)
     events = ctl.handle_raw(raw(m=0.5), now=0.05)  # into 'Ambient' zone
     assert ('overlay', 'Ambient') in events
-    assert not any(k == 'activate' for k, _ in events)  # not settled yet
+    # Live activation fires in the same call now (pattern falls back to its
+    # trusted absolute position: 0.0 -> index 0 of Ambient).
+    assert ('activate', 'amb_a') in events
 
-  def test_activation_after_settle(self):
+  def test_activation_immediate_on_move(self):
     ctl, _ = make_controller()
     ctl.handle_raw(raw(m=0.1, p=0.1), now=0.0)
-    ctl.handle_raw(raw(m=0.5, p=0.1), now=0.05)   # menu -> Ambient
-    ctl.handle_raw(raw(m=0.5, p=0.1), now=0.1)    # stopped moving
-    events = ctl.handle_raw(raw(m=0.5, p=0.1), now=0.5)  # 300ms after stop
+    events = ctl.handle_raw(raw(m=0.5, p=0.1), now=0.05)  # menu -> Ambient
     activates = [v for k, v in events if k == 'activate']
-    assert activates == ['amb_a']  # pattern pot at 0.1 -> index 0 of Ambient
+    assert activates == ['amb_a']  # pattern pot at 0.1 -> index 0 of Ambient, fires immediately
 
-  def test_sweep_activates_once(self):
+  def test_sweep_rate_limited(self):
     ctl, _ = make_controller()
-    ctl.handle_raw(raw(m=0.5, p=0.0), now=0.0)
-    # Sweep pattern pot through all 3 Ambient zones quickly
-    ctl.handle_raw(raw(m=0.5, p=0.3), now=0.05)
-    ctl.handle_raw(raw(m=0.5, p=0.6), now=0.10)
-    ctl.handle_raw(raw(m=0.5, p=0.95), now=0.15)
-    mid = ctl.handle_raw(raw(m=0.5, p=0.95), now=0.2)
-    assert not any(k == 'activate' for k, _ in mid)
-    done = ctl.handle_raw(raw(m=0.5, p=0.95), now=0.6)
-    activates = [v for k, v in done if k == 'activate']
-    assert activates == ['amb_c']
+    ctl.handle_raw(raw(m=0.5, p=0.0), now=0.0)  # baseline
+    # Sweep pattern pot through all 3 Ambient zones, 50ms apart, then hold.
+    times = [0.05, 0.10, 0.15, 0.20, 0.30, 0.50, 0.70]
+    positions = [0.3, 0.6, 0.95, 0.95, 0.95, 0.95, 0.95]
+    calls = [(t, ctl.handle_raw(raw(m=0.5, p=p), now=t))
+             for t, p in zip(times, positions)]
+
+    activations = [(t, v) for t, evs in calls for k, v in evs if k == 'activate']
+    assert len(activations) > 1  # live feel: more than one activation while turning
+    for (t1, _), (t2, _) in zip(activations, activations[1:]):
+      assert t2 - t1 >= LIVE_INTERVAL_S - 1e-9  # consecutive activations rate-limited
+    assert activations[-1][1] == 'amb_c'  # final position always lands
+
+  def test_no_reactivate_same_effect(self):
+    ctl, _ = make_controller()
+    ctl.handle_raw(raw(m=0.5, p=0.05), now=0.0)  # baseline
+    first = ctl.handle_raw(raw(m=0.5, p=0.10), now=0.05)  # move within zone 0
+    assert [v for k, v in first if k == 'activate'] == ['amb_a']
+    # Wiggle further within the same zone, well past the rate-limit window:
+    # resolved effect is unchanged, so no redundant activate.
+    second = ctl.handle_raw(raw(m=0.5, p=0.15), now=0.30)
+    assert not any(k == 'activate' for k, _ in second)
 
   def test_pattern_pot_no_overlay(self):
     ctl, _ = make_controller()
@@ -112,8 +124,7 @@ class TestMenuAndPattern:
     # Provider contract: caller omits empty favorites. Menu without favorites:
     ctl, _ = make_controller(menu=[('Ambient', ['amb_a']), ('Game', ['game_a'])])
     ctl.handle_raw(raw(m=0.1, p=0.1), now=0.0)
-    ctl.handle_raw(raw(m=0.9, p=0.1), now=0.05)
-    events = ctl.handle_raw(raw(m=0.9, p=0.1), now=0.5)
+    events = ctl.handle_raw(raw(m=0.9, p=0.1), now=0.05)  # menu -> Game, immediate activation
     assert ('activate', 'game_a') in events
 
 
@@ -143,26 +154,29 @@ class TestDisable:
 
   def test_disabled_pattern_drift_does_not_leak_into_activation(self):
     # Reproduction: pattern pot gets disabled, drifts to a new resting
-    # position, gets re-enabled without moving again, and then the menu's
-    # settle timer fires. The drifted position must not determine the
-    # activated effect — the pattern's last legitimate index (none ever
-    # established here) must win, defaulting to index 0 of the category.
+    # position, gets re-enabled without moving again. The drifted position
+    # must not determine the activated effect — the pattern's last
+    # legitimate index (none ever established here) must win, defaulting
+    # to index 0 of the category.
     ctl, flags = make_controller(enabled={'brightness': True, 'menu': True, 'pattern': True})
     ctl.handle_raw(raw(m=0.1, p=0.1), now=0.0)          # baseline, all enabled
     flags['pattern'] = False
-    ctl.handle_raw(raw(m=0.5, p=0.1), now=0.05)         # menu -> Ambient, overlay ok
+    events_menu_move = ctl.handle_raw(raw(m=0.5, p=0.1), now=0.05)  # menu -> Ambient; pattern disabled
+    assert ('overlay', 'Ambient') in events_menu_move
+    # Immediate activation (same call) must use pattern's trusted default
+    # (index 0), not any drifted position — pattern is untrusted right now.
+    assert ('activate', 'amb_a') in events_menu_move
     ctl.handle_raw(raw(m=0.5, p=0.9), now=0.10)         # pattern (disabled) drifts: silent
     flags['pattern'] = True
     events_reenable = ctl.handle_raw(raw(m=0.5, p=0.9), now=0.15)  # re-enabled, not moved
     assert not any(k == 'activate' for k, _ in events_reenable)
-    events = ctl.handle_raw(raw(m=0.5, p=0.9), now=0.40)  # menu settle fires
-    assert ('activate', 'amb_a') in events
+    events_idle = ctl.handle_raw(raw(m=0.5, p=0.9), now=0.40)  # nothing moved since; no new event
+    assert not any(k == 'activate' for k, _ in events_idle)
 
   def test_disabled_menu_never_established_blocks_activation(self):
     ctl, _ = make_controller(enabled={'brightness': True, 'menu': False, 'pattern': True})
     ctl.handle_raw(raw(m=0.5, p=0.1), now=0.0)   # baseline (menu disabled)
-    ctl.handle_raw(raw(m=0.5, p=0.9), now=0.05)  # pattern moves for real; menu never established
-    events = ctl.handle_raw(raw(m=0.5, p=0.9), now=0.5)  # settle
+    events = ctl.handle_raw(raw(m=0.5, p=0.9), now=0.05)  # pattern moves for real; menu never established
     assert not any(k == 'activate' for k, _ in events)
 
   def test_pattern_enabled_idle_uses_absolute_fallback(self):
@@ -170,24 +184,21 @@ class TestDisable:
     # fall back to its absolute position (trusted), not default to index 0.
     ctl, _ = make_controller()
     ctl.handle_raw(raw(m=0.1, p=0.6), now=0.0)          # baseline, pattern resting at 0.6
-    ctl.handle_raw(raw(m=0.5, p=0.6), now=0.05)         # menu -> Ambient, pattern unmoved
-    events = ctl.handle_raw(raw(m=0.5, p=0.6), now=0.4)  # settle
+    events = ctl.handle_raw(raw(m=0.5, p=0.6), now=0.05)  # menu -> Ambient, pattern unmoved; immediate
     assert ('activate', 'amb_b') in events  # 0.6 -> index 1 of 3 Ambient effects
 
   def test_disabled_menu_reenable_without_movement_still_blocks_activation(self):
     # Menu disabled at boot (never legitimately established); pattern moves
-    # and settles -> no activate. Menu is then re-enabled without moving,
-    # so it still isn't trusted; pattern moves again and settles -> still
-    # no activate.
+    # -> no activate, since menu is untrusted. Menu is then re-enabled
+    # without moving, so it still isn't trusted; pattern moves again ->
+    # still no activate.
     ctl, flags = make_controller(enabled={'brightness': True, 'menu': False, 'pattern': True})
     ctl.handle_raw(raw(m=0.5, p=0.1), now=0.0)            # baseline, menu disabled
-    ctl.handle_raw(raw(m=0.5, p=0.9), now=0.05)           # pattern moves for real
-    events1 = ctl.handle_raw(raw(m=0.5, p=0.9), now=0.5)  # settle
+    events1 = ctl.handle_raw(raw(m=0.5, p=0.9), now=0.05)  # pattern moves for real; menu untrusted
     assert not any(k == 'activate' for k, _ in events1)
     flags['menu'] = True
     ctl.handle_raw(raw(m=0.5, p=0.9), now=0.55)           # menu re-enabled, not moved
-    ctl.handle_raw(raw(m=0.5, p=0.2), now=0.6)            # pattern moves again
-    events2 = ctl.handle_raw(raw(m=0.5, p=0.2), now=0.95)  # settle
+    events2 = ctl.handle_raw(raw(m=0.5, p=0.2), now=0.6)  # pattern moves again; menu still untrusted
     assert not any(k == 'activate' for k, _ in events2)
 
   def test_status_survives_menu_shrink(self):

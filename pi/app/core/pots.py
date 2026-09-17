@@ -24,7 +24,7 @@ logger = logging.getLogger(__name__)
 ADC_MAX = 1023
 DEADBAND = 0.02       # 2% of travel to count as movement
 ZONE_GUARD = 0.15     # hysteresis: fraction of zone width past the boundary
-SETTLE_S = 0.3        # selector pots activate this long after motion stops
+LIVE_INTERVAL_S = 0.2  # minimum spacing between selector activations while turning
 
 POT_BRIGHTNESS, POT_MENU, POT_PATTERN = 0, 1, 2
 _POT_KEYS = ('brightness', 'menu', 'pattern')
@@ -57,17 +57,18 @@ def select_index(value: float, count: int, current: Optional[int],
 
 class PotController:
   def __init__(self, menu_provider: Callable, enabled_provider: Callable,
-               deadband: float = DEADBAND, settle_s: float = SETTLE_S):
+               deadband: float = DEADBAND, live_interval_s: float = LIVE_INTERVAL_S):
     self._menu_provider = menu_provider
     self._enabled_provider = enabled_provider
     self._deadband = deadband
-    self._settle_s = settle_s
+    self._live_interval_s = live_interval_s
     self._settled: list = [None, None, None]     # last settled value per pot
     self._was_enabled: list = [True, True, True]
-    self._last_move: list = [None, None]          # menu, pattern move times
     self._menu_idx: Optional[int] = None
     self._pattern_idx: Optional[int] = None
     self._pending_selection = False
+    self._last_activated: Optional[str] = None
+    self._last_activate_t: Optional[float] = None
     # Trusted position per selector pot [menu, pattern]: whether its current
     # absolute reading (or last-moved index) reflects a legitimate user
     # action rather than drift while disabled or an unmoved boot position.
@@ -103,7 +104,6 @@ class PotController:
       if i == POT_BRIGHTNESS:
         events.append(('brightness', values[i]))
       elif i == POT_MENU:
-        self._last_move[0] = now
         self._pending_selection = True
         self._trusted[0] = True
         menu = self._menu_provider()
@@ -114,17 +114,18 @@ class PotController:
         if self._menu_idx is not None and menu:
           events.append(('overlay', menu[self._menu_idx][0]))
       elif i == POT_PATTERN:
-        self._last_move[1] = now
         self._pending_selection = True
         self._trusted[1] = True
 
-    if self._pending_selection:
-      moves = [t for t in self._last_move if t is not None]
-      if moves and now - max(moves) >= self._settle_s:
-        effect = self._resolve_selection()
-        self._pending_selection = False
-        if effect:
-          events.append(('activate', effect))
+    if self._pending_selection and (
+        self._last_activate_t is None
+        or now - self._last_activate_t >= self._live_interval_s):
+      resolved = self._resolve_selection()
+      self._pending_selection = False
+      if resolved is not None and resolved != self._last_activated:
+        self._last_activated = resolved
+        self._last_activate_t = now
+        events.append(('activate', resolved))
 
     return events
 

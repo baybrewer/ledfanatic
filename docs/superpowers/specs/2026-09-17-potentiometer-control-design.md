@@ -35,7 +35,7 @@ Receives normalized pot values from the transport read loop (same dispatch path 
 - **Brightness pot** → 0.0–1.0 → `brightness.set_manual_cap()` (existing engine; same code path as the API). Continuous while moving, small step threshold to avoid state-file churn (state saves already debounced).
 - **Menu pot** → index into `["favorites"] + sorted(effect groups)`. **Pattern pot** → index into the selected group's effect list (alphabetical, matching UI sort).
 - **Hysteresis:** selector pots quantize with dead gaps between zones (switch at zone-center crossings, not edges) so a knob resting on a boundary never flickers between effects.
-- **Debounce:** effect activation fires ~300 ms after the knob stops moving, so sweeping doesn't activate every effect passed over.
+- **Live activation:** effect activation is not debounced — a selector move resolves and activates in the same call when it produces a new effect (feels instant for a single click), but is rate-limited to at most once per 200 ms (`LIVE_INTERVAL_S`) while continuously turning, so sweeping doesn't fire on every zone passed over; the final position still lands within ~200-250 ms of the last movement, and returning to the already-active effect emits nothing.
 - Effect changes go through `renderer.activate_scene()` — the mandatory path for all scene types.
 - Empty favorites list → the favorites slot is skipped in the menu mapping.
 - Mapping/hysteresis logic implemented as pure functions for unit testing; the controller is a thin stateful wrapper.
