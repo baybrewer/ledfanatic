@@ -216,6 +216,7 @@ function initTabs() {
 let effectsCatalog = null;
 let currentEffectParams = {};
 let currentFilterCategory = 'All';
+let favoriteEffects = [];
 
 const CATEGORY_MAP = {
   imported_sound: 'Sound Reactive',
@@ -240,6 +241,7 @@ const CATEGORY_COLORS = {
   'Classic': '#e17055',
   'Special': '#a29bfe',
   'Other': '#636e72',
+  'Favorites': '#fdcb6e',
 };
 
 function getCategoryColor(group) {
@@ -276,6 +278,9 @@ async function loadEffects() {
   if (!data) return;
   effectsCatalog = data.effects;
 
+  const favData = await api('GET', '/api/effects/favorites');
+  favoriteEffects = (favData && favData.favorites) || [];
+
   // Restore saved params from state.json
   if (data.current_params && Object.keys(data.current_params).length > 0) {
     currentEffectParams = { ...data.current_params };
@@ -303,12 +308,14 @@ async function loadEffects() {
   for (const eff of categorized) {
     counts[eff.category] = (counts[eff.category] || 0) + 1;
   }
+  counts['Favorites'] = favoriteEffects.length;
 
-  // Render filter bar
+  // Render filter bar (adds a Favorites pill after All; does not affect card sort order)
   const filterBar = document.getElementById('effects-filter-bar');
   filterBar.innerHTML = '';
 
-  for (const cat of categoryOrder) {
+  const filterCategoryOrder = [categoryOrder[0], 'Favorites', ...categoryOrder.slice(1)];
+  for (const cat of filterCategoryOrder) {
     if (cat !== 'All' && !counts[cat]) continue;
     const btn = document.createElement('button');
     btn.className = `category-btn${cat === currentFilterCategory ? ' active' : ''}`;
@@ -375,6 +382,26 @@ async function loadEffects() {
     });
     btn.querySelector('.effect-card-body').appendChild(hideBtn);
 
+    const favBtn = document.createElement('span');
+    favBtn.className = 'effect-card-fav' + (favoriteEffects.includes(eff.name) ? ' faved' : '');
+    favBtn.textContent = '★';
+    favBtn.title = 'Toggle favorite';
+    favBtn.addEventListener('click', async (e) => {
+      e.stopPropagation();
+      const idx = favoriteEffects.indexOf(eff.name);
+      if (idx >= 0) favoriteEffects.splice(idx, 1);
+      else favoriteEffects.push(eff.name);
+      favBtn.classList.toggle('faved', idx < 0);
+      const res = await api('POST', '/api/effects/favorites', { favorites: favoriteEffects });
+      if (!res) { // auth failure — revert
+        if (idx >= 0) favoriteEffects.push(eff.name);
+        else favoriteEffects.splice(favoriteEffects.indexOf(eff.name), 1);
+        favBtn.classList.toggle('faved', idx >= 0);
+      }
+      applyEffectsFilter();
+    });
+    btn.appendChild(favBtn);
+
     if (eff.name === data.current) btn.classList.add('active-scene');
     btn.addEventListener('click', () => activateEffect(eff.name));
     grid.appendChild(btn);
@@ -394,7 +421,11 @@ function applyEffectsFilter() {
   const grid = document.getElementById('effects-grid');
   const hidden = getHiddenEffects();
   grid.querySelectorAll('.effect-card').forEach(btn => {
-    const matchesCategory = currentFilterCategory === 'All' || btn.dataset.category === currentFilterCategory;
+    const matchesCategory =
+      currentFilterCategory === 'All' ||
+      (currentFilterCategory === 'Favorites'
+        ? favoriteEffects.includes(btn.dataset.effect)
+        : btn.dataset.category === currentFilterCategory);
     const isHidden = hidden.includes(btn.dataset.effect);
     if (matchesCategory && (!isHidden || showHiddenEffects)) {
       btn.style.display = '';
@@ -1046,6 +1077,28 @@ async function loadSystemStatus() {
     data.transport?.caps?.firmware_version || '--';
   document.getElementById('sys-frames').textContent =
     data.render?.frames_sent?.toLocaleString() || '0';
+
+  loadKnobToggles();
+}
+
+async function loadKnobToggles() {
+  const data = await api('GET', '/api/pots');
+  if (!data || !data.enabled) return;
+  for (const key of ['brightness', 'menu', 'pattern']) {
+    const box = document.getElementById(`knob-${key}`);
+    if (box) box.checked = !!data.enabled[key];
+  }
+}
+
+function initKnobToggles() {
+  for (const key of ['brightness', 'menu', 'pattern']) {
+    const box = document.getElementById(`knob-${key}`);
+    if (!box) continue;
+    box.addEventListener('change', async () => {
+      const res = await api('POST', '/api/pots/config', { [key]: box.checked });
+      if (!res) box.checked = !box.checked; // revert on auth failure
+    });
+  }
 }
 
 function initSystem() {
@@ -2321,6 +2374,7 @@ document.addEventListener('DOMContentLoaded', () => {
   initAudio();
   initDiagnostics();
   initSystem();
+  initKnobToggles();
   initSim();
   initGame();
   // Sim toggle — stop/start preview when checkbox changes
