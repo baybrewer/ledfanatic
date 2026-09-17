@@ -1,0 +1,142 @@
+"""Tests for pot mapping logic: deadband, hysteresis, settle-debounce, disable."""
+
+from app.core.pots import PotController, normalize_raw, select_index
+
+
+MENU = [
+  ('Favorites', ['fav_a', 'fav_b']),
+  ('Ambient', ['amb_a', 'amb_b', 'amb_c']),
+  ('Game', ['game_a']),
+]
+
+ALL_ON = {'brightness': True, 'menu': True, 'pattern': True}
+
+
+def make_controller(enabled=None, menu=None):
+  flags = dict(enabled or ALL_ON)
+  return PotController(
+    menu_provider=lambda: list(menu if menu is not None else MENU),
+    enabled_provider=lambda: dict(flags),
+  ), flags
+
+
+def raw(b=0.0, m=0.0, p=0.0):
+  return (int(b * 1023), int(m * 1023), int(p * 1023))
+
+
+class TestHelpers:
+  def test_normalize(self):
+    assert normalize_raw(0) == 0.0
+    assert normalize_raw(1023) == 1.0
+    assert abs(normalize_raw(512) - 0.5005) < 0.001
+    assert normalize_raw(2000) == 1.0  # clamped
+
+  def test_select_index_basic(self):
+    assert select_index(0.0, 4, None) == 0
+    assert select_index(0.99, 4, None) == 3
+    assert select_index(0.5, 0, None) is None
+
+  def test_select_index_hysteresis_holds_at_boundary(self):
+    # value just past the 0/1 boundary stays at current=0 within guard
+    assert select_index(0.26, 4, current=0) == 0
+    # well past the guard, switches
+    assert select_index(0.35, 4, current=0) == 1
+
+
+class TestBaseline:
+  def test_first_packet_is_silent_baseline(self):
+    ctl, _ = make_controller()
+    events = ctl.handle_raw(raw(b=0.9, m=0.9, p=0.9), now=0.0)
+    assert events == []  # boot position must not take over
+
+  def test_static_pots_stay_silent(self):
+    ctl, _ = make_controller()
+    ctl.handle_raw(raw(b=0.5), now=0.0)
+    for i in range(20):
+      assert ctl.handle_raw(raw(b=0.5), now=0.05 * (i + 1)) == []
+
+
+class TestBrightness:
+  def test_movement_emits_brightness(self):
+    ctl, _ = make_controller()
+    ctl.handle_raw(raw(b=0.5), now=0.0)
+    events = ctl.handle_raw(raw(b=0.6), now=0.05)
+    assert ('brightness' in [k for k, _ in events])
+    val = dict(events)['brightness']
+    assert abs(val - 0.6) < 0.01
+
+  def test_tiny_jitter_ignored(self):
+    ctl, _ = make_controller()
+    ctl.handle_raw(raw(b=0.5), now=0.0)
+    events = ctl.handle_raw(raw(b=0.505), now=0.05)  # within 2% deadband
+    assert events == []
+
+
+class TestMenuAndPattern:
+  def test_menu_movement_emits_overlay(self):
+    ctl, _ = make_controller()
+    ctl.handle_raw(raw(m=0.1), now=0.0)
+    events = ctl.handle_raw(raw(m=0.5), now=0.05)  # into 'Ambient' zone
+    assert ('overlay', 'Ambient') in events
+    assert not any(k == 'activate' for k, _ in events)  # not settled yet
+
+  def test_activation_after_settle(self):
+    ctl, _ = make_controller()
+    ctl.handle_raw(raw(m=0.1, p=0.1), now=0.0)
+    ctl.handle_raw(raw(m=0.5, p=0.1), now=0.05)   # menu -> Ambient
+    ctl.handle_raw(raw(m=0.5, p=0.1), now=0.1)    # stopped moving
+    events = ctl.handle_raw(raw(m=0.5, p=0.1), now=0.5)  # 300ms after stop
+    activates = [v for k, v in events if k == 'activate']
+    assert activates == ['amb_a']  # pattern pot at 0.1 -> index 0 of Ambient
+
+  def test_sweep_activates_once(self):
+    ctl, _ = make_controller()
+    ctl.handle_raw(raw(m=0.5, p=0.0), now=0.0)
+    # Sweep pattern pot through all 3 Ambient zones quickly
+    ctl.handle_raw(raw(m=0.5, p=0.3), now=0.05)
+    ctl.handle_raw(raw(m=0.5, p=0.6), now=0.10)
+    ctl.handle_raw(raw(m=0.5, p=0.95), now=0.15)
+    mid = ctl.handle_raw(raw(m=0.5, p=0.95), now=0.2)
+    assert not any(k == 'activate' for k, _ in mid)
+    done = ctl.handle_raw(raw(m=0.5, p=0.95), now=0.6)
+    activates = [v for k, v in done if k == 'activate']
+    assert activates == ['amb_c']
+
+  def test_pattern_pot_no_overlay(self):
+    ctl, _ = make_controller()
+    ctl.handle_raw(raw(p=0.1), now=0.0)
+    events = ctl.handle_raw(raw(p=0.8), now=0.05)
+    assert not any(k == 'overlay' for k, _ in events)
+
+  def test_empty_favorites_omitted_by_provider_contract(self):
+    # Provider contract: caller omits empty favorites. Menu without favorites:
+    ctl, _ = make_controller(menu=[('Ambient', ['amb_a']), ('Game', ['game_a'])])
+    ctl.handle_raw(raw(m=0.1, p=0.1), now=0.0)
+    ctl.handle_raw(raw(m=0.9, p=0.1), now=0.05)
+    events = ctl.handle_raw(raw(m=0.9, p=0.1), now=0.5)
+    assert ('activate', 'game_a') in events
+
+
+class TestDisable:
+  def test_disabled_pattern_pot_inert(self):
+    ctl, _ = make_controller(enabled={'brightness': True, 'menu': True, 'pattern': False})
+    ctl.handle_raw(raw(m=0.5, p=0.1), now=0.0)
+    ctl.handle_raw(raw(m=0.5, p=0.9), now=0.05)
+    events = ctl.handle_raw(raw(m=0.5, p=0.9), now=0.5)
+    assert not any(k == 'activate' for k, _ in events)
+
+  def test_reenable_requires_new_movement(self):
+    ctl, flags = make_controller(enabled={'brightness': False, 'menu': True, 'pattern': True})
+    ctl.handle_raw(raw(b=0.2), now=0.0)
+    ctl.handle_raw(raw(b=0.9), now=0.05)  # moved while disabled — ignored
+    flags['brightness'] = True
+    # Re-enabled at resting 0.9: must NOT apply until it moves again
+    assert ctl.handle_raw(raw(b=0.9), now=0.1) == []
+    events = ctl.handle_raw(raw(b=0.7), now=0.15)
+    assert ('brightness' in [k for k, _ in events])
+
+  def test_disabled_menu_pot_no_overlay(self):
+    ctl, _ = make_controller(enabled={'brightness': True, 'menu': False, 'pattern': True})
+    ctl.handle_raw(raw(m=0.1), now=0.0)
+    events = ctl.handle_raw(raw(m=0.9), now=0.05)
+    assert not any(k == 'overlay' for k, _ in events)
