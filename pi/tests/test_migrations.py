@@ -108,7 +108,7 @@ class TestStateMigration:
             'current_params': {'speed': 0.5},
         }
         sm._migrate(sm._state)
-        assert sm._state['schema_version'] == 2
+        assert sm._state['schema_version'] == 3
         # R10-H1: migration does NOT convert scene to layers
         assert sm._state['current_layers'] == []
         assert sm._state['render_mode'] == 'single'
@@ -124,7 +124,7 @@ class TestStateMigration:
             'current_params': {},
         }
         sm._migrate(sm._state)
-        assert sm._state['schema_version'] == 2
+        assert sm._state['schema_version'] == 3
         assert sm._state['current_layers'] == []
         assert sm._state['render_mode'] == 'single'
         assert sm._state['current_scene'] == 'fire'
@@ -148,7 +148,39 @@ class TestStateMigration:
         assert mgr.current_scene == 'gradient'
         assert mgr.current_layers == []
         assert mgr._state['render_mode'] == 'single'
-        assert mgr._state['schema_version'] == 2
+        assert mgr._state['schema_version'] == 3
+
+
+class TestV3Migration:
+  def test_v2_to_v3_adds_favorites_and_pots(self, tmp_path):
+    state_file = tmp_path / "state.json"
+    state_file.write_text(json.dumps({
+      'schema_version': 2, 'current_scene': 'fire', 'current_layers': [],
+      'render_mode': 'single',
+    }))
+    mgr = StateManager(tmp_path)
+    mgr.load()
+    assert mgr._state['schema_version'] == 3
+    assert mgr.favorites == []
+    assert mgr.pots_enabled == {'brightness': True, 'menu': True, 'pattern': True}
+
+  def test_favorites_persist(self, tmp_path):
+    mgr = StateManager(tmp_path)
+    mgr.load()
+    mgr.favorites = ['fire', 'rainbow_rotate']
+    mgr.force_save()
+    mgr2 = StateManager(tmp_path)
+    mgr2.load()
+    assert mgr2.favorites == ['fire', 'rainbow_rotate']
+
+  def test_pots_enabled_persist(self, tmp_path):
+    mgr = StateManager(tmp_path)
+    mgr.load()
+    mgr.pots_enabled = {'brightness': True, 'menu': True, 'pattern': False}
+    mgr.force_save()
+    mgr2 = StateManager(tmp_path)
+    mgr2.load()
+    assert mgr2.pots_enabled['pattern'] is False
 
 
 class TestMediaMetadataMigration:

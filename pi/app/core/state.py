@@ -16,7 +16,7 @@ from datetime import datetime
 
 logger = logging.getLogger(__name__)
 
-STATE_SCHEMA_VERSION = 2
+STATE_SCHEMA_VERSION = 3
 
 
 class StateManager:
@@ -36,6 +36,8 @@ class StateManager:
       'current_layers': [],
       'render_mode': 'single',
       'last_updated': None,
+      'favorites': [],
+      'pots_enabled': {'brightness': True, 'menu': True, 'pattern': True},
     }
     self._dirty = False
     self._flush_interval = 1.0  # seconds
@@ -67,6 +69,12 @@ class StateManager:
       data['render_mode'] = 'single'
       data['schema_version'] = 2
       logger.info("Migrated state.json from v1 to v2")
+    if version < 3:
+      # v2 -> v3: favorites list + per-knob enable flags
+      data['favorites'] = []
+      data['pots_enabled'] = {'brightness': True, 'menu': True, 'pattern': True}
+      data['schema_version'] = 3
+      logger.info("Migrated state.json from v2 to v3")
 
   def _atomic_write(self):
     """Atomically save state to disk."""
@@ -127,6 +135,28 @@ class StateManager:
   @current_layers.setter
   def current_layers(self, layers: list[dict]):
     self._state['current_layers'] = layers
+    self.mark_dirty()
+
+  @property
+  def favorites(self) -> list[str]:
+    return self._state.get('favorites', [])
+
+  @favorites.setter
+  def favorites(self, value: list[str]):
+    self._state['favorites'] = list(value)
+    self.mark_dirty()
+
+  @property
+  def pots_enabled(self) -> dict:
+    return dict(self._state.get(
+      'pots_enabled', {'brightness': True, 'menu': True, 'pattern': True}))
+
+  @pots_enabled.setter
+  def pots_enabled(self, value: dict):
+    current = self.pots_enabled
+    current.update({k: bool(v) for k, v in value.items()
+                    if k in ('brightness', 'menu', 'pattern')})
+    self._state['pots_enabled'] = current
     self.mark_dirty()
 
   # --- Per-effect param memory ---
