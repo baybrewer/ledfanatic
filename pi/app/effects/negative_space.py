@@ -78,6 +78,17 @@ def _plasma_bg(gx, gy, elapsed, width, height):
   )
 
 
+def apply_darkness(frame_f: np.ndarray, field: np.ndarray, darkness: float) -> np.ndarray:
+  """Occlude a bright frame with a darkness field (SSOT for the negative family).
+
+  darkness controls the VOLUME of darkness: element presence (field boosted by
+  0.5 + darkness) and opacity (scaled by darkness; 1.0 = true black at cores).
+  It never dims the background — zero-field pixels are untouched.
+  """
+  occ = np.clip(field * (0.5 + darkness), 0.0, 1.0) * darkness
+  return frame_f * (1.0 - occ[:, :, np.newaxis])
+
+
 # ──────────────────────────────────────────────────────────────────────
 #  1. SRShadowPulse
 # ──────────────────────────────────────────────────────────────────────
