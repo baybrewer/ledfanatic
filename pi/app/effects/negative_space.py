@@ -261,10 +261,11 @@ class SRVoidBreath(Effect):
     mid = state.audio_mid * gain
     level = state.audio_level * gain
 
-    # Target radius driven by bass — capped so extreme/sustained bass can't
-    # swell the void to swallow the whole panel (sharp edge restored above
-    # means an uncapped void at max_r would leave almost no lit background).
-    # The cap only binds near full bass; normal bass-driven sizing is untouched.
+    # Target radius driven by bass — capped so the void can't swallow the whole
+    # panel (sharp edge means an uncapped void at max_r leaves almost no lit
+    # background). NOTE: this is a background-preservation limiter, not a
+    # loudness gate — with the default Gain of 2.0, post-gain bass saturates on
+    # ordinary music, so the cap binds at moderate listening levels too.
     target_r = min_r + (max_r - min_r) * np.clip(bass, 0, 1)
     target_r = min(target_r, 0.65 * max_r)
     # Smooth interpolation
@@ -751,10 +752,12 @@ class SRSilhouette(Effect):
       radii = blobs['radius'][np.newaxis, np.newaxis, :] * size_mod
 
       # Crowd containment: a handful of blobs merging is the point of this
-      # effect, but with many large blobs alive under sustained heavy bass
-      # their summed field can blanket the whole grid. Only shrink radii
-      # once bass is near-saturated AND more than a couple blobs are alive —
-      # idle/moderate scenes with few blobs are completely unaffected.
+      # effect, but with many large blobs alive their summed field can blanket
+      # the whole grid. Shrink radii as post-gain bass saturates AND more than
+      # a couple blobs are alive. NOTE: a background-preservation limiter, not
+      # a loudness gate — with the default Gain of 2.0, post-gain bass
+      # saturates on ordinary music, so this binds at moderate levels too
+      # whenever the blob population is high. Judge final tuning on hardware.
       extreme = np.clip((bass_c - 0.5) / 0.4, 0.0, 1.0)
       crowd = max(0, len(blobs) - 2)
       crowd_scale = 1.0 / (1.0 + extreme * crowd * 0.35)
