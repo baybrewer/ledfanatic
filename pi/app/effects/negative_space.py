@@ -609,6 +609,137 @@ class SRNegativeRain(Effect):
     return result
 
 
+class SRNegativeRain2(Effect):
+  """Negative Rain with the new darkness semantics — more darkness on tap."""
+
+  CATEGORY = "sound"
+  DISPLAY_NAME = "SR Negative Rain 2"
+  DESCRIPTION = "Negative Rain with a true-black darkness dial"
+  PALETTE_SUPPORT = False
+  AUDIO_REQUIRES = ('level', 'bass', 'mid', 'high', 'beat')
+
+  PARAMS = [
+    _P("Gain", "gain", 0.5, 5.0, 0.1, 2.0),
+    _P("Drop Speed", "drop_speed", 5.0, 40.0, 1.0, 15.0),
+    _P("Trail Length", "trail_length", 1.0, 8.0, 0.5, 3.0),
+    _P("Density", "density", 0.5, 5.0, 0.1, 2.0),
+    _P("Darkness", "darkness", 0.1, 1.0, 0.05, 0.95),
+  ]
+
+  def __init__(self, width, height, params=None):
+    super().__init__(width, height, params)
+    self._drops = np.empty(0, dtype=_DROP_DTYPE)
+    self._last_t = None
+    self._prev_frame = None
+    self._spawn_accum = 0.0  # fractional spawn accumulator
+    # Precompute coordinate grids
+    xs = np.arange(width, dtype=np.float32)
+    ys = np.arange(height, dtype=np.float32)
+    self._gx, self._gy = np.meshgrid(xs, ys, indexing='ij')
+
+  def _spawn_drops(self, count, bass, speed_mult=1.0):
+    """Spawn new drops at the top."""
+    count = min(count, _MAX_DROPS - len(self._drops))
+    if count <= 0:
+      return
+    trail_length = self.params.get('trail_length', 3.0)
+    drop_speed = self.params.get('drop_speed', 15.0)
+
+    new = np.empty(count, dtype=_DROP_DTYPE)
+    new['x'] = np.random.randint(0, self.width, count).astype(np.float32)
+    new['y'] = np.random.uniform(-2, 0, count).astype(np.float32)
+    new['vy'] = np.random.uniform(0.7, 1.3, count).astype(np.float32) * drop_speed * speed_mult
+    new['length'] = np.random.uniform(0.5, 1.0, count).astype(np.float32) * trail_length * (0.8 + bass * 0.4)
+    new['brightness'] = np.random.uniform(0.6, 1.0, count).astype(np.float32)
+
+    if len(self._drops) == 0:
+      self._drops = new
+    else:
+      self._drops = np.concatenate([self._drops, new])
+
+  def render(self, t: float, state) -> np.ndarray:
+    if self._last_t is None:
+      self._last_t = t
+    dt = min(t - self._last_t, 0.05)
+    self._last_t = t
+    elapsed = self.elapsed(t)
+
+    gain = self.params.get('gain', 2.0)
+    density = self.params.get('density', 2.0)
+    darkness_strength = self.params.get('darkness', 0.95)
+
+    bass = state.audio_bass * gain
+    level = state.audio_level * gain
+    mid = state.audio_mid * gain
+
+    # Continuous bass-driven spawning — accumulate fractional drops
+    spawn_rate = density * (0.5 + bass * 3.0) * self.width * 0.5 * (0.5 + darkness_strength) ** 0.5
+    self._spawn_accum += spawn_rate * dt
+    spawn_count = int(self._spawn_accum)
+    if spawn_count > 0:
+      self._spawn_accum -= spawn_count
+      self._spawn_drops(spawn_count, bass, speed_mult=0.8 + bass * 0.5)
+
+    # Update drops
+    if len(self._drops) > 0:
+      self._drops['y'] += self._drops['vy'] * dt
+      alive = self._drops['y'] < self.height + 5
+      self._drops = self._drops[alive]
+
+    # Vibrant plasma background
+    frame_f = _plasma_bg(self._gx, self._gy, elapsed, self.width, self.height).astype(np.float32)
+
+    # Render drops — vectorized with column-based approach
+    if len(self._drops) > 0:
+      drops = self._drops
+      darkness = np.zeros((self.width, self.height), dtype=np.float32)
+
+      # For each drop, darken pixels in its column near its y position
+      # Process in batches
+      batch_size = 100
+      for i in range(0, len(drops), batch_size):
+        batch = drops[i:i + batch_size]
+        # Column positions
+        col_idx = np.clip(np.round(batch['x']).astype(np.int32), 0, self.width - 1)
+
+        # For each pixel row, compute darkness from nearby drops
+        row_pos = self._gy[0, :]  # (height,)
+        drop_y = batch['y'][:, np.newaxis]  # (n_drops, 1)
+        drop_len = batch['length'][:, np.newaxis]
+        drop_bright = batch['brightness'][:, np.newaxis]
+
+        # Distance from drop head, along trail
+        dy = row_pos[np.newaxis, :] - drop_y  # (n_drops, height)
+        # Trail goes upward from drop head
+        trail_mask = (dy >= -0.5) & (dy <= drop_len)
+        trail_intensity = np.where(
+          trail_mask,
+          (1.0 - dy / (drop_len + 0.01)) * drop_bright,
+          0.0
+        )
+        trail_intensity = np.clip(trail_intensity, 0, 1)
+
+        # Scatter into darkness buffer by column
+        for j in range(len(batch)):
+          col = col_idx[j]
+          darkness[col] = np.maximum(darkness[col], trail_intensity[j])
+
+      darkness = np.clip(darkness * (0.7 + level * 0.5), 0, 1)
+      frame_f = apply_darkness(frame_f, darkness, darkness_strength)
+
+    result = np.clip(frame_f, 0, 255).astype(np.uint8)
+
+    # Temporal blending for smoother trails
+    if self._prev_frame is not None:
+      result = np.maximum(
+        (result.astype(np.float32) * 0.7).astype(np.uint8),
+        (self._prev_frame.astype(np.float32) * 0.3).astype(np.uint8),
+      )
+    self._prev_frame = result.copy()
+
+    return result
+
+
 # ──────────────────────────────────────────────────────────────────────
 #  5. SRSilhouette
 # ──────────────────────────────────────────────────────────────────────
@@ -906,6 +1037,7 @@ NEGATIVE_SPACE_EFFECTS = {
   'sr_void_breath': SRVoidBreath,
   'sr_lightning_gap': SRLightningGap,
   'sr_negative_rain': SRNegativeRain,
+  'sr_negative_rain2': SRNegativeRain2,
   'sr_silhouette': SRSilhouette,
   'sr_negative_ripples': SRNegativeRipples,
 }

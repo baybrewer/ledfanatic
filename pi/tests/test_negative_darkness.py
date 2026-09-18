@@ -134,3 +134,22 @@ class TestNegativeRipples:
     for i in range(60):
       out = eff.render(i / 30.0, state)
     assert out.astype(np.float32).mean() > 60  # no onsets -> no rings
+
+
+from app.effects.negative_space import SRNegativeRain, SRNegativeRain2
+
+
+class TestNegativeRain2:
+  def test_registered_and_original_untouched(self):
+    assert NEGATIVE_SPACE_EFFECTS['sr_negative_rain2'] is SRNegativeRain2
+    assert NEGATIVE_SPACE_EFFECTS['sr_negative_rain'] is SRNegativeRain
+    # Original keeps OLD param range (0.5 floor) — proof it wasn't converted
+    p = next(p for p in SRNegativeRain.PARAMS if p.attr == 'darkness')
+    assert p.lo == 0.5
+    p2 = next(p for p in SRNegativeRain2.PARAMS if p.attr == 'darkness')
+    assert p2.lo == 0.1 and p2.hi == 1.0
+
+  def test_rain2_reaches_near_black(self):
+    out = _run_effect(SRNegativeRain2, 1.0)
+    assert out.min() <= 8
+    assert out.mean() > 40
