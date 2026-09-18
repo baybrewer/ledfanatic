@@ -125,7 +125,7 @@ class TestNegativeRipples:
   def test_renders_dark_rings_on_bright_bg(self):
     out = _run_effect(SRNegativeRipples, 1.0)
     assert out.min() <= 8       # dark ring cores near black
-    assert out.mean() > 20      # plasma background alive (LOUD fixture spawns ripples every frame on continuous beat)
+    assert out.mean() > 40      # plasma background alive
 
   def test_silence_stays_bright(self):
     eff = SRNegativeRipples(width=20, height=40, params={'darkness': 1.0})
