@@ -360,6 +360,10 @@ class Renderer:
         await asyncio.sleep(remaining)
       else:
         self.state.frames_dropped += 1
+        # Never busy-spin. With a disconnected transport, _render_frame hits no
+        # true awaits, so skipping the sleep here starves the whole event loop
+        # (HTTP, transport reconnect, pot polling) until restart.
+        await asyncio.sleep(0.002)
 
   async def _render_frame(self):
     """Render one frame and send to Teensy."""
