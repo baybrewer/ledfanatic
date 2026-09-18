@@ -113,3 +113,24 @@ class TestModerateAudioDefaults:
     out = out.astype(np.float32)
     assert out.min() <= 110, f"{name}: no visible dark elements at defaults (min {out.min()})"
     assert out.mean() > 40, f"{name}: background collapsed at defaults (mean {out.mean()})"
+
+
+from app.effects.negative_space import SRNegativeRipples
+
+
+class TestNegativeRipples:
+  def test_registered(self):
+    assert NEGATIVE_SPACE_EFFECTS['sr_negative_ripples'] is SRNegativeRipples
+
+  def test_renders_dark_rings_on_bright_bg(self):
+    out = _run_effect(SRNegativeRipples, 1.0)
+    assert out.min() <= 8       # dark ring cores near black
+    assert out.mean() > 20      # plasma background alive (LOUD fixture spawns ripples every frame on continuous beat)
+
+  def test_silence_stays_bright(self):
+    eff = SRNegativeRipples(width=20, height=40, params={'darkness': 1.0})
+    state = RenderState()  # default silent audio
+    out = None
+    for i in range(60):
+      out = eff.render(i / 30.0, state)
+    assert out.astype(np.float32).mean() > 60  # no onsets -> no rings

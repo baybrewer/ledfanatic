@@ -796,6 +796,109 @@ class SRSilhouette(Effect):
     return np.clip(frame_f, 0, 255).astype(np.uint8)
 
 
+# ──────────────────────────────────────────────────────────────────────
+#  6. SRNegativeRipples
+# ──────────────────────────────────────────────────────────────────────
+
+class SRNegativeRipples(Effect):
+  """Bright plasma with dark beat-tracked ripples — negative of SR Sound Ripples."""
+
+  CATEGORY = "sound"
+  DISPLAY_NAME = "SR Negative Ripples"
+  DESCRIPTION = "Dark rings ripple through a bright world — kicks low, snares mid, hats high"
+  PALETTE_SUPPORT = False
+  AUDIO_REQUIRES = ('level', 'bass', 'mid', 'high', 'beat')
+
+  PARAMS = [
+    _P("Gain", "gain", 0.2, 5.0, 0.1, 2.0),
+    _P("Speed", "speed", 0.3, 4.0, 0.1, 1.5),
+    _P("Decay", "decay", 0.85, 0.99, 0.01, 0.93),
+    _P("Sensitivity", "sensitivity", 0.02, 0.5, 0.02, 0.15),
+    _P("Darkness", "darkness", 0.1, 1.0, 0.05, 0.95),
+  ]
+
+  def __init__(self, width, height, params=None):
+    super().__init__(width, height, params)
+    from ..audio.adapter import AudioCompatAdapter
+    self._audio_adapter = AudioCompatAdapter()
+    self._ripples: list = []   # [cx, cy, radius, intensity, ring_width]
+    self._bass_prev = 0.0
+    self._mids_prev = 0.0
+    self._highs_prev = 0.0
+    self._beat_prev = False
+    self._last_t = None
+    self._prev_frame = None
+    xs = np.arange(width, dtype=np.float32)
+    ys = np.arange(height, dtype=np.float32)
+    self._gx, self._gy = np.meshgrid(xs, ys, indexing='ij')
+
+  def render(self, t: float, state) -> np.ndarray:
+    if self._last_t is None:
+      self._last_t = t
+    dt = float(np.clip(t - self._last_t, 1e-4, 0.05))
+    self._last_t = t
+    elapsed = self.elapsed(t)
+
+    audio = self._audio_adapter.adapt(state._audio_lock_free, t)
+    gain = self.params.get('gain', 2.0)
+    speed = self.params.get('speed', 1.5)
+    decay = self.params.get('decay', 0.93)
+    sens = self.params.get('sensitivity', 0.15)
+    darkness_strength = self.params.get('darkness', 0.95)
+
+    # Onset detection — frequency-mapped spawn heights (screen coords, y=0 top)
+    bass_delta = audio.bass - self._bass_prev
+    beat_onset = audio.beat and not self._beat_prev
+    if bass_delta > sens or beat_onset:
+      intensity = float(np.clip(max(bass_delta, audio.beat_energy * 0.3) * 2 * gain, 0, 1.5))
+      self._ripples.append([self.width / 2.0, self.height * 0.85, 0.0, intensity, 5.0])
+    self._bass_prev = audio.bass
+    self._beat_prev = audio.beat
+
+    mids_delta = audio.mids - self._mids_prev
+    if mids_delta > sens * 1.5:
+      self._ripples.append([np.random.uniform(1, self.width - 2), self.height * 0.5,
+                            0.0, float(np.clip(mids_delta * 3 * gain, 0, 1.2)), 3.0])
+    self._mids_prev = audio.mids
+
+    highs_delta = audio.highs - self._highs_prev
+    if highs_delta > sens * 0.8:
+      self._ripples.append([np.random.uniform(0, self.width - 1), self.height * 0.15,
+                            0.0, float(np.clip(highs_delta * 2 * gain, 0, 1.0)), 2.0])
+    self._highs_prev = audio.highs
+
+    if audio.is_phrase:
+      self._ripples.append([self.width / 2.0, self.height / 2.0, 0.0, 1.5, 8.0])
+    elif audio.is_downbeat:
+      self._ripples.append([self.width / 2.0, self.height * 0.7, 0.0, 1.0, 6.0])
+
+    # Expand, decay, cull
+    field = np.zeros((self.width, self.height), dtype=np.float32)
+    alive = []
+    for r in self._ripples:
+      r[2] += speed * 80 * dt
+      r[3] *= decay ** (dt * 60)
+      if r[3] > 0.015 and r[2] < self.height * 1.5:
+        alive.append(r)
+        dx = (self._gx - r[0]) * (self.height / self.width)  # aspect correction
+        dy = self._gy - r[1]
+        dist = np.sqrt(dx * dx + dy * dy)
+        ring = np.exp(-((dist - r[2]) ** 2) / (2.0 * r[4] * r[4])) * min(r[3], 1.0)
+        np.maximum(field, ring, out=field)
+    self._ripples = alive
+
+    frame_f = _plasma_bg(self._gx, self._gy, elapsed, self.width, self.height).astype(np.float32)
+    frame_f = apply_darkness(frame_f, field, darkness_strength)
+    result = np.clip(frame_f, 0, 255).astype(np.uint8)
+
+    # Temporal blend for smooth trails
+    if self._prev_frame is not None:
+      result = (result.astype(np.float32) * 0.7
+                + self._prev_frame.astype(np.float32) * 0.3).astype(np.uint8)
+    self._prev_frame = result
+    return result
+
+
 # ─── Registry ─────────────────────────────────────────────────────
 
 NEGATIVE_SPACE_EFFECTS = {
@@ -804,4 +907,5 @@ NEGATIVE_SPACE_EFFECTS = {
   'sr_lightning_gap': SRLightningGap,
   'sr_negative_rain': SRNegativeRain,
   'sr_silhouette': SRSilhouette,
+  'sr_negative_ripples': SRNegativeRipples,
 }
