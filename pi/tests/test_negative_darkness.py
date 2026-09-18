@@ -85,3 +85,31 @@ class TestFamilyDarknessSemantics:
   def test_darkness_param_range(self, name, cls):
     p = next(p for p in cls.PARAMS if p.attr == 'darkness')
     assert p.lo == 0.1 and p.hi == 1.0, name
+
+
+MODERATE = {
+  'level': 0.4, 'bass': 0.45, 'mid': 0.3, 'high': 0.2,
+  'beat': True, 'beat_frame_id': 1, 'bpm': 120.0, 'spectrum': [0.35] * 16,
+}
+
+
+def _moderate_state():
+  state = RenderState()
+  state._audio_lock_free = dict(MODERATE)
+  state._beat_this_frame = True
+  return state
+
+
+class TestModerateAudioDefaults:
+  """Default-slider, moderate-music sanity: visible darkness, alive background."""
+
+  @pytest.mark.parametrize("name,cls", sorted(AFFECTED.items()))
+  def test_visible_darkness_at_defaults(self, name, cls):
+    eff = cls(width=20, height=40, params={})  # default darkness
+    state = _moderate_state()
+    out = None
+    for i in range(90):
+      out = eff.render(i / 30.0, state)
+    out = out.astype(np.float32)
+    assert out.min() <= 110, f"{name}: no visible dark elements at defaults (min {out.min()})"
+    assert out.mean() > 40, f"{name}: background collapsed at defaults (mean {out.mean()})"

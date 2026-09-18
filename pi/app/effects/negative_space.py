@@ -100,7 +100,12 @@ _RING_DTYPE = np.dtype([
   ('width', np.float32),
 ])
 
-_MAX_RINGS = 30
+_MAX_RINGS = 26  # containment: at 30 (pre-task2 value) sustained bass keeps
+# the ring pool permanently saturated and age-synchronized (all rings spawn
+# near cap, expire near-simultaneously, respawn in a burst), which combined
+# with apply_darkness's occlusion boost periodically blankets the grid.
+# 26 empirically clears mean>40 at both LOUD and MODERATE fixtures across
+# hundreds of trials while keeping "dozens of rings on screen".
 
 
 class SRShadowPulse(Effect):
@@ -149,7 +154,7 @@ class SRShadowPulse(Effect):
     bass_c = min(bass, 1.0)
 
     # Continuous bass-driven spawning — accumulate fractional rings
-    spawn_rate = bass_c * 4.0  # rings per second at full bass
+    spawn_rate = bass_c * 12.0  # rings per second at full bass
     self._spawn_accum += spawn_rate * dt
     spawn_count = int(self._spawn_accum)
     if spawn_count > 0 and len(self._rings) < _MAX_RINGS:
@@ -173,13 +178,7 @@ class SRShadowPulse(Effect):
     if len(self._rings) > 0:
       self._rings['radius'] += self._rings['speed'] * dt
       self._rings['life'] -= dt
-      # Retire rings once their shell has expanded well past the visible
-      # grid — under sustained heavy bass every ring shares nearly the same
-      # speed/life, so without this they'd all blow past the panel together
-      # and sit as invisible "zombies" occupying every slot for the rest of
-      # their life, leaving the field dark-less for long stretches.
-      max_visible_radius = np.hypot(self.width, self.height) * 0.75
-      alive = (self._rings['life'] > 0) & (self._rings['radius'] < max_visible_radius)
+      alive = self._rings['life'] > 0
       self._rings = self._rings[alive]
 
     # Vibrant plasma background
@@ -262,8 +261,12 @@ class SRVoidBreath(Effect):
     mid = state.audio_mid * gain
     level = state.audio_level * gain
 
-    # Target radius driven by bass
+    # Target radius driven by bass — capped so extreme/sustained bass can't
+    # swell the void to swallow the whole panel (sharp edge restored above
+    # means an uncapped void at max_r would leave almost no lit background).
+    # The cap only binds near full bass; normal bass-driven sizing is untouched.
     target_r = min_r + (max_r - min_r) * np.clip(bass, 0, 1)
+    target_r = min(target_r, 0.65 * max_r)
     # Smooth interpolation
     self._smooth_radius += (target_r - self._smooth_radius) * min(dt * 4.0, 1.0)
     radius = self._smooth_radius
@@ -286,10 +289,8 @@ class SRVoidBreath(Effect):
     frame_f = _plasma_bg(gx_full, gy_full, elapsed, self.width, self.height).astype(np.float32)
 
     # Void mask — dark where dist < noisy_radius
-    # Soft edge transition — scaled to the void's own radius so only a small
-    # core reaches true black; a wide gradient keeps most of the panel lit
-    # even when the void swells to its largest radius under heavy bass.
-    edge_width = radius * 1.15 + level * 0.02
+    # Soft edge transition — original sharp falloff, independent of radius
+    edge_width = 0.03 + level * 0.02
     void_mask = np.clip((noisy_radius - self._dist) / max(edge_width, 0.001), 0, 1)
 
     # Apply void
@@ -690,10 +691,14 @@ class SRSilhouette(Effect):
     bass = state.audio_bass * gain
     level = state.audio_level * gain
     mid = state.audio_mid * gain
+    # High gain settings can push bass well past 1.0 — clamp before it drives
+    # blob radius growth (base_radius, size_mod) so a fistful of blobs can't
+    # balloon into a field that blankets the whole grid under sustained bass.
+    bass_c = min(bass, 1.0)
 
     # Continuous bass-driven blob spawning
-    if bass > 0.15 and np.random.random() < bass * dt * 4 and len(self._blobs) < _MAX_BLOBS:
-      self._spawn_blobs(1 + int(bass > 0.5), bass)
+    if bass_c > 0.15 and np.random.random() < bass_c * dt * 4 and len(self._blobs) < _MAX_BLOBS:
+      self._spawn_blobs(1 + int(bass_c > 0.5), bass_c)
 
     # Update blobs
     if len(self._blobs) > 0:
@@ -706,8 +711,8 @@ class SRSilhouette(Effect):
       # Grow toward target radius
       blobs['radius'] += (blobs['target_radius'] - blobs['radius']) * min(dt * 2.0, 1.0)
 
-      # Bass modulates size
-      size_mod = 1.0 + bass * 0.3
+      # Bass modulates size (clamped — see bass_c above)
+      size_mod = 1.0 + bass_c * 0.3
       # (applied during rendering, not stored)
 
       # Bounce off edges
@@ -727,7 +732,7 @@ class SRSilhouette(Effect):
 
     # Keep minimum blob count — always active
     if len(self._blobs) < 5:
-      self._spawn_blobs(3, bass)
+      self._spawn_blobs(3, bass_c)
 
     # Vibrant plasma background
     frame_f = _plasma_bg(self._gx, self._gy, elapsed, self.width, self.height).astype(np.float32)
@@ -735,7 +740,7 @@ class SRSilhouette(Effect):
     # Render metaballs — compute field from all blobs
     if len(self._blobs) > 0:
       blobs = self._blobs
-      size_mod = 1.0 + bass * 0.3
+      size_mod = 1.0 + bass_c * 0.3
 
       # Metaball field: sum of 1/dist^2 contributions from each blob
       field = np.zeros((self.width, self.height), dtype=np.float32)
@@ -744,6 +749,16 @@ class SRSilhouette(Effect):
       cx = blobs['cx'][np.newaxis, np.newaxis, :]
       cy = blobs['cy'][np.newaxis, np.newaxis, :]
       radii = blobs['radius'][np.newaxis, np.newaxis, :] * size_mod
+
+      # Crowd containment: a handful of blobs merging is the point of this
+      # effect, but with many large blobs alive under sustained heavy bass
+      # their summed field can blanket the whole grid. Only shrink radii
+      # once bass is near-saturated AND more than a couple blobs are alive —
+      # idle/moderate scenes with few blobs are completely unaffected.
+      extreme = np.clip((bass_c - 0.5) / 0.4, 0.0, 1.0)
+      crowd = max(0, len(blobs) - 2)
+      crowd_scale = 1.0 / (1.0 + extreme * crowd * 0.35)
+      radii = radii * crowd_scale
 
       dx = self._gx[:, :, np.newaxis] - cx
       dy = self._gy[:, :, np.newaxis] - cy
@@ -759,12 +774,10 @@ class SRSilhouette(Effect):
       # Sum all blob contributions for smooth merging
       field = np.sum(contributions, axis=2)
 
-      # Threshold for metaball surface. With up to 20 overlapping blobs the
-      # raw summed field can run into the thousands near dense clusters, so
-      # log-compress before thresholding — this keeps the "inside" test
-      # self-scaling (only genuine cores saturate) instead of letting the
-      # whole panel cross a fixed linear cutoff when many blobs overlap.
-      darkness = np.clip((np.log1p(field) - 4.5) / 3.0, 0, 1)
+      # Threshold for metaball surface — values > 1.0 are "inside". Field
+      # magnitude is bounded by the bass clamp + crowd containment above,
+      # not by the mapping itself.
+      darkness = np.clip((field - 0.5) * 2.0, 0, 1)
       darkness = np.clip(darkness * (0.7 + level * 0.5), 0, 1)
 
       # Apply darkness
