@@ -22,7 +22,7 @@ All rendering is fully vectorized with NumPy — no Python for-loops on pixels.
 
 import numpy as np
 from .base import Effect
-from .negative_space import _P, _plasma_bg, _noise_2d
+from .negative_space import _P, _plasma_bg, _noise_2d, apply_darkness
 
 
 def _common_params(fade=1.0, softness=1.2, darkness=0.9):
@@ -31,7 +31,7 @@ def _common_params(fade=1.0, softness=1.2, darkness=0.9):
     _P("Gain", "gain", 0.5, 5.0, 0.1, 2.0),
     _P("Softness", "softness", 0.0, 3.0, 0.1, softness),
     _P("Trail Fade", "fade", 0.2, 4.0, 0.1, fade),
-    _P("Darkness", "darkness", 0.5, 1.0, 0.05, darkness),
+    _P("Darkness", "darkness", 0.1, 1.0, 0.05, darkness),
   ]
 
 
@@ -124,8 +124,8 @@ class _NegativeFieldEffect(Effect):
       self._dark += (self._diffuse(self._dark) - self._dark) * np.float32(blur_mix)
 
     frame = _plasma_bg(self._gx, self._gy, elapsed, self.width, self.height).astype(np.float32)
-    d = np.clip(self._dark, 0.0, 1.0) * self._param('darkness', 0.9)
-    frame *= (1.0 - d[:, :, np.newaxis])
+    frame = apply_darkness(frame, np.clip(self._dark, 0.0, 1.0),
+                           self._param('darkness', 0.9))
     return np.clip(frame, 0, 255).astype(np.uint8)
 
 

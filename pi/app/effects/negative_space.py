@@ -116,7 +116,7 @@ class SRShadowPulse(Effect):
     _P("Gain", "gain", 0.5, 5.0, 0.1, 2.0),
     _P("Ring Speed", "ring_speed", 5.0, 60.0, 1.0, 25.0),
     _P("Ring Width", "ring_width", 1.0, 8.0, 0.5, 3.0),
-    _P("Darkness", "darkness", 0.5, 1.0, 0.05, 0.95),
+    _P("Darkness", "darkness", 0.1, 1.0, 0.05, 0.95),
   ]
 
   def __init__(self, width, height, params=None):
@@ -143,9 +143,13 @@ class SRShadowPulse(Effect):
 
     bass = state.audio_bass * gain
     level = state.audio_level * gain
+    # High gain settings can push bass well past 1.0 — clamp before it drives
+    # ring speed/life/spawn-rate so rings stay inside the visible grid for
+    # most of their life instead of racing past it and sitting invisible.
+    bass_c = min(bass, 1.0)
 
     # Continuous bass-driven spawning — accumulate fractional rings
-    spawn_rate = bass * 12.0  # rings per second at full bass
+    spawn_rate = bass_c * 4.0  # rings per second at full bass
     self._spawn_accum += spawn_rate * dt
     spawn_count = int(self._spawn_accum)
     if spawn_count > 0 and len(self._rings) < _MAX_RINGS:
@@ -155,11 +159,11 @@ class SRShadowPulse(Effect):
       new['cx'] = np.random.uniform(0, self.width, count).astype(np.float32)
       new['cy'] = np.random.uniform(0, self.height, count).astype(np.float32)
       new['radius'] = 0.0
-      new['speed'] = ring_speed * (0.5 + bass * 0.8)
-      life = 1.5 + bass * 1.5
+      new['speed'] = ring_speed * (0.5 + bass_c * 0.8)
+      life = 1.5 + bass_c * 1.5
       new['life'] = life
       new['max_life'] = life
-      new['width'] = ring_width * (0.6 + bass * 0.6)
+      new['width'] = ring_width * (0.6 + bass_c * 0.6)
       if len(self._rings) == 0:
         self._rings = new
       else:
@@ -169,7 +173,13 @@ class SRShadowPulse(Effect):
     if len(self._rings) > 0:
       self._rings['radius'] += self._rings['speed'] * dt
       self._rings['life'] -= dt
-      alive = self._rings['life'] > 0
+      # Retire rings once their shell has expanded well past the visible
+      # grid — under sustained heavy bass every ring shares nearly the same
+      # speed/life, so without this they'd all blow past the panel together
+      # and sit as invisible "zombies" occupying every slot for the rest of
+      # their life, leaving the field dark-less for long stretches.
+      max_visible_radius = np.hypot(self.width, self.height) * 0.75
+      alive = (self._rings['life'] > 0) & (self._rings['radius'] < max_visible_radius)
       self._rings = self._rings[alive]
 
     # Vibrant plasma background
@@ -197,7 +207,7 @@ class SRShadowPulse(Effect):
       darkness = np.clip(darkness * (0.7 + level * 0.5), 0.0, 1.0)
 
       # Apply darkness controlled by slider
-      frame *= (1.0 - darkness[:, :, np.newaxis] * darkness_strength)
+      frame = apply_darkness(frame, darkness, darkness_strength)
 
     return np.clip(frame, 0, 255).astype(np.uint8)
 
@@ -220,7 +230,7 @@ class SRVoidBreath(Effect):
     _P("Min Radius", "min_radius", 0.05, 0.3, 0.01, 0.1),
     _P("Max Radius", "max_radius", 0.3, 0.9, 0.05, 0.7),
     _P("Edge Detail", "edge_detail", 1.0, 8.0, 0.5, 3.0),
-    _P("Darkness", "darkness", 0.5, 1.0, 0.05, 0.95),
+    _P("Darkness", "darkness", 0.1, 1.0, 0.05, 0.95),
   ]
 
   def __init__(self, width, height, params=None):
@@ -276,12 +286,14 @@ class SRVoidBreath(Effect):
     frame_f = _plasma_bg(gx_full, gy_full, elapsed, self.width, self.height).astype(np.float32)
 
     # Void mask — dark where dist < noisy_radius
-    # Soft edge transition
-    edge_width = 0.03 + level * 0.02
+    # Soft edge transition — scaled to the void's own radius so only a small
+    # core reaches true black; a wide gradient keeps most of the panel lit
+    # even when the void swells to its largest radius under heavy bass.
+    edge_width = radius * 1.15 + level * 0.02
     void_mask = np.clip((noisy_radius - self._dist) / max(edge_width, 0.001), 0, 1)
 
     # Apply void
-    frame_f *= (1.0 - void_mask[:, :, np.newaxis] * darkness_strength)
+    frame_f = apply_darkness(frame_f, void_mask, darkness_strength)
 
     # Subtle glow at void edge
     edge_glow = np.exp(-((self._dist - noisy_radius) ** 2) / (0.002 + level * 0.003))
@@ -321,7 +333,7 @@ class SRLightningGap(Effect):
     _P("Branch Prob", "branch_prob", 0.05, 0.5, 0.01, 0.15),
     _P("Crack Life", "crack_life", 0.5, 4.0, 0.1, 2.0),
     _P("Crack Width", "crack_width", 0.5, 3.0, 0.25, 1.0),
-    _P("Darkness", "darkness", 0.5, 1.0, 0.05, 0.95),
+    _P("Darkness", "darkness", 0.1, 1.0, 0.05, 0.95),
   ]
 
   def __init__(self, width, height, params=None):
@@ -446,7 +458,7 @@ class SRLightningGap(Effect):
           np.add.at(darkness, (nx, ny), fade * 0.5 * falloff)
 
       darkness = np.clip(darkness, 0, 1)
-      frame_f *= (1.0 - darkness[:, :, np.newaxis] * darkness_strength)
+      frame_f = apply_darkness(frame_f, darkness, darkness_strength)
 
     return np.clip(frame_f, 0, 255).astype(np.uint8)
 
@@ -623,7 +635,7 @@ class SRSilhouette(Effect):
     _P("Blob Speed", "blob_speed", 1.0, 15.0, 0.5, 5.0),
     _P("Min Size", "min_size", 1.0, 5.0, 0.5, 2.0),
     _P("Max Size", "max_size", 3.0, 12.0, 0.5, 6.0),
-    _P("Darkness", "darkness", 0.5, 1.0, 0.05, 0.95),
+    _P("Darkness", "darkness", 0.1, 1.0, 0.05, 0.95),
   ]
 
   def __init__(self, width, height, params=None):
@@ -652,7 +664,7 @@ class SRSilhouette(Effect):
     new['cy'] = np.random.uniform(0, self.height, count).astype(np.float32)
     new['vx'] = np.random.uniform(-1, 1, count).astype(np.float32) * blob_speed
     new['vy'] = np.random.uniform(-1, 1, count).astype(np.float32) * blob_speed
-    base_radius = min_size + (max_size - min_size) * bass
+    base_radius = min_size + (max_size - min_size) * np.clip(bass, 0, 1)
     new['radius'] = 0.5  # Start small, grow
     new['target_radius'] = np.random.uniform(0.7, 1.3, count).astype(np.float32) * base_radius
     new['life'] = np.random.uniform(5.0, 15.0, count).astype(np.float32)
@@ -747,13 +759,16 @@ class SRSilhouette(Effect):
       # Sum all blob contributions for smooth merging
       field = np.sum(contributions, axis=2)
 
-      # Threshold for metaball surface — values > 1.0 are "inside"
-      # Smooth transition
-      darkness = np.clip((field - 0.5) * 2.0, 0, 1)
+      # Threshold for metaball surface. With up to 20 overlapping blobs the
+      # raw summed field can run into the thousands near dense clusters, so
+      # log-compress before thresholding — this keeps the "inside" test
+      # self-scaling (only genuine cores saturate) instead of letting the
+      # whole panel cross a fixed linear cutoff when many blobs overlap.
+      darkness = np.clip((np.log1p(field) - 4.5) / 3.0, 0, 1)
       darkness = np.clip(darkness * (0.7 + level * 0.5), 0, 1)
 
       # Apply darkness
-      frame_f *= (1.0 - darkness[:, :, np.newaxis] * darkness_strength)
+      frame_f = apply_darkness(frame_f, darkness, darkness_strength)
 
       # Subtle edge highlight where field ~ 1.0
       edge_band = np.exp(-((field - 1.0) ** 2) * 10)

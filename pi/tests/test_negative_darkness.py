@@ -33,3 +33,55 @@ class TestApplyDarkness:
     mid = apply_darkness(frame, field, 0.5).mean()
     hi = apply_darkness(frame, field, 1.0).mean()
     assert lo > mid > hi
+
+
+from app.core.renderer import RenderState
+from app.effects.negative_space import NEGATIVE_SPACE_EFFECTS
+from app.effects.negative_spinoffs import NEGATIVE_SPINOFF_EFFECTS
+
+import pytest
+
+LOUD = {
+  'level': 0.9, 'bass': 0.9, 'mid': 0.7, 'high': 0.5,
+  'beat': True, 'beat_frame_id': 1, 'bpm': 120.0, 'spectrum': [0.8] * 16,
+}
+
+AFFECTED = {**NEGATIVE_SPACE_EFFECTS, **NEGATIVE_SPINOFF_EFFECTS}
+AFFECTED.pop('sr_negative_rain')  # frozen — original semantics
+
+
+def _loud_state():
+  state = RenderState()
+  state._audio_lock_free = dict(LOUD)
+  state._beat_this_frame = True
+  return state
+
+
+def _run_effect(cls, darkness, frames=90):
+  eff = cls(width=20, height=40, params={'darkness': darkness})
+  state = _loud_state()
+  out = None
+  for i in range(frames):
+    out = eff.render(i / 30.0, state)
+  return out.astype(np.float32)
+
+
+class TestFamilyDarknessSemantics:
+  @pytest.mark.parametrize("name,cls", sorted(AFFECTED.items()))
+  def test_max_darkness_darker_than_low(self, name, cls):
+    hi = _run_effect(cls, 1.0)
+    lo = _run_effect(cls, 0.1)
+    # More darkness volume => darker darkest-pixel and lower mean
+    assert hi.min() < lo.min() - 5, f"{name}: min {hi.min()} vs {lo.min()}"
+    assert hi.mean() < lo.mean(), name
+
+  @pytest.mark.parametrize("name,cls", sorted(AFFECTED.items()))
+  def test_max_darkness_reaches_near_black(self, name, cls):
+    hi = _run_effect(cls, 1.0)
+    assert hi.min() <= 8, f"{name}: darkest pixel {hi.min()} not near black"
+    assert hi.mean() > 40, f"{name}: background collapsed (mean {hi.mean()})"
+
+  @pytest.mark.parametrize("name,cls", sorted(AFFECTED.items()))
+  def test_darkness_param_range(self, name, cls):
+    p = next(p for p in cls.PARAMS if p.attr == 'darkness')
+    assert p.lo == 0.1 and p.hi == 1.0, name
