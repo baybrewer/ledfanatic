@@ -121,12 +121,26 @@ def _fade_v(t):
   return t * t * t * (t * (t * 6 - 15) + 10)
 
 
+def _build_grad_lut():
+  """Per-hash (gx, gy, gz) so grad = gx*x + gy*y + gz*z — identical to Perlin's
+  bit-twiddled grad() but a table lookup instead of a chain of np.where
+  (that chain dominated render time on the Pi's ARM cores)."""
+  lut = np.zeros((16, 3), dtype=np.float64)
+  for h in range(16):
+    u = 0 if h < 8 else 1
+    v = 1 if h < 4 else (0 if h in (12, 14) else 2)
+    lut[h, u] += -1.0 if h & 1 else 1.0
+    lut[h, v] += -1.0 if h & 2 else 1.0
+  return lut
+
+
+_GRAD_LUT = _build_grad_lut()
+
+
 def _grad_v(h, x, y, z):
   """Vectorized gradient function."""
-  h = h & 15
-  u = np.where(h < 8, x, y)
-  v = np.where(h < 4, y, np.where((h == 12) | (h == 14), x, z))
-  return np.where(h & 1, -u, u) + np.where(h & 2, -v, v)
+  g = _GRAD_LUT[h & 15]
+  return g[..., 0] * x + g[..., 1] * y + g[..., 2] * z
 
 
 def perlin_grid(x, y, z):

@@ -39,6 +39,7 @@ class _OverheadEffect(Effect):
     super().__init__(width, height, params)
     self._phase = 0.0
     self._last_elapsed = 0.0
+    self._keyframes = {}
     xs = np.arange(width, dtype=np.float32)
     ys = np.arange(height, dtype=np.float32)
     self._x, self._y = np.meshgrid(xs, ys, indexing='ij')
@@ -60,6 +61,21 @@ class _OverheadEffect(Effect):
     step = dt * self._param('speed')
     self._phase += step
     return self._phase, step
+
+  # Noise fields cost ~10 ms on the Pi but change slowly, so compute them at
+  # ~20 Hz and interpolate in between — indistinguishable at these speeds.
+  _KEYFRAME_S = 0.05
+
+  def _keyframed(self, slot, phase, compute):
+    span = max(1e-6, self._KEYFRAME_S * self._param('speed'))
+    kf = self._keyframes.get(slot)
+    if kf is None or not (kf[0] <= phase < kf[2] + span):
+      kf = (phase, compute(phase), phase + span, compute(phase + span))
+    elif phase >= kf[2]:
+      kf = (kf[2], kf[3], kf[2] + span, compute(kf[2] + span))
+    self._keyframes[slot] = kf
+    frac = (phase - kf[0]) / max(kf[2] - kf[0], 1e-9)
+    return kf[1] + (kf[3] - kf[1]) * frac
 
 
 # ──────────────────────────────────────────────────────────────────────
@@ -121,17 +137,21 @@ class OverheadLiquidRainbow(_OverheadEffect):
 
   def render(self, t, state):
     phase, _ = self._advance(t)
+    field = self._keyframed('field', phase, self._field)
+    hue = field * 0.4 + phase * 0.01
+    # Gentle depth so it reads as liquid, never dark
+    value = 0.82 + 0.18 * np.clip(field * 2.0 + 0.5, 0.0, 1.0)
+    return hsv_to_rgb_grid(hue, self._param('saturation'), value)
+
+
+  def _field(self, phase):
     sx = self._x * self._SCALE
     sy = self._y * self._SCALE
     z = phase * 0.06
     warp_x = fbm_grid(sx + 1.7, sy + 9.2, np.full_like(sx, z))
     warp_y = fbm_grid(sx + 8.3, sy + 2.8, np.full_like(sx, z + 3.1))
-    field = fbm_grid(sx + 1.6 * warp_x, sy + 1.6 * warp_y,
-                     np.full_like(sx, z * 0.7 + 5.0))
-    hue = field * 0.4 + phase * 0.01
-    # Gentle depth so it reads as liquid, never dark
-    value = 0.82 + 0.18 * np.clip(field * 2.0 + 0.5, 0.0, 1.0)
-    return hsv_to_rgb_grid(hue, self._param('saturation'), value)
+    return fbm_grid(sx + 1.6 * warp_x, sy + 1.6 * warp_y,
+                    np.full_like(sx, z * 0.7 + 5.0))
 
 
 class OverheadRainbowInk(_OverheadEffect):
@@ -159,6 +179,10 @@ class OverheadRainbowInk(_OverheadEffect):
     angle = hue * _TAU
     return np.stack([np.cos(angle), np.sin(angle)], axis=-1).astype(np.float32)
 
+  def _stream(self, phase):
+    z = np.full_like(self._x, phase * 0.025)
+    return perlin_grid(self._x * self._FLOW_SCALE, self._y * self._FLOW_SCALE, z)
+
   @staticmethod
   def _diffuse(dye, amount):
     padded = np.pad(dye, ((1, 1), (1, 1), (0, 0)), mode='edge')
@@ -185,9 +209,7 @@ class OverheadRainbowInk(_OverheadEffect):
   def render(self, t, state):
     phase, step = self._advance(t)
     if step > 0.0:
-      z = np.full_like(self._x, phase * 0.025)
-      psi = perlin_grid(self._x * self._FLOW_SCALE, self._y * self._FLOW_SCALE, z)
-      psi *= self._FLOW_AMP
+      psi = self._keyframed('psi', phase, self._stream) * self._FLOW_AMP
       if self.width > 1 and self.height > 1:
         dpsi_dx, dpsi_dy = np.gradient(psi)
       else:
@@ -198,7 +220,7 @@ class OverheadRainbowInk(_OverheadEffect):
       # Light diffusion: advection stretches dye into razor filaments otherwise
       self._dye = self._diffuse(dye, min(1.0, self._DIFFUSION * step))
       blend = min(1.0, self._RESEED_RATE * step)
-      self._dye += (self._seed(phase) - self._dye) * blend
+      self._dye += (self._keyframed('seed', phase, self._seed) - self._dye) * blend
 
     cos_h, sin_h = self._dye[..., 0], self._dye[..., 1]
     hue = np.arctan2(sin_h, cos_h) / _TAU
@@ -220,9 +242,7 @@ class OverheadOilSlick(_OverheadEffect):
 
   def render(self, t, state):
     phase, _ = self._advance(t)
-    z = np.full_like(self._x, phase * 0.05)
-    thickness = fbm_grid(self._x * self._SCALE, self._y * self._SCALE, z, octaves=3)
-    thickness = thickness * 1.6 + phase * 0.015
+    thickness = self._keyframed('film', phase, self._film) * 1.6 + phase * 0.015
     rgb = 0.5 + 0.5 * np.cos(_TAU * (thickness[..., np.newaxis] + self._OFFSETS))
     rgb = rgb.astype(np.float32)
     gray = rgb.mean(axis=-1, keepdims=True)
@@ -230,6 +250,11 @@ class OverheadOilSlick(_OverheadEffect):
     # Lift the floor so cos troughs don't become dark holes in room light
     rgb = 0.2 + 0.8 * rgb
     return (np.clip(rgb, 0.0, 1.0) * 255.0 + 0.5).astype(np.uint8)
+
+
+  def _film(self, phase):
+    z = np.full_like(self._x, phase * 0.05)
+    return fbm_grid(self._x * self._SCALE, self._y * self._SCALE, z, octaves=3)
 
 
 class OverheadPrismWaves(_OverheadEffect):
