@@ -40,6 +40,12 @@ class _OverheadEffect(Effect):
     self._phase = 0.0
     self._last_elapsed = 0.0
     self._keyframes = {}
+    # Coarse sample grid spanning the same extent (first and last pixel exact)
+    self._cxs = self._coarse_axis(width)
+    self._cys = self._coarse_axis(height)
+    self._cx, self._cy = np.meshgrid(self._cxs, self._cys, indexing='ij')
+    self._up = (self._lerp_index(np.arange(width), self._cxs),
+                self._lerp_index(np.arange(height), self._cys))
     xs = np.arange(width, dtype=np.float32)
     ys = np.arange(height, dtype=np.float32)
     self._x, self._y = np.meshgrid(xs, ys, indexing='ij')
@@ -66,6 +72,36 @@ class _OverheadEffect(Effect):
   # ~20 Hz and interpolate in between — indistinguishable at these speeds.
   _KEYFRAME_S = 0.05
 
+  # Fields evolve over ~20+ px, so sampling every 2nd px and interpolating is
+  # visually identical at a quarter of the cost.
+  _COARSE = 2
+
+  def _coarse_axis(self, n):
+    if n < 2:
+      return np.zeros(1, dtype=np.float32)
+    count = int(math.ceil((n - 1) / self._COARSE)) + 1
+    return np.linspace(0.0, n - 1.0, count).astype(np.float32)
+
+  @staticmethod
+  def _lerp_index(full, coarse):
+    if len(coarse) < 2:
+      zeros = np.zeros(len(full), dtype=np.int32)
+      return zeros, zeros, np.zeros(len(full), dtype=np.float32)
+    pos = full * (len(coarse) - 1) / (full[-1] if full[-1] > 0 else 1)
+    i0 = np.minimum(pos.astype(np.int32), len(coarse) - 2)
+    return i0, i0 + 1, (pos - i0).astype(np.float32)
+
+  def _upsample(self, coarse):
+    """Bilinear coarse (cw, ch, ...) -> full (w, h, ...)."""
+    (x0, x1, fx), (y0, y1, fy) = self._up
+    extra = (np.newaxis,) * (coarse.ndim - 2)
+    fx = fx[(slice(None), np.newaxis) + extra]
+    fy = fy[(np.newaxis, slice(None)) + extra]
+    cx0 = coarse[x0]
+    cx1 = coarse[x1]
+    col = cx0 + (cx1 - cx0) * fx
+    return col[:, y0] + (col[:, y1] - col[:, y0]) * fy
+
   def _keyframed(self, slot, phase, compute):
     span = max(1e-6, self._KEYFRAME_S * self._param('speed'))
     kf = self._keyframes.get(slot)
@@ -75,7 +111,7 @@ class _OverheadEffect(Effect):
       kf = (kf[2], kf[3], kf[2] + span, compute(kf[2] + span))
     self._keyframes[slot] = kf
     frac = (phase - kf[0]) / max(kf[2] - kf[0], 1e-9)
-    return kf[1] + (kf[3] - kf[1]) * frac
+    return self._upsample(kf[1] + (kf[3] - kf[1]) * frac)
 
 
 # ──────────────────────────────────────────────────────────────────────
@@ -145,8 +181,8 @@ class OverheadLiquidRainbow(_OverheadEffect):
 
 
   def _field(self, phase):
-    sx = self._x * self._SCALE
-    sy = self._y * self._SCALE
+    sx = self._cx * self._SCALE
+    sy = self._cy * self._SCALE
     z = phase * 0.06
     warp_x = fbm_grid(sx + 1.7, sy + 9.2, np.full_like(sx, z))
     warp_y = fbm_grid(sx + 8.3, sy + 2.8, np.full_like(sx, z + 3.1))
@@ -171,17 +207,17 @@ class OverheadRainbowInk(_OverheadEffect):
     super().__init__(width, height, params)
     # Dye stored as hue unit vector (cos, sin): averaging during advection
     # then mixes hues around the color wheel instead of toward muddy RGB gray.
-    self._dye = self._seed(0.0)
+    self._dye = self._upsample(self._seed(0.0))
 
   def _seed(self, phase):
-    hue = fbm_grid(self._x / 24.0, self._y / 24.0,
-                   np.full_like(self._x, 11.0 + phase * 0.02)) * 0.7 + phase * 0.008
+    hue = fbm_grid(self._cx / 24.0, self._cy / 24.0,
+                   np.full_like(self._cx, 11.0 + phase * 0.02)) * 0.7 + phase * 0.008
     angle = hue * _TAU
     return np.stack([np.cos(angle), np.sin(angle)], axis=-1).astype(np.float32)
 
   def _stream(self, phase):
-    z = np.full_like(self._x, phase * 0.025)
-    return perlin_grid(self._x * self._FLOW_SCALE, self._y * self._FLOW_SCALE, z)
+    z = np.full_like(self._cx, phase * 0.025)
+    return perlin_grid(self._cx * self._FLOW_SCALE, self._cy * self._FLOW_SCALE, z)
 
   @staticmethod
   def _diffuse(dye, amount):
@@ -253,8 +289,8 @@ class OverheadOilSlick(_OverheadEffect):
 
 
   def _film(self, phase):
-    z = np.full_like(self._x, phase * 0.05)
-    return fbm_grid(self._x * self._SCALE, self._y * self._SCALE, z, octaves=3)
+    z = np.full_like(self._cx, phase * 0.05)
+    return fbm_grid(self._cx * self._SCALE, self._cy * self._SCALE, z, octaves=3)
 
 
 class OverheadPrismWaves(_OverheadEffect):
