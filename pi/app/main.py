@@ -99,6 +99,8 @@ def main():
     render_state.target_fps = state_manager.target_fps
   else:
     render_state.target_fps = display_conf.get('target_fps', 60)
+  # Persisted so a reboot while the overhead light is "off" stays off
+  render_state.blackout = state_manager.blackout
 
   # Transport
   transport = TeensyTransport(
@@ -381,39 +383,20 @@ def main():
   # Register game effects in catalog
   from .effects.games import GAME_EFFECTS as _game_effects
   for fname, fcls in _game_effects.items():
-    param_dicts = ()
-    if hasattr(fcls, 'PARAMS') and fcls.PARAMS:
-      param_dicts = tuple(
-        {'name': p.attr.lower(), 'label': p.label, 'min': p.lo, 'max': p.hi,
-         'step': p.step, 'default': p.default, 'type': 'slider'}
-        for p in fcls.PARAMS
-      )
-    effect_catalog.register_imported(fname, EffectMeta(
-      name=fname,
-      label=getattr(fcls, 'DISPLAY_NAME', fname.replace('_', ' ').title()),
-      group='game',
-      description=getattr(fcls, 'DESCRIPTION', ''),
-      imported=True,
-      params=param_dicts,
-    ))
+    effect_catalog.register_imported(
+      fname, EffectMeta.from_effect_class(fname, fcls, group='game'))
 
   # Register three-body effect in catalog
   from .effects.three_body import THREE_BODY_EFFECTS as _three_body_effects
   for fname, fcls in _three_body_effects.items():
-    param_dicts = tuple(
-      {'name': p.attr.lower(), 'label': p.label, 'min': p.lo, 'max': p.hi,
-       'step': p.step, 'default': p.default, 'type': 'slider'}
-      for p in fcls.PARAMS
-    )
-    effect_catalog.register_imported(fname, EffectMeta(
-      name=fname,
-      label=getattr(fcls, 'DISPLAY_NAME', fname.replace('_', ' ').title()),
-      group='sound',
-      description=getattr(fcls, 'DESCRIPTION', ''),
-      imported=True,
-      audio_requires=getattr(fcls, 'AUDIO_REQUIRES', ()),
-      params=param_dicts,
-    ))
+    effect_catalog.register_imported(
+      fname, EffectMeta.from_effect_class(fname, fcls, group='sound'))
+
+  # Register overhead (room lighting) effects in catalog
+  from .effects.overhead import OVERHEAD_EFFECTS as _overhead_effects
+  for fname, fcls in _overhead_effects.items():
+    effect_catalog.register_imported(
+      fname, EffectMeta.from_effect_class(fname, fcls, group='overhead'))
 
   # Spatial map (optional front-projection geometry)
   spatial_map = load_spatial_map(config_dir)
@@ -469,8 +452,14 @@ def main():
   # Preview service
   preview_service = PreviewService(renderer)
 
+  # Shared mutation path for routes, pots and Home Assistant
+  from .core.display_control import DisplayController
+  from .core.overhead import OverheadService
+  display = DisplayController(renderer, render_state, state_manager,
+                              brightness_engine, transport, media_manager)
+  overhead = OverheadService(display, effect_catalog)
+
   # --- Pot controller (physical knobs via Teensy PKT_POTS) ---
-  from datetime import datetime, timezone
   from .core.pots import PotController, pots_poll_loop
 
   def _pot_menu():
@@ -491,18 +480,11 @@ def main():
   async def _dispatch_pot_events(events):
     for kind, value in events:
       if kind == 'brightness':
-        brightness_engine.manual_cap = value
-        state_manager.brightness_manual_cap = value
-        effective = brightness_engine.get_effective_brightness(
-          datetime.now(timezone.utc))
-        await transport.send_brightness(effective)
+        display.set_manual_brightness(value)
       elif kind == 'overlay':
         renderer.set_overlay_text(value)
       elif kind == 'activate':
-        params = state_manager.get_effect_params(value)
-        if renderer.activate_scene(value, params, media_manager=media_manager):
-          state_manager.current_scene = value
-          state_manager.current_params = params
+        if display.activate_and_persist(value, None) is not None:
           logger.info(f"Pot-activated effect: {value}")
 
   # Overlay region from system.yaml (pots.overlay.x0/x1); default = left half
@@ -528,6 +510,8 @@ def main():
     compiled_layout=compiled_layout,
     config_dir=config_dir,
     pot_controller=pot_controller,
+    display=display,
+    overhead=overhead,
   )
 
   # Track background tasks for clean shutdown
@@ -550,6 +534,10 @@ def main():
         logger.info("CONFIG ACK received")
       else:
         logger.warning("CONFIG send failed (NAK/timeout)")
+      # Renderer owns brightness; a Teensy left at a lower master level from
+      # older firmware/sessions would dim everything twice.
+      await deps.display.pin_teensy_brightness()
+      await deps.display.set_blackout(deps.render_state.blackout)
     transport._on_connect_callback = _on_teensy_connect
 
     _background_tasks.append(asyncio.create_task(transport.reconnect_loop()))
