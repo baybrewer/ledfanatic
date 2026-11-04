@@ -1,7 +1,5 @@
 """Brightness and display control routes."""
 
-from datetime import datetime, timezone
-
 from fastapi import APIRouter, Depends
 
 from ..schemas import BrightnessConfigRequest, BlackoutRequest, FPSRequest
@@ -31,10 +29,6 @@ def create_router(deps, require_auth, broadcast_state) -> APIRouter:
                 deps.state_manager.night_brightness = req.solar['night_brightness']
         if update:
             deps.brightness_engine.update_config(update)
-        effective = deps.brightness_engine.get_effective_brightness(
-            datetime.now(timezone.utc),
-        )
-        await deps.transport.send_brightness(effective)
         await broadcast_state()
         return deps.brightness_engine.get_status()
 
@@ -42,12 +36,7 @@ def create_router(deps, require_auth, broadcast_state) -> APIRouter:
     async def set_brightness(req: BrightnessConfigRequest):
         """Legacy endpoint — sets manual cap."""
         if req.manual_cap is not None:
-            deps.brightness_engine.manual_cap = req.manual_cap
-            deps.state_manager.brightness_manual_cap = req.manual_cap
-        effective = deps.brightness_engine.get_effective_brightness(
-            datetime.now(timezone.utc),
-        )
-        await deps.transport.send_brightness(effective)
+            deps.display.set_manual_brightness(req.manual_cap)
         await broadcast_state()
         return deps.brightness_engine.get_status()
 
@@ -60,8 +49,7 @@ def create_router(deps, require_auth, broadcast_state) -> APIRouter:
 
     @router.post("/api/display/blackout", dependencies=[Depends(require_auth)])
     async def set_blackout(req: BlackoutRequest):
-        deps.render_state.blackout = req.enabled
-        await deps.transport.send_blackout(req.enabled)
+        await deps.display.set_blackout(req.enabled)
         await broadcast_state()
         return {"blackout": deps.render_state.blackout}
 

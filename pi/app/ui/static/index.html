@@ -47,7 +47,8 @@
 
     <!-- Tab navigation -->
     <nav id="tabs" role="tablist" aria-label="Main navigation">
-      <button id="tab-effects" class="tab active" data-tab="effects" role="tab" aria-selected="true" aria-controls="panel-effects" tabindex="0">Effects</button>
+      <button id="tab-overhead" class="tab active" data-tab="overhead" role="tab" aria-selected="true" aria-controls="panel-overhead" tabindex="0">Overhead</button>
+      <button id="tab-effects" class="tab" data-tab="effects" role="tab" aria-selected="false" aria-controls="panel-effects" tabindex="-1">Effects</button>
       <button id="tab-media" class="tab" data-tab="media" role="tab" aria-selected="false" aria-controls="panel-media" tabindex="-1">Media</button>
       <button id="tab-audio" class="tab" data-tab="audio" role="tab" aria-selected="false" aria-controls="panel-audio" tabindex="-1">Audio</button>
       <button id="tab-game" class="tab" data-tab="game" role="tab" aria-selected="false" aria-controls="panel-game" tabindex="-1">Game</button>
@@ -76,8 +77,30 @@
         <div id="preset-grid" class="button-grid"></div>
       </section>
 
+      <!-- OVERHEAD -->
+      <section id="panel-overhead" class="panel active" role="tabpanel" aria-labelledby="tab-overhead">
+        <div class="help-panel collapsed" data-tab="overhead">
+          <button class="help-toggle" aria-expanded="false">
+            <span class="help-icon">?</span> How to use this page
+          </button>
+          <div class="help-content" hidden>
+            <p>Use the panel as a room light: tap Power, pick a light below, and set brightness with the slider at the top. Picking a light or moving its sliders also turns the light on.</p>
+            <p>Siri and Home Assistant control the same light, e.g. &ldquo;Hey Siri, set the overhead light to 40%&rdquo; &mdash; changes show up here live.</p>
+          </div>
+        </div>
+        <button id="overhead-power-btn" class="overhead-power" type="button" aria-pressed="false">
+          <span class="overhead-power-icon" aria-hidden="true">&#x23FB;</span>
+          <span id="overhead-power-label">Light off</span>
+        </button>
+        <div id="overhead-grid" class="effects-grid" role="group" aria-label="Overhead lights"></div>
+        <div id="overhead-controls" class="effect-controls hidden">
+          <div id="overhead-effect-name" class="active-effect-header"></div>
+          <div id="overhead-params"></div>
+        </div>
+      </section>
+
       <!-- EFFECTS -->
-      <section id="panel-effects" class="panel active" role="tabpanel" aria-labelledby="tab-effects">
+      <section id="panel-effects" class="panel" role="tabpanel" aria-labelledby="tab-effects">
         <div class="effects-layout">
           <!-- Left side: category filters + effect grid + controls -->
           <div class="effects-main">

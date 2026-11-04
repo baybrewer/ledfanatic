@@ -250,20 +250,22 @@ class Renderer:
     self._test_mode = "calibrate"
     self._test_strip_until = time.monotonic() + 600  # 10 min timeout
 
+  def yaml_params(self, scene_name: str) -> dict:
+    """Params for scene_name from effects.yaml (empty if none)."""
+    if getattr(self, 'effects_config', None):
+      for section in ('effects', 'audio_effects'):
+        section_data = self.effects_config.get(section, {})
+        if scene_name in section_data:
+          return dict(section_data[scene_name].get('params', {}) or {})
+    return {}
+
   def _set_scene(self, scene_name: str, params: Optional[dict] = None):
     if scene_name not in self.effect_registry:
       logger.warning(f"Unknown effect: {scene_name}")
       return False
 
     # Merge: code defaults < yaml config < caller params
-    yaml_params = {}
-    if hasattr(self, 'effects_config') and self.effects_config:
-      for section in ('effects', 'audio_effects'):
-        section_data = self.effects_config.get(section, {})
-        if scene_name in section_data:
-          yaml_params = section_data[scene_name].get('params', {})
-          break
-    merged = {**yaml_params, **(params or {})}
+    merged = {**self.yaml_params(scene_name), **(params or {})}
 
     # State-preserving: if same effect is already active, update params without reset
     if scene_name == self.state.current_scene and self.current_effect is not None:
@@ -499,6 +501,10 @@ class Renderer:
             # Set a flag so _render_frame knows to inject after packing.
             pass  # Handled below after pack_frame
 
+          # Renderer is the only brightness stage (Teensy master is pinned to
+          # 255), so diagnostic overrides must respect the cap too.
+          logical_frame = (logical_frame * effective).astype(np.uint8)
+
         else:
           self._test_mode = None
           self._test_segment_id = None
@@ -528,9 +534,11 @@ class Renderer:
         ch_offset += self.layout.output_sizes.get(ch, 0) * 3
       pos = ch_offset + self._probe_led * 3
       if pos + 2 < len(buf):
-        buf[pos] = 255
-        buf[pos + 1] = 255
-        buf[pos + 2] = 255
+        probe_val = int(255 * self.brightness_engine.get_effective_brightness(
+          datetime.now(timezone.utc)))
+        buf[pos] = probe_val
+        buf[pos + 1] = probe_val
+        buf[pos + 2] = probe_val
       pixel_bytes = bytes(buf)
     self.state.pack_ms = (time.perf_counter() - pack_start) * 1000
 

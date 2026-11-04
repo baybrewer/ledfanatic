@@ -20,6 +20,7 @@ from .games import GAME_EFFECTS as _GAMES
 from .negative_space import NEGATIVE_SPACE_EFFECTS as _NEGATIVE_SPACE
 from .negative_spinoffs import NEGATIVE_SPINOFF_EFFECTS as _NEGATIVE_SPINOFFS
 from .three_body import THREE_BODY_EFFECTS as _THREE_BODY
+from .overhead import OVERHEAD_EFFECTS as _OVERHEAD
 
 ALL_EFFECTS: dict[str, type] = {
     **_GENERATIVE,
@@ -38,4 +39,5 @@ ALL_EFFECTS: dict[str, type] = {
     **_NEGATIVE_SPACE,
     **_NEGATIVE_SPINOFFS,
     **_THREE_BODY,
+    **_OVERHEAD,
 }

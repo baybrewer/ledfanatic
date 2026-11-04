@@ -31,11 +31,12 @@ DISPLAY_CATEGORY_MAP = {
   'special': 'Special',
   'simulation': 'Simulation',
   'game': 'Game',
+  'overhead': 'Overhead',
 }
 
 DISPLAY_CATEGORY_ORDER = [
   'Ambient', 'Sound Reactive', 'Simulation', 'Built-in',
-  'Classic', 'Game', 'Special', 'Other',
+  'Classic', 'Game', 'Special', 'Other', 'Overhead',
 ]
 
 
@@ -57,6 +58,31 @@ class EffectMeta:
   params: tuple = ()       # param metadata for UI controls
   palettes: tuple = ()     # available palette names
   palette_support: bool = False
+
+  @classmethod
+  def from_effect_class(cls, name: str, effect_cls, group: Optional[str] = None,
+                        **overrides) -> 'EffectMeta':
+    """Build metadata from an effect class's PARAMS/DISPLAY_NAME/etc.
+
+    Param descriptors may carry `kind` ('slider' default, 'color') so the UI
+    can render the right control. Overrides win over class attributes.
+    """
+    params = tuple(
+      {'name': p.attr.lower(), 'label': p.label, 'min': p.lo, 'max': p.hi,
+       'step': p.step, 'default': p.default, 'type': getattr(p, 'kind', 'slider')}
+      for p in (getattr(effect_cls, 'PARAMS', None) or ())
+    )
+    fields = {
+      'name': name,
+      'label': getattr(effect_cls, 'DISPLAY_NAME', _name_to_label(name)),
+      'group': group or getattr(effect_cls, 'CATEGORY', 'imported'),
+      'description': getattr(effect_cls, 'DESCRIPTION', ''),
+      'imported': True,
+      'audio_requires': getattr(effect_cls, 'AUDIO_REQUIRES', ()),
+      'params': params,
+    }
+    fields.update(overrides)
+    return cls(**fields)
 
   def to_dict(self) -> dict:
     result = {

@@ -8,6 +8,16 @@ from fastapi import APIRouter, WebSocket, WebSocketDisconnect
 router = APIRouter()
 
 
+def build_state_payload(deps) -> dict:
+    """Single definition of the state pushed to UI clients."""
+    data = deps.render_state.to_dict()
+    data['brightness'] = deps.brightness_engine.get_status()
+    data['current_params'] = deps.state_manager.current_params
+    if deps.overhead is not None:
+        data['overhead'] = deps.overhead.snapshot().to_dict()
+    return data
+
+
 def create_router(deps) -> tuple[APIRouter, callable]:
     """Returns (router, broadcast_state_fn)."""
     ws_clients: set[WebSocket] = set()
@@ -17,7 +27,7 @@ def create_router(deps) -> tuple[APIRouter, callable]:
         await ws.accept()
         ws_clients.add(ws)
         try:
-            await ws.send_json(deps.render_state.to_dict())
+            await ws.send_json(build_state_payload(deps))
             while True:
                 data = await ws.receive_text()
                 try:
@@ -35,13 +45,10 @@ def create_router(deps) -> tuple[APIRouter, callable]:
         if action == 'ping':
             await ws.send_json({'action': 'pong'})
         elif action == 'get_state':
-            state = deps.render_state.to_dict()
-            state['brightness'] = deps.brightness_engine.get_status()
-            await ws.send_json(state)
+            await ws.send_json(build_state_payload(deps))
 
     async def broadcast_state():
-        data = deps.render_state.to_dict()
-        data['brightness'] = deps.brightness_engine.get_status()
+        data = build_state_payload(deps)
         dead = set()
         for ws in ws_clients:
             try:

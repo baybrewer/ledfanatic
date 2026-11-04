@@ -138,6 +138,24 @@ class StateManager:
     self.mark_dirty()
 
   @property
+  def blackout(self) -> bool:
+    return bool(self._state.get('blackout', False))
+
+  @blackout.setter
+  def blackout(self, value: bool):
+    self._state['blackout'] = bool(value)
+    self.mark_dirty()
+
+  @property
+  def last_overhead_effect(self) -> Optional[str]:
+    return self._state.get('last_overhead_effect')
+
+  @last_overhead_effect.setter
+  def last_overhead_effect(self, value: str):
+    self._state['last_overhead_effect'] = value
+    self.mark_dirty()
+
+  @property
   def favorites(self) -> list[str]:
     return self._state.get('favorites', [])
 

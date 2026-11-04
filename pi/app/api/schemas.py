@@ -20,6 +20,15 @@ class BlackoutRequest(BaseModel):
     enabled: bool
 
 
+class OverheadRequest(BaseModel):
+    on: Optional[bool] = None
+    brightness: Optional[float] = None
+    effect: Optional[str] = None
+    kelvin: Optional[int] = None
+    rgb: Optional[list[int]] = None
+    params: Optional[dict] = None
+
+
 class FPSRequest(BaseModel):
     value: int
 

@@ -233,7 +233,7 @@ class TestAuthenticatedBehavior:
         )
         assert resp.status_code == 200
         assert resp.json()['status'] == 'ok'
-        mock_deps['renderer'].activate_scene.assert_called_with('fire', {})
+        mock_deps['renderer'].activate_scene.assert_called_with('fire', {}, media_manager=mock_deps['media_manager'])
 
     def test_activate_unknown_scene_returns_404(self, client, auth_header, mock_deps):
         mock_deps['renderer'].activate_scene.return_value = False

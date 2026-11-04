@@ -55,3 +55,15 @@ logging:
 #   overlay:
 #     x0: 0
 #     x1: 10
+
+# Home Assistant MQTT bridge (optional; needs the [homeassistant] extra).
+# Exposes Overhead mode as one HA light via MQTT discovery → HomeKit/Siri.
+mqtt:
+  enabled: false
+  host: "homeassistant.local"
+  port: 1883
+  username: "ledfanatic"
+  password: "CHANGE_ME"
+  discovery_prefix: "homeassistant"
+  node_id: "ledfanatic"
+  name: "Overhead Light"

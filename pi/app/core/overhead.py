@@ -111,9 +111,6 @@ class OverheadService:
         await self.display.set_blackout(True)
       return self.snapshot()
 
-    if cmd.brightness is not None:
-      self.display.set_manual_brightness(cmd.brightness)
-
     # Remember white/color settings even when another effect is the target,
     # so "make it warmer" then "turn on White" lands where the user expects.
     if cmd.kelvin is not None:
@@ -130,7 +127,11 @@ class OverheadService:
 
     wants_light = (cmd.on is True or target is not None or cmd.params)
     if not wants_light:
+      # Brightness alone must not dim a festival scene (HA controls Overhead only)
       return self.snapshot()
+
+    if cmd.brightness is not None:
+      self.display.set_manual_brightness(cmd.brightness)
 
     if target is None:
       target = self.display.render_state.current_scene if showing else self._last_effect()
@@ -140,7 +141,6 @@ class OverheadService:
       params.update(self._validate(target, cmd.params))
     if self.display.activate_and_persist(target, params) is None:
       raise ValueError(f"Failed to activate overhead effect: {target}")
-    self.display.state_manager.last_overhead_effect = target
     if self.display.render_state.blackout:
       await self.display.set_blackout(False)
     return self.snapshot()
@@ -156,8 +156,9 @@ class OverheadService:
     return {p['name']: p for p in (meta.params if meta else ())}
 
   def _stored_params(self, effect: str) -> dict:
-    """Catalog defaults overlaid with the user's saved params."""
+    """code defaults < effects.yaml < saved params (same precedence as the renderer)."""
     params = {name: p.get('default') for name, p in self._param_meta(effect).items()}
+    params.update(self.display.renderer.yaml_params(effect))
     params.update(self.display.state_manager.get_effect_params(effect))
     return params
 

@@ -24,7 +24,7 @@ rsync -avz --delete \
 
 # Reinstall package and restart
 ssh "${PI_USER}@${PI_HOST}" "\
-  ${PI_PATH}/venv/bin/pip install -e ${SRC_PATH}[audio,video] && \
+  ${PI_PATH}/venv/bin/pip install -e ${SRC_PATH}[audio,video,homeassistant] && \
   sudo systemctl restart ledfanatic"
 
 echo "Deployed and restarted."

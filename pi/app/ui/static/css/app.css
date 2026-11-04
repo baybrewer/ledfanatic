@@ -948,6 +948,92 @@ select:focus {
   margin-top: 8px;
 }
 
+/* Overhead tab */
+:root {
+  --overhead-warm: #ffb347;
+  --overhead-warm-glow: rgba(255, 179, 71, 0.35);
+}
+
+.overhead-power {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 12px;
+  width: 100%;
+  min-height: 64px;
+  margin-bottom: 12px;
+  font-size: 20px;
+  font-weight: 600;
+  color: var(--text-dim);
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  cursor: pointer;
+  transition: all var(--transition-normal);
+}
+
+.overhead-power-icon {
+  font-size: 26px;
+  line-height: 1;
+}
+
+.overhead-power.on {
+  color: #1a1206;
+  background: linear-gradient(135deg, #ffb347, #ffd89b);
+  border-color: var(--overhead-warm);
+  box-shadow: 0 0 24px var(--overhead-warm-glow);
+}
+
+#overhead-grid .effect-card.active-scene {
+  border-color: var(--overhead-warm);
+  box-shadow: 0 0 12px var(--overhead-warm-glow), inset 0 0 20px rgba(255, 179, 71, 0.08);
+}
+
+#overhead-controls {
+  margin-top: 12px;
+  transition: opacity var(--transition-normal);
+}
+
+.overhead-power:active {
+  transform: scale(0.98);
+}
+
+.overhead-power[aria-busy="true"] {
+  opacity: 0.7;
+  cursor: progress;
+}
+
+/* Light is off: keep the remembered selection visible but clearly unlit */
+.overhead-is-off #overhead-grid .effect-card.active-scene {
+  border-style: dashed;
+  box-shadow: none;
+}
+
+.overhead-is-off #overhead-controls {
+  opacity: 0.8;
+}
+
+.overhead-empty {
+  grid-column: 1 / -1;
+  padding: 16px;
+  text-align: center;
+  color: var(--text-dim);
+}
+
+@media (min-width: 641px) {
+  .overhead-power {
+    max-width: 360px;
+  }
+}
+
+/* Color-temperature track: warm 2200K -> cool 6500K */
+input[type="range"].param-kelvin {
+  height: 8px;
+  border-radius: 4px;
+  background: linear-gradient(90deg, #FF8A2A 0%, #FFC27A 30%, #FFF1DE 65%, #CFE0FF 100%);
+}
+
+
 #effect-palette-wrap label {
   display: flex;
   align-items: center;

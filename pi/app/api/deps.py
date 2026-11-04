@@ -30,3 +30,5 @@ class AppDeps:
     compiled_layout: Optional[object] = None
     config_dir: Optional[Path] = None
     pot_controller: Optional[object] = None
+    display: Optional[object] = None
+    overhead: Optional[object] = None

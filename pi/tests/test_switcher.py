@@ -138,10 +138,14 @@ class _StubStateManager:
 
 def _build_route_test_deps(catalog):
   from types import SimpleNamespace
+  from app.core.display_control import DisplayController
+  renderer = _StubRenderer()
+  state_manager = _StubStateManager()
   return SimpleNamespace(
-    renderer=_StubRenderer(),
-    state_manager=_StubStateManager(),
+    renderer=renderer,
+    state_manager=state_manager,
     effect_catalog=catalog,
+    display=DisplayController(renderer, None, state_manager, None, None),
   )
 
 

@@ -126,9 +126,9 @@ class OverheadLiquidRainbow(_OverheadEffect):
     z = phase * 0.06
     warp_x = fbm_grid(sx + 1.7, sy + 9.2, np.full_like(sx, z))
     warp_y = fbm_grid(sx + 8.3, sy + 2.8, np.full_like(sx, z + 3.1))
-    field = fbm_grid(sx + 2.5 * warp_x, sy + 2.5 * warp_y,
-                     np.full_like(sx, z * 0.7 + 5.0), octaves=3)
-    hue = field * 1.2 + phase * 0.01
+    field = fbm_grid(sx + 1.6 * warp_x, sy + 1.6 * warp_y,
+                     np.full_like(sx, z * 0.7 + 5.0))
+    hue = field * 0.4 + phase * 0.01
     # Gentle depth so it reads as liquid, never dark
     value = 0.82 + 0.18 * np.clip(field * 2.0 + 0.5, 0.0, 1.0)
     return hsv_to_rgb_grid(hue, self._param('saturation'), value)
@@ -145,6 +145,7 @@ class OverheadRainbowInk(_OverheadEffect):
   _FLOW_AMP = 40.0
   # Fraction of dye replaced per (speed-scaled) second, so it never homogenizes
   _RESEED_RATE = 0.06
+  _DIFFUSION = 1.5
 
   def __init__(self, width, height, params=None):
     super().__init__(width, height, params)
@@ -154,9 +155,16 @@ class OverheadRainbowInk(_OverheadEffect):
 
   def _seed(self, phase):
     hue = fbm_grid(self._x / 24.0, self._y / 24.0,
-                   np.full_like(self._x, 11.0 + phase * 0.02)) * 1.5 + phase * 0.008
+                   np.full_like(self._x, 11.0 + phase * 0.02)) * 0.7 + phase * 0.008
     angle = hue * _TAU
     return np.stack([np.cos(angle), np.sin(angle)], axis=-1).astype(np.float32)
+
+  @staticmethod
+  def _diffuse(dye, amount):
+    padded = np.pad(dye, ((1, 1), (1, 1), (0, 0)), mode='edge')
+    neighbors = (padded[:-2, 1:-1] + padded[2:, 1:-1]
+                 + padded[1:-1, :-2] + padded[1:-1, 2:]) * 0.25
+    return dye + (neighbors - dye) * amount
 
   def _sample(self, src_x, src_y):
     """Bilinear sample of the dye field at fractional positions (edge-clamped)."""
@@ -186,7 +194,9 @@ class OverheadRainbowInk(_OverheadEffect):
         dpsi_dx = dpsi_dy = np.zeros_like(psi)
       # Curl of a scalar potential is divergence-free: no sinks, no pile-ups
       vel_x, vel_y = dpsi_dy, -dpsi_dx
-      self._dye = self._sample(self._x - vel_x * step, self._y - vel_y * step)
+      dye = self._sample(self._x - vel_x * step, self._y - vel_y * step)
+      # Light diffusion: advection stretches dye into razor filaments otherwise
+      self._dye = self._diffuse(dye, min(1.0, self._DIFFUSION * step))
       blend = min(1.0, self._RESEED_RATE * step)
       self._dye += (self._seed(phase) - self._dye) * blend
 
@@ -279,7 +289,8 @@ class OverheadRainbowLava(_OverheadEffect):
     hue_y = np.zeros_like(self._x)
     for i in range(self._BLOBS):
       dist_sq = (self._x - centers_x[i]) ** 2 + (self._y - centers_y[i]) ** 2
-      influence = self._radius_sq[i] / (dist_sq + 1.0)
+      # Bounded kernel (peak 1) so dominance shifts gradually between blobs
+      influence = self._radius_sq[i] / (dist_sq + self._radius_sq[i])
       field += influence
       hue_x += influence * math.cos(hues[i] * _TAU)
       hue_y += influence * math.sin(hues[i] * _TAU)
@@ -289,7 +300,7 @@ class OverheadRainbowLava(_OverheadEffect):
     # to frame; fading saturation by hue coherence turns that seam into soft pastel.
     coherence = np.hypot(hue_x, hue_y) / field
     sat = self._param('saturation') * np.clip(coherence * 1.25, 0.0, 1.0)
-    glow = np.clip((field - 0.4) / 1.4, 0.0, 1.0)
+    glow = np.clip((field - 0.35) / 0.8, 0.0, 1.0)
     glow = glow * glow * (3.0 - 2.0 * glow)
     value = 0.3 + 0.7 * glow
     return hsv_to_rgb_grid(hue, sat, value)

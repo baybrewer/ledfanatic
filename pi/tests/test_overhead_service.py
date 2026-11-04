@@ -145,8 +145,32 @@ def test_diagnostic_pattern_respects_brightness_cap(env):
   renderer = display.renderer
   display.activate_and_persist('oh_white', None)
   display.set_manual_brightness(0.25)
+  renderer._rebuild_segment_cache_from_config(load_layout(Path("config")))
   renderer._test_mode = "strip_identify"
   renderer._test_strip_until = float('inf')
   _run(renderer._render_frame())
   frame = renderer._last_logical_frame
   assert frame.max() <= int(255 * 0.25) + 1
+
+
+def test_brightness_only_does_not_dim_festival(env):
+  service, display, _ = env
+  display.activate_and_persist('rainbow_rotate', None)
+  _run(service.apply(OverheadCommand(brightness=0.2)))
+  assert display.brightness_engine.manual_cap == pytest.approx(0.8)
+  assert display.render_state.current_scene == 'rainbow_rotate'
+
+
+def test_pot_selected_overhead_effect_is_resumed(env):
+  service, display, _ = env
+  display.activate_and_persist('oh_caustics', None)   # e.g. pot or UI path
+  display.activate_and_persist('rainbow_rotate', None)
+  state = _run(service.apply(OverheadCommand(on=True)))
+  assert state.effect == 'oh_caustics'
+
+
+def test_yaml_defaults_respected_on_first_activation(env):
+  service, display, _ = env
+  display.renderer.effects_config = {'effects': {'oh_white': {'params': {'kelvin': 4500}}}}
+  state = _run(service.apply(OverheadCommand(on=True)))
+  assert state.kelvin == 4500

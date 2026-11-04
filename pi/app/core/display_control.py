@@ -7,6 +7,8 @@ behave identically.
 import logging
 from typing import Optional
 
+from ..effects.overhead import OVERHEAD_EFFECTS
+
 logger = logging.getLogger(__name__)
 
 
@@ -58,4 +60,7 @@ class DisplayController:
     self.state_manager.current_params = resolved
     # Persist per-effect params so switching back restores them
     self.state_manager.set_effect_params(effect, resolved)
+    # Any path (UI, pots, HA) that picks an overhead effect is what "on" resumes
+    if effect in OVERHEAD_EFFECTS:
+      self.state_manager.last_overhead_effect = effect
     return resolved

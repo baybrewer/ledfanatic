@@ -458,6 +458,8 @@ def main():
   display = DisplayController(renderer, render_state, state_manager,
                               brightness_engine, transport, media_manager)
   overhead = OverheadService(display, effect_catalog)
+  from .integrations.ha_mqtt import create_bridge
+  ha_bridge = create_bridge(sys_conf, overhead)
 
   # --- Pot controller (physical knobs via Teensy PKT_POTS) ---
   from .core.pots import PotController, pots_poll_loop
@@ -546,10 +548,18 @@ def main():
     _background_tasks.append(asyncio.create_task(
       pots_poll_loop(transport, pot_controller, _dispatch_pot_events)))
     logger.info("Background tasks started")
+    try:
+      await ha_bridge.start()
+    except Exception:
+      logger.exception("Home Assistant MQTT bridge failed to start")
 
   @app.on_event("shutdown")
   async def shutdown_tasks():
     logger.info("Shutting down...")
+    try:
+      await ha_bridge.stop()
+    except Exception:
+      logger.exception("Home Assistant MQTT bridge failed to stop cleanly")
     renderer.stop()
     if hasattr(app.state, 'broadcast_task'):
       app.state.broadcast_task.cancel()

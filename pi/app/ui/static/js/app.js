@@ -86,6 +86,8 @@ function updateState(data) {
     }
   }
 
+  if (data.overhead) renderOverheadState(data.overhead);
+
   // Audio spectrum + beat
   if (data.audio_spectrum) {
     spectrumTarget = data.audio_spectrum;
@@ -127,6 +129,7 @@ async function api(method, path, body) {
 function showToast(message) {
   const toast = document.createElement('div');
   toast.className = 'toast';
+  toast.setAttribute('role', 'status');
   toast.textContent = message;
   document.body.appendChild(toast);
   setTimeout(() => toast.remove(), 3000);
@@ -170,6 +173,7 @@ function activateTab(tab) {
     activePreviewCanvas = 'sim-canvas';
   }
 
+  if (tab.dataset.tab === 'overhead') loadOverhead();
   if (tab.dataset.tab === 'media') loadMedia();
   if (tab.dataset.tab === 'audio') { loadAudioDevices(); loadAudioConfig(); }
   if (tab.dataset.tab === 'system') loadSystemStatus();
@@ -244,7 +248,15 @@ const CATEGORY_MAP = {
   special: 'Special',
   simulation: 'Simulation',
   game: 'Game',
+  overhead: 'Overhead',
 };
+
+// Overhead-group effects live only on the Overhead tab, never in the Effects grid/switcher
+const OVERHEAD_GROUP = 'overhead';
+
+function isOverheadEffect(meta) {
+  return !!meta && meta.group === OVERHEAD_GROUP;
+}
 
 const CATEGORY_COLORS = {
   'Ambient': '#00cec9',
@@ -256,6 +268,7 @@ const CATEGORY_COLORS = {
   'Special': '#a29bfe',
   'Other': '#636e72',
   'Favorites': '#fdcb6e',
+  'Overhead': '#ffb347',
 };
 
 function getCategoryColor(group) {
@@ -357,7 +370,7 @@ async function loadEffects() {
   // Build categorized list
   const categorized = [];
   for (const [name, info] of Object.entries(data.effects)) {
-    if (name.startsWith('diag_')) continue;
+    if (name.startsWith('diag_') || isOverheadEffect(info)) continue;
     const cat = effectCategory(info.group || 'other');
     categorized.push({ name, category: cat, ...info });
   }
@@ -493,16 +506,68 @@ function applyEffectsFilter() {
   }
 }
 
+// Value display overrides keyed by param name (default: integer or 1 decimal by step)
+const PARAM_FORMATTERS = {
+  kelvin: (v) => `${Math.round(v)}K`,
+};
+
+function formatParamValue(param, value) {
+  const fmt = PARAM_FORMATTERS[param.name];
+  if (fmt) return fmt(value);
+  return Number.isInteger(param.step) ? value : parseFloat(value).toFixed(1);
+}
+
+// One param control row (slider / text / color). onChange(value) fires on every input;
+// callers own debouncing and where the value is sent.
+function buildParamRow(param, value, onChange) {
+  const row = document.createElement('div');
+  row.className = 'param-row';
+  row.dataset.param = param.name;
+
+  if (param.type === 'text') {
+    row.innerHTML = `
+      <label>${param.label}</label>
+      <input type="text" value="${value || ''}" data-param="${param.name}" class="param-text" aria-label="${param.label}" style="flex:1;padding:4px 8px;background:#222;color:#fff;border:1px solid #444;border-radius:4px;">
+    `;
+    const input = row.querySelector('input');
+    input.addEventListener('input', () => onChange(input.value));
+  } else if (param.type === 'color') {
+    row.innerHTML = `
+      <label>${param.label}</label>
+      <input type="color" value="${value || '#00FFFF'}" data-param="${param.name}" class="param-color" aria-label="${param.label}" style="width:56px;height:44px;border:none;background:none;cursor:pointer;">
+    `;
+    const input = row.querySelector('input');
+    input.addEventListener('input', () => onChange(input.value));
+  } else {
+    // Default: slider
+    row.innerHTML = `
+      <label>${param.label}</label>
+      <input type="range" min="${param.min}" max="${param.max}" step="${param.step}" value="${value}"
+             data-param="${param.name}" class="param-slider${param.name === 'kelvin' ? ' param-kelvin' : ''}"
+             aria-label="${param.label}">
+      <span class="param-value">${formatParamValue(param, value)}</span>
+    `;
+    const slider = row.querySelector('input');
+    const display = row.querySelector('.param-value');
+    slider.addEventListener('input', () => {
+      const v = parseFloat(slider.value);
+      display.textContent = formatParamValue(param, v);
+      onChange(v);
+    });
+  }
+  return row;
+}
+
 function showEffectControls(name, meta) {
   const wrap = document.getElementById('active-effect-controls');
   document.getElementById('active-effect-name').textContent = meta.label || name;
   const paramsDiv = document.getElementById('effect-params');
   paramsDiv.innerHTML = '';
 
-  // Build params list, ensuring speed is always present
+  // Build params list, ensuring speed is always present (overhead effects declare their own)
   const params = meta.params ? [...meta.params] : [];
   const hasSpeed = params.some(p => p.name === 'speed');
-  if (!hasSpeed && name !== 'animation_switcher') {
+  if (!hasSpeed && name !== 'animation_switcher' && !isOverheadEffect(meta)) {
     params.unshift({
       name: 'speed',
       label: 'Speed',
@@ -513,65 +578,27 @@ function showEffectControls(name, meta) {
     });
   }
 
-  // Render param controls (sliders, text inputs, color pickers)
-  for (const p of params) {
-    const row = document.createElement('div');
-    row.className = 'param-row';
-    const val = currentEffectParams[p.name] ?? p.default;
-    let debounce = null;
-    const sendUpdate = () => {
-      clearTimeout(debounce);
-      debounce = setTimeout(() => {
-        api('POST', '/api/scenes/activate', { effect: name, params: currentEffectParams });
-        if (activeEffectName === name) {
-          startEffectsPreview(name, currentEffectParams);
-        }
-      }, 100);
-    };
+  let debounce = null;
+  const sendUpdate = () => {
+    clearTimeout(debounce);
+    debounce = setTimeout(() => {
+      api('POST', '/api/scenes/activate', { effect: name, params: currentEffectParams });
+      if (activeEffectName === name) {
+        startEffectsPreview(name, currentEffectParams);
+      }
+    }, 100);
+  };
 
-    if (p.type === 'text') {
-      row.innerHTML = `
-        <label>${p.label}</label>
-        <input type="text" value="${val || ''}" data-param="${p.name}" class="param-text" style="flex:1;padding:4px 8px;background:#222;color:#fff;border:1px solid #444;border-radius:4px;">
-      `;
-      const input = row.querySelector('input');
-      input.addEventListener('input', () => {
-        currentEffectParams[p.name] = input.value;
-        sendUpdate();
-      });
-    } else if (p.type === 'color') {
-      row.innerHTML = `
-        <label>${p.label}</label>
-        <input type="color" value="${val || '#00FFFF'}" data-param="${p.name}" class="param-color" style="width:50px;height:30px;border:none;background:none;cursor:pointer;">
-      `;
-      const input = row.querySelector('input');
-      input.addEventListener('input', () => {
-        currentEffectParams[p.name] = input.value;
-        sendUpdate();
-      });
-    } else {
-      // Default: slider
-      row.innerHTML = `
-        <label>${p.label}</label>
-        <input type="range" min="${p.min}" max="${p.max}" step="${p.step}" value="${val}"
-               data-param="${p.name}" class="param-slider">
-        <span class="param-value">${Number.isInteger(p.step) ? val : parseFloat(val).toFixed(1)}</span>
-      `;
-      const slider = row.querySelector('input');
-      const display = row.querySelector('.param-value');
-      slider.addEventListener('input', () => {
-        const v = parseFloat(slider.value);
-        display.textContent = Number.isInteger(p.step) ? v : v.toFixed(1);
-        currentEffectParams[p.name] = v;
-        sendUpdate();
-      });
-    }
-    paramsDiv.appendChild(row);
+  for (const p of params) {
+    paramsDiv.appendChild(buildParamRow(p, currentEffectParams[p.name] ?? p.default, (value) => {
+      currentEffectParams[p.name] = value;
+      sendUpdate();
+    }));
   }
 
-  // Palette selector — always shown
+  // Palette selector — shown for everything except overhead lights (no palette support)
   const palWrap = document.getElementById('effect-palette-wrap');
-  palWrap.classList.remove('hidden');
+  palWrap.classList.toggle('hidden', isOverheadEffect(meta));
   const select = document.getElementById('effect-palette-select');
   select.innerHTML = '';
   const paletteList = (meta.palettes && meta.palettes.length > 0) ? meta.palettes : DEFAULT_PALETTES;
@@ -627,7 +654,7 @@ function renderSwitcherControls() {
   const groups = {};
   for (const [name, meta] of Object.entries(effectsCatalog)) {
     if (name === 'animation_switcher') continue;
-    if (name.startsWith('diag_')) continue;
+    if (name.startsWith('diag_') || isOverheadEffect(meta)) continue;
     const cat = effectCategory(meta.group || 'other');
     if (!groups[cat]) groups[cat] = [];
     groups[cat].push([name, meta]);
@@ -810,7 +837,7 @@ async function activateEffect(name) {
   // Re-render to update active highlight and controls without full refetch
   if (effectsCatalog && effectsCatalog[name]) {
     // Update highlights in effects grid
-    document.querySelectorAll('.effect-card').forEach(b => {
+    document.querySelectorAll('#effects-grid .effect-card').forEach(b => {
       b.classList.toggle('active-scene', b.dataset.effect === name);
     });
     showEffectControls(name, effectsCatalog[name]);
@@ -820,6 +847,164 @@ async function activateEffect(name) {
       startEffectsPreview(name, currentEffectParams);
     }
   }
+}
+
+// --- Overhead ---
+
+let overheadState = null;
+let overheadEffects = [];
+let overheadRenderedEffect = null;  // effect whose controls are currently built
+let overheadParamDebounce = null;
+let overheadLastLocalEdit = 0;
+// Grace window after a local edit during which websocket snapshots don't overwrite
+// controls (covers drag + debounce + round-trip; iOS doesn't focus range inputs).
+const OVERHEAD_EDIT_GRACE_MS = 1500;
+
+async function loadOverhead() {
+  if (!effectsCatalog) {
+    const cat = await api('GET', '/api/effects/catalog');
+    if (cat && cat.effects) effectsCatalog = cat.effects;
+  }
+  const data = await api('GET', '/api/overhead');
+  if (!data) {
+    if (!overheadEffects.length) {
+      document.getElementById('overhead-grid').innerHTML =
+        '<p class="overhead-empty">Couldn\'t reach the light controller. Reopen this tab to retry.</p>';
+    }
+    return;
+  }
+  overheadEffects = data.effects || [];
+  renderOverheadGrid();
+  overheadRenderedEffect = null;  // force a controls rebuild
+  renderOverheadState(data.state);
+}
+
+function renderOverheadGrid() {
+  const grid = document.getElementById('overhead-grid');
+  grid.innerHTML = '';
+  const catColor = CATEGORY_COLORS['Overhead'];
+  for (const eff of overheadEffects) {
+    const btn = document.createElement('button');
+    btn.className = 'effect-card';
+    btn.dataset.effect = eff.name;
+    btn.dataset.group = OVERHEAD_GROUP;
+    btn.setAttribute('aria-pressed', 'false');
+    btn.innerHTML = `
+      <div class="effect-card-accent" style="background:${catColor}"></div>
+      <div class="effect-card-body">
+        <span class="effect-card-name">${eff.label || eff.name}</span>
+        <span class="effect-card-group">Overhead</span>
+      </div>
+    `;
+    btn.addEventListener('click', () => {
+      cancelOverheadParams();
+      postOverhead({ effect: eff.name });
+    });
+    grid.appendChild(btn);
+  }
+}
+
+async function postOverhead(body) {
+  const data = await api('POST', '/api/overhead', body);
+  if (!data) {
+    showToast('Overhead update failed — check your auth token in System > Admin');
+    return;
+  }
+  renderOverheadState(data.state, true);
+}
+
+// Edits within one debounce window are batched so a quick Speed + Saturation
+// change sends both, and are scoped to the effect they were made on.
+let overheadPendingParams = {};
+let overheadPendingEffect = null;
+
+function cancelOverheadParams() {
+  clearTimeout(overheadParamDebounce);
+  overheadPendingParams = {};
+  overheadPendingEffect = null;
+}
+
+function sendOverheadParam(name, value) {
+  overheadLastLocalEdit = Date.now();
+  overheadState.params = { ...overheadState.params, [name]: value };
+  if (overheadPendingEffect !== overheadState.effect) overheadPendingParams = {};
+  overheadPendingEffect = overheadState.effect;
+  overheadPendingParams[name] = value;
+  clearTimeout(overheadParamDebounce);
+  overheadParamDebounce = setTimeout(() => {
+    const body = { effect: overheadPendingEffect, params: overheadPendingParams };
+    cancelOverheadParams();
+    postOverhead(body);
+  }, 100);
+}
+
+function overheadUserEditing() {
+  return Date.now() - overheadLastLocalEdit < OVERHEAD_EDIT_GRACE_MS;
+}
+
+// fromPost: response to our own POST — always authoritative for power/effect,
+// but param inputs are still left alone while the user is mid-drag.
+function renderOverheadState(st, fromPost = false) {
+  if (!st) return;
+  if (!fromPost && overheadUserEditing() && overheadState && st.effect === overheadState.effect) return;
+  overheadState = { ...st, params: { ...(st.params || {}) } };
+
+  const powerBtn = document.getElementById('overhead-power-btn');
+  powerBtn.classList.toggle('on', !!st.on);
+  powerBtn.setAttribute('aria-pressed', String(!!st.on));
+  document.getElementById('overhead-power-label').textContent = st.on ? 'Light on' : 'Light off';
+  // Dims the selection when off so a highlighted card doesn't read as "lit"
+  document.getElementById('panel-overhead').classList.toggle('overhead-is-off', !st.on);
+
+  document.querySelectorAll('#overhead-grid .effect-card').forEach(card => {
+    const active = card.dataset.effect === st.effect;
+    card.classList.toggle('active-scene', active);
+    card.setAttribute('aria-pressed', String(active));
+  });
+
+  const meta = effectsCatalog && effectsCatalog[st.effect];
+  const wrap = document.getElementById('overhead-controls');
+  if (!meta) { wrap.classList.add('hidden'); return; }
+
+  if (overheadRenderedEffect !== st.effect) {
+    overheadRenderedEffect = st.effect;
+    document.getElementById('overhead-effect-name').textContent = meta.label || st.effect;
+    const paramsDiv = document.getElementById('overhead-params');
+    paramsDiv.innerHTML = '';
+    for (const p of (meta.params || [])) {
+      paramsDiv.appendChild(buildParamRow(p, overheadState.params[p.name] ?? p.default,
+        (value) => sendOverheadParam(p.name, value)));
+    }
+    wrap.classList.toggle('hidden', !(meta.params && meta.params.length));
+    return;
+  }
+
+  if (overheadUserEditing()) return;
+  // Same effect: sync values in place (Siri/HA changes) without rebuilding the DOM
+  for (const p of (meta.params || [])) {
+    const value = overheadState.params[p.name];
+    if (value === undefined) continue;
+    const input = document.querySelector(`#overhead-params input[data-param="${p.name}"]`);
+    // The edit grace window above already protects an active drag; skipping
+    // focused inputs too would leave a stale value after a Siri change.
+    if (!input) continue;
+    input.value = value;
+    const display = input.parentElement.querySelector('.param-value');
+    if (display) display.textContent = formatParamValue(p, value);
+  }
+}
+
+function initOverhead() {
+  const powerBtn = document.getElementById('overhead-power-btn');
+  // aria-busy (not disabled) so keyboard focus survives the round-trip
+  powerBtn.addEventListener('click', async () => {
+    if (powerBtn.getAttribute('aria-busy') === 'true') return;
+    powerBtn.setAttribute('aria-busy', 'true');
+    // A pending slider POST would otherwise turn the light back on after Off
+    cancelOverheadParams();
+    await postOverhead({ on: !(overheadState && overheadState.on) });
+    powerBtn.removeAttribute('aria-busy');
+  });
 }
 
 // --- Presets ---
@@ -2416,8 +2601,9 @@ function initGame() {
 document.addEventListener('DOMContentLoaded', () => {
   initAuth();
   initTabs();
-  // Effects is the default tab — load catalog immediately
-  loadEffects();
+  // Overhead is the default tab — load it immediately (Effects loads on tab activation)
+  initOverhead();
+  loadOverhead();
   initBrightness();
   initBlackout();
   initUpload();

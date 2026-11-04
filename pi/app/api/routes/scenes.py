@@ -75,31 +75,18 @@ def create_router(deps, require_auth, broadcast_state) -> APIRouter:
 
     @router.post("/activate", dependencies=[Depends(require_auth)])
     async def activate_scene(req: SceneRequest):
-        # If no params provided, restore this effect's last-known params
-        if req.params is None:
-            params_to_apply = deps.state_manager.get_effect_params(req.effect) or None
-        else:
-            params_to_apply = req.params
-
+        params_to_apply = req.params
         # Animation Switcher: inject default playlist on first activation
         if req.effect == 'animation_switcher':
+          if params_to_apply is None:
+            params_to_apply = deps.state_manager.get_effect_params(req.effect) or None
           if params_to_apply is None or 'playlist' not in (params_to_apply or {}):
             base = dict(params_to_apply or {})
             base['playlist'] = _default_switcher_playlist()
             params_to_apply = base
 
-        success = deps.renderer.activate_scene(req.effect, params_to_apply)
-        if success:
-            deps.state_manager.current_scene = req.effect
-            # Resolve to actual effect params (merged with yaml defaults)
-            resolved = params_to_apply if params_to_apply is not None else dict(
-                getattr(deps.renderer.current_effect, 'params', {}) or {}
-            )
-            # Filter out internal keys like '_effect_registry'
-            resolved = {k: v for k, v in resolved.items() if not k.startswith('_')}
-            deps.state_manager.current_params = resolved
-            # Persist per-effect params so switching back restores them
-            deps.state_manager.set_effect_params(req.effect, resolved)
+        resolved = deps.display.activate_and_persist(req.effect, params_to_apply)
+        if resolved is not None:
             await broadcast_state()
             return {"status": "ok", "params": resolved}
         raise HTTPException(404, f"Unknown effect: {req.effect}")

@@ -15,11 +15,13 @@ from fastapi.responses import FileResponse, JSONResponse
 
 from .auth import create_auth_dependency
 from .deps import AppDeps
+from ..core.display_control import DisplayController
 
 from .routes import system, scenes, brightness, media, audio, diagnostics, setup, effects, preview
 from .routes import transport as transport_routes
 from .routes import layout as layout_routes
 from .routes import pots as pots_routes
+from .routes import overhead as overhead_routes
 from .routes import ws
 
 logger = logging.getLogger(__name__)
@@ -43,6 +45,8 @@ def create_app(
     compiled_layout=None,
     config_dir=None,
     pot_controller=None,
+    display=None,
+    overhead=None,
 ) -> FastAPI:
 
     app = FastAPI(title="LED Fanatic", version="1.0.0")
@@ -52,6 +56,10 @@ def create_app(
     )
 
     require_auth = create_auth_dependency(config)
+
+    if display is None:
+        display = DisplayController(renderer, render_state, state_manager,
+                                    brightness_engine, transport, media_manager)
 
     deps = AppDeps(
         transport=transport,
@@ -69,6 +77,8 @@ def create_app(
         compiled_layout=compiled_layout,
         config_dir=config_dir,
         pot_controller=pot_controller,
+        display=display,
+        overhead=overhead,
     )
 
     # Expose deps on app.state for startup handlers in main.py
@@ -90,6 +100,7 @@ def create_app(
     app.include_router(preview.create_router(deps, require_auth))
     app.include_router(layout_routes.create_router(deps, require_auth))
     app.include_router(pots_routes.create_router(deps, require_auth))
+    app.include_router(overhead_routes.create_router(deps, require_auth, broadcast_state))
     app.include_router(ws_router)
 
     # --- Periodic broadcast ---
