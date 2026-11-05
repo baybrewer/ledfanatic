@@ -1,205 +1,196 @@
-# Teensy Link Reliability Implementation Plan (v2)
+# Teensy Link Reliability Implementation Plan (v3)
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** The Pi→Teensy frame link never wedges, never flashes, and never resets itself; if it ever does fail, one manual reset from the UI captures every byte of evidence needed to make that failure the last one.
 
-**Architecture:** (1) Firmware v1.3.0: every wait in the loop is bounded (non-blocking USB RX/TX, DMA-aware `busy()`, no re-init/EEPROM/black-show on reconnect), every rejected packet is counted by reason, a halting (non-rebooting) fault handler preserves the crash record, and the Teensy *pushes* a DIAG snapshot once a second so evidence does not depend on the RX path that failed. (2) Pi transport: one RX dispatcher (the pots drain loop) routes replies to futures so no request ever holds the frame lock while waiting; a bounded trace records every packet, write outcome and rejected byte-chunk; stalls, write timeouts, link loss, frame-progress stalls and unexpected Teensy reboots are *detected and reported* — nothing on the Pi reboots the Teensy. (3) `IncidentRecorder` writes a collision-proof forensic bundle on every detection and on the manual **Reset Teensy** action (server-side single-flight), appending post-reset evidence.
+**Architecture:** (1) Firmware v1.3.0 removes every autonomous behaviour (watchdog fade, EEPROM writes, blackout clear on HELLO, core fault reboot, startup flash) and makes every wait in the loop bounded; it counts every rejected packet by reason, pushes a DIAG snapshot once a second so evidence does not depend on the RX path that failed, echoes request ids so replies can be correlated, and on a CPU fault parks the LED timers idle and halts with the crash record preserved. (2) The Pi transport has one serialized writer and one RX dispatcher routing replies to futures keyed by request id; frames are sent only in the `ready` state (HELLO → CONFIG committed → Pi state restored); a byte-budget trace records raw TX/RX chunks, write outcomes and rejected chunks; stalls, write timeouts, link loss, frame/output stalls, Teensy-side stall flags and unexpected reboots are *detected and reported* — nothing on the Pi reboots the Teensy. (3) `IncidentRecorder` writes collision-proof forensic bundles on every detection and on the manual **Reset Teensy** action (server-side single-flight, try/finally), appending post-reset evidence; an optional **Power-cycle USB** button covers a halted (faulted) Teensy whose USB can no longer accept the bootloader request.
 
-**Tech Stack:** Teensy 4.1 / OctoWS2811 (vendored, patched) / PlatformIO 6 (`framework-arduinoteensy` 1.160 on the Mac venv `~/.platformio/penv`, restored 2026-11-05), Python 3.11 FastAPI + pyserial, vanilla JS. Host-side C++ harness via `g++ -fsanitize=address,undefined`.
+**Tech Stack:** Teensy 4.1 / OctoWS2811 (vendored + patched) / PlatformIO 6 (venv `~/.platformio/penv`, restored 2026-11-05), Python 3.11 FastAPI + pyserial, vanilla JS, host C++ harness (`g++ -fsanitize=address,undefined`).
 
 ## Why the panel went dark/flashed (what we know)
 
 | Event | Evidence | Status |
 |---|---|---|
-| 2026-11-04 ~14:56 and 16:29: Teensy wedged (loop alive, POTS streaming, RX ignored; second time host writes timed out) | journal, raw serial probe | **Root cause unknown**; two plausible mechanisms found below. This plan instruments every path. |
-| ~4 % of frames rejected by Teensy | `bad_crc` 3882/100k | **Fixed** 49d8707: Pi COBS encoder dropped the 0x00 after a 254-byte run. |
-| 19:58 "black": brightness 33 % → 9 % LED output | frame dump | **Fixed** 7495e4f: brightness after gamma. |
-| Overnight white flashes while blacked out | user report; journal was non-persistent (now persistent) | Hypothesis: Pi auto-recovery (since removed by this plan) rebooted the Teensy; WS2812 data lines float during reset → strips latch garbage. |
+| 2026-11-04 ~14:56, 16:29: Teensy wedged (loop alive, POTS streaming, RX ignored; later host writes timed out) | journal, raw serial probe | **Root cause unknown**; mechanisms below are plausible. Every path is instrumented by this plan. |
+| ~4 % frames rejected by Teensy | `bad_crc` 3882/100k | **Fixed** 49d8707 (Pi COBS encoder 254-run bug). Same bug exists in the firmware encoder → Task 1. |
+| 19:58 "black": 33 % brightness → 9 % output | frame dump | **Fixed** 7495e4f. |
+| Overnight white flashes while blacked out | user report; journal lost (now persistent) | Hypothesis: Pi auto-recovery (removed by this plan) rebooted the Teensy; floating data lines → strips latch garbage. |
 
-**Found in the installed library/core sources while planning (all addressed in Task 1):**
-- `OctoWS2811::show()` spins `while (!dma3.complete())`; the firmware's blackout branch calls `clearAll(); leds.show();` every loop iteration unguarded by `busy()`, so during blackout each loop lasts one LED frame time (~10 ms @333 LEDs). With USB RX capped at 4096 B/loop that is ~400 KB/s capacity; 90 fps needs ~453 KB/s → Teensy falls behind → USB RX buffers fill → host writes time out (wedge #2's symptom).
-- `OctoWS2811::busy()` has `if (!dma3.complete()) ;` — an empty statement — so it reports ready on elapsed time alone; if DMA ever fails to complete, the next `show()` spins forever (loop dead, no evidence).
-- `handleConfig` → `reconfigureOcto()` re-inits TMR4/DMA, shows black, then writes EEPROM (flash programming with interrupts disabled) on **every** Pi reconnect, regardless of in-flight DMA.
-- Teensyduino's `unused_interrupt_vector()` (`startup.c:624+`) stores a crash record then **reboots after 8 s** — an automatic reset the owner forbids.
-- `usb_serial_write` blocks up to 120 ms when the host stops reading; `sendPacket` ignores short writes and writes the delimiter separately (truncated packets possible).
-- `verify_packet` computes `HEADER + payload_len + CRC` in 32-bit; `payload_len=0xffffffe5` wraps to 1 and passes, then CRC runs over ~4 GB.
+**Found in installed library/core sources (all addressed in Task 1):** blackout branch re-shows black every loop and `show()` spins on DMA, starving USB RX at 90 fps; `OctoWS2811::busy()` ignores unfinished DMA (`if (!dma3.complete()) ;`) so `show()` can spin forever; `handleConfig` re-inits TMR4/DMA, shows black and writes EEPROM (interrupts off, unbounded flash poll) on every reconnect; core `unused_interrupt_vector()` reboots 8 s after a fault; `Panic_Temp_isr` calls it directly; `usb_serial_write` blocks ≤120 ms under host backpressure and `sendPacket` ignores short writes; `verify_packet` length arithmetic can wrap; firmware `cobs_encode` has the 254-run bug; `runWatchdog` fades to black after 750 ms and the first resumed frame is applied with `fadeLevel=0` (black).
 
 **Hardware note (outside this plan):** data lines float while the Teensy is in reset/bootloader; a 10 kΩ pull-down from each WS2812 data line to GND keeps strips idle through any reset. Software cannot do this.
 
 ## Global Constraints
 
-- **No automatic reset of the Teensy, ever** — not from the Pi, not from a firmware watchdog, not from the core fault handler. Detection and evidence only; reset is a user action.
-- Every detected stall, write timeout, link loss, frame-progress stall, unexpected reboot and manual reset produces an incident bundle. Capture failures are logged and retried; they never kill a background task.
-- Protocol: `PacketHeader` 24 B, CRC32, COBS, STATS exactly 28 B; golden vectors in `pi/tests/test_protocol.py` keep passing. New capability = new packet type or zero-filled CAPS bytes; never a changed existing payload.
-- Blackout explicit (0x01/0x00). The Pi owns blackout/brightness/test-pattern state; the firmware never changes them on its own.
-- Never edit `/opt/ledfanatic/config/*` without user permission. Ask the user before the first firmware flash.
+- **No automatic reset of the Teensy, ever** — not from the Pi, not a firmware watchdog, not the core fault handler. Detection and evidence only; reset is a user action.
+- Every detected episode (stall, write timeout, link loss, frame/output stall, Teensy stall flag transition, unexpected reboot) and every manual reset produces an incident bundle. Capture failures are logged and retried, never propagate into background tasks, and never block a user-requested reset.
+- Protocol: `PacketHeader` 24 B, CRC32, COBS, STATS exactly 28 B; golden vectors keep passing. New capability = new packet type, zero-filled CAPS bytes, or the previously unused header `frame_id` on request/response packets.
+- Blackout explicit (0x01/0x00). The Pi owns blackout/brightness/test-pattern/geometry state; the firmware never changes them on its own and holds the last frame when frames stop.
+- Never edit `/opt/ledfanatic/config/*` without user permission. Ask the user before the first firmware flash and before installing `uhubctl`.
 - Service user `pillar` (dialout, systemd-journal after Task 3). No sudo in the service path.
-- Style: 2-space indent, descriptive names, comments say *why*. Firmware files use the existing 2-space style.
-- After every Pi change: `cd pi && PYTHONPATH=. pytest tests/ -q --deselect tests/test_matrix_rain_perf.py` (4 pre-existing failures: generative_palette, imported ambient_a_6, migrations metadata, width_policy spectrum), then `bash pi/scripts/deploy.sh ledfanatic.local`.
+- Style: 2-space indent, descriptive names, comments say *why*.
+- After every Pi change: `cd pi && PYTHONPATH=. pytest tests/ -q --deselect tests/test_matrix_rain_perf.py` (4 pre-existing failures: generative_palette, imported ambient_a_6, migrations metadata, width_policy spectrum) then `bash pi/scripts/deploy.sh ledfanatic.local`.
+
+**Accepted residuals (stated, not hidden):** (a) a CPU fault *before* `setup()` runs still hits the core's rebooting handler — the firmware has run for months without one, and such a fault would mean a firmware that never starts; (b) a halted (faulted) Teensy cannot execute the USB bootloader request; recovery is the USB power-cycle button (Pi 4 switches all its USB ports together) or unplugging; (c) USB controller error bits are acknowledged inside the core ISR and cannot be latched without patching the core — DIAG exports backlog, IRQ state and our own counters instead.
 
 ---
 
 ### Task 0: Toolchain, flash script, host-side C++ protocol harness
 
-PlatformIO venv restored on the Mac (`~/.platformio/penv`, PlatformIO 6.2.0; current firmware builds: 398 KB RAM1 free).
-
 **Files:** Create `pi/scripts/flash_teensy.sh`, `teensy/firmware/test_native/test_protocol.cpp`, `teensy/firmware/test_native/run.sh`; Test `pi/tests/test_firmware_protocol_native.py`.
 
-- [ ] **flash_teensy.sh** — build on Mac → scp hex → stop service → `stty -F /dev/ttyACM0 134` (HalfKay) → `sudo teensy_loader_cli --mcu=TEENSY41 -w -v` → start service → poll `/api/system/status` until `transport.caps.firmware_version` equals `FIRMWARE_VERSION` from `config.h` (exit 1 on mismatch/timeout 30 s). Usage `pi/scripts/flash_teensy.sh ledfanatic.local`.
-- [ ] **test_native** — compiles the *real* `teensy/firmware/src/protocol.cpp` + `include/protocol.h` with `g++ -std=gnu++17 -fsanitize=address,undefined -I include -DNATIVE_TEST` (config.h has no Arduino deps; `protocol.h` must compile without Arduino — guard any Arduino include behind `#ifndef NATIVE_TEST`). Cases: (a) golden vectors from `pi/tests/test_protocol.py` (copy the hex literals), (b) consecutive/empty delimiters, (c) 254-run-then-zero, (d) over-cap input (MAX_PACKET_BYTES+1 non-zero bytes) then delimiter → `overflowed()`, then a valid frame decodes, (e) exact-max frame, (f) `payload_len` ∈ {0xffffffe5, 0xffffffff, MAX_PAYLOAD_SIZE+1} → `VERIFY_LEN`, no sanitizer report, (g) interrupted block (code byte says 10, delimiter after 3) → `VERIFY_SHORT`. `run.sh` prints `OK <n cases>` and exits non-zero otherwise.
-- [ ] **pytest wrapper** `test_firmware_protocol_native.py`: `pytest.skip` if `g++` missing; runs `run.sh`, asserts exit 0.
-- [ ] Commit `build: flash script + native sanitizer harness for firmware protocol`.
+- [ ] **flash_teensy.sh** — build on Mac → scp hex → stop service → `stty -F /dev/ttyACM0 134` (HalfKay) → `sudo teensy_loader_cli --mcu=TEENSY41 -w -v` → start service → poll `/api/system/status` ≤30 s until `transport.caps.firmware_version == FIRMWARE_VERSION` from `config.h`; exit 1 otherwise.
+- [ ] **test_native** compiles the real `src/protocol.cpp` + `include/protocol.h` (`-DNATIVE_TEST` guards any Arduino include) with ASan/UBSan. Cases, both directions (C++ encode→Python/C++ decode and Python encode→C++ decode via vectors): golden vectors from `pi/tests/test_protocol.py`; `254*'A'+0x00+'B'` and runs of 253/254/255/508/509 ± trailing zeros (encoder fix); consecutive/empty delimiters; over-cap input then delimiter → `overflowed()`, then a valid frame decodes; exact-max frame; `payload_len ∈ {0xffffffe5, 0xffffffff, MAX_PAYLOAD_SIZE+1}` → `VERIFY_LEN`, no sanitizer report; interrupted block → `VERIFY_SHORT`; a 1200-byte CRASH-sized packet round-trips. `run.sh` prints `OK <n>`.
+- [ ] pytest wrapper skips without `g++`. Commit `build: flash script + native sanitizer harness for firmware protocol`.
 
 ---
 
-### Task 1: Firmware v1.3.0 — bounded loop, evidence, no self-reset
+### Task 1: Firmware v1.3.0 — bounded loop, evidence, nothing autonomous
 
-**Files:** Modify `teensy/firmware/include/config.h`, `include/protocol.h`, `src/protocol.cpp`, `src/main.cpp`; Create `teensy/firmware/lib/OctoWS2811/` (vendored copy of the installed library, one patch), `teensy/firmware/include/fault_handler.h`, `src/fault_handler.cpp`, `include/diag.h`.
+**Files:** Modify `include/config.h`, `include/protocol.h`, `src/protocol.cpp`, `src/main.cpp`, `platformio.ini`; Create `lib/OctoWS2811/` (vendored, patched), `include/diag.h`, `include/fault_handler.h`, `src/fault_handler.cpp`.
 
 **Interfaces produced (consumed by Task 2):**
-- `PKT_DIAG = 0x32`: request (empty) → response; **also pushed unsolicited every 1000 ms**. Payload = `DIAG_FIELDS (32) × uint32 LE` = 128 B, order exactly:
-  `0 uptime_ms, 1 reset_reason (SRC_SRSR raw), 2 boot_id, 3 rx_bytes, 4 pkt_ok, 5 bad_short, 6 bad_magic, 7 bad_version, 8 bad_len, 9 bad_crc, 10 oversize, 11 empty_packets, 12 last_pkt_type (non-DIAG), 13 ms_since_rx_byte, 14 ms_since_good_pkt (non-DIAG), 15 decoder_out_len (snapshot before this packet), 16 decoder_remaining, 17 loops_per_sec, 18 max_loop_us, 19 max_tx_us, 20 tx_dropped, 21 ms_since_show, 22 stall_flags, 23 stack_free, 24 frames_received, 25 frames_applied, 26 octo_begins, 27 eeprom_writes, 28 rx_backlog (Serial.available()), 29 usb_sts (USB1_USBSTS), 30 usb_irq (bit0 NVIC_IS_ENABLED(IRQ_USB1), bit1 NVIC_IS_PENDING), 31 last_op (breadcrumb enum)`.
-  `stall_flags`: bit0 RX bytes arriving but no valid packet ≥2 s; bit1 DMA not complete ≥1 s after show (LED path stalled); bit2 TX dropped for backpressure in the last second.
-  `last_op`: 1 rx, 2 handle_frame, 3 handle_config, 4 show, 5 send, 6 eeprom, 7 octo_begin, 8 pots.
-- `PKT_CRASH = 0x33`: request → response = ASCII crash report text from the previous boot (empty payload if none). Firmware reads it once at boot via `CrashReport` (core API over the retained struct at 0x2027FF80) into a 1 KB buffer.
-- `CAPS` bytes 24–27 = `uptime_ms`, 28–31 = `reset_reason`, 32–35 = `boot_id` (previously zero-filled; parser reads fixed offsets → backward compatible). `boot_id` = `ARM_DWT_CYCCNT ^ micros()` sampled in `setup()` (random enough to detect a reboot between two connects).
-- Reset-reason semantics (Pi decodes all masks, keeps combinations): bit0 power_on, bit1 software_or_lockup (`SCB_AIRCR` SYSRESETREQ — what the bootloader-reboot path and the core's fault reboot use), bit2 csu, bit3 user_pin, bit4 wdog1/2, bit5 jtag, bit6 jtag_sw, bit7 wdog3, bit8 tempsense.
+- **Request correlation:** for every request the Pi sets header `frame_id` = request id (nonzero, monotonic); the firmware echoes it in the response header (`CAPS, CONFIG_ACK/NAK, STATS, DIAG, CRASH`). Unsolicited packets (`POTS`, pushed `DIAG`) carry `frame_id = 0`. `build_packet(type, payload, len, out, max, uint32_t frame_id = 0)` gains the parameter.
+- `PKT_DIAG = 0x32` (request → response; **pushed every 1000 ms**). `DIAG_FIELDS = 40` × uint32 LE = 160 B, order:
+  `0 uptime_ms, 1 reset_reason (SRC_SRSR raw at boot), 2 boot_id, 3 rx_bytes, 4 pkt_ok, 5 bad_short, 6 bad_magic, 7 bad_version, 8 bad_len, 9 bad_crc, 10 oversize, 11 empty_packets, 12 last_pkt_type (non-probe), 13 ms_since_rx_byte, 14 ms_since_good_pkt (non-probe), 15 live_decoder_out_len, 16 live_decoder_remaining, 17 last_reject_reason, 18 last_reject_len, 19 last_reject_ms_ago, 20 loops_per_sec, 21 max_loop_us, 22 max_tx_us, 23 tx_dropped, 24 ms_since_show_start, 25 stall_active, 26 stall_latched, 27 stack_free, 28 frames_received, 29 frames_applied, 30 frames_pending_dropped (STATS droppedPending), 31 octo_begins, 32 rx_backlog (Serial.available()), 33 usb_sts (USB1_USBSTS), 34 usb_irq (bit0 enabled, bit1 pending), 35 last_op, 36 dma3_csr_es (vendored lib `debugState`), 37 tmr4_enbl_sctrl0, 38 crash_present (0/1), 39 geometry_generation`.
+  `stall_active`/`stall_latched` bits: 0 RX bytes arriving but no valid packet ≥2 s; 1 DMA incomplete ≥1 s after a show; 2 TX dropped in the last second. *Active* bits clear when the condition clears (valid packet / DMA complete / a second with no drops); *latched* bits are set-only since boot.
+  `last_op` breadcrumb: 1 rx, 2 handle_frame, 3 handle_config, 4 geometry_commit, 5 show, 6 send, 7 pots, 8 octo_begin.
+- `PKT_CRASH = 0x33` request → response = raw retained fault record copied at boot: `uint32 valid, uint32 src_gpr5, uint32 src_srsr, 128 B arm_fault_info_struct bytes` (the core's struct at `0x2027FF80`, CRC-validated by the firmware; `valid=0` → zeros). The Pi formats it (cfsr/hfsr/mmfar/bfar/pc/lr/xpsr/ipsr/temp/time) — no `CrashReport.printTo()` (it clears the record and can power the board off).
+- `CAPS` bytes 24–27 `uptime_ms`, 28–31 `reset_reason`, 32–35 `boot_id`, 36 `crash_present`, 37–40 `geometry_generation` (all previously zero-filled).
+- `boot_id`: `DMAMEM` retained `{magic, counter}` (survives soft reset; `counter++` per boot, re-seeded from `ARM_DWT_CYCCNT ^ micros() ^ (analogRead(A10)<<20) ^ (analogRead(A11)<<10) ^ analogRead(A12)` when magic is invalid, i.e. after power-on) → `boot_id = (counter << 12) ^ (seed & 0xFFF)`. Pi also treats `uptime_ms` rollback as a reboot (fallback).
+- `geometry_generation`: increments on each committed CONFIG; `CONFIG_ACK` payload (previously empty) = `uint32 geometry_generation` of the *committed* geometry.
 
-- [ ] **Step 1: Vendor and patch OctoWS2811.** `cp -r ~/.platformio/packages/framework-arduinoteensy/libraries/OctoWS2811 teensy/firmware/lib/`; in `lib/OctoWS2811/OctoWS2811_imxrt.cpp::busy()` replace `if (!dma3.complete()) ;` with `if (!dma3.complete()) return 1;`. Remove `OctoWS2811` from `lib_deps` in `platformio.ini` so the local copy wins. Add a one-line `lib/OctoWS2811/LEDFANATIC_PATCH.md` naming the change. Build; confirm success.
+- [ ] **Step 1: Vendor + patch OctoWS2811.** Copy the installed library to `lib/OctoWS2811/`; remove it from `lib_deps`. Patches (documented in `lib/OctoWS2811/LEDFANATIC_PATCH.md`): `busy()`: `if (!dma3.complete()) return 1;`; add `void debugState(uint32_t* csr_es, uint32_t* tmr)` exporting `DMA_ES`, `dma3.TCD->CSR`, `TMR4_ENBL`, `TMR4_SCTRL0`; add `void parkOutputsIdle()` = the first part of `show()` (disable TMR4 channels, force outputs low, `dma3.disable()`) for use from the fault handler.
 
-- [ ] **Step 2: protocol.h/.cpp — decoder overflow state, verify reasons, overflow-proof length check.**
-  - `COBSDecoder`: add `bool _overflow` (set when `_out_len == sizeof(_output)` on any store; cleared in `reset()`), accessors `overflowed()`, `remaining()`. Buffer size becomes `MAX_PACKET_BYTES + 1` (exact cap; one spare so "== cap" is detectable).
-  - `enum VerifyResult : uint8_t { VERIFY_OK, VERIFY_SHORT, VERIFY_MAGIC, VERIFY_VERSION, VERIFY_LEN, VERIFY_CRC }`.
+- [ ] **Step 2: protocol.h/.cpp.** `COBSDecoder`: `_overflow` flag (set when a store would exceed `MAX_PACKET_BYTES`; cleared by `reset()`), `overflowed()`, `remaining()`; buffer `MAX_PACKET_BYTES + 1`. `enum VerifyResult : uint8_t {VERIFY_OK, VERIFY_SHORT, VERIFY_MAGIC, VERIFY_VERSION, VERIFY_LEN, VERIFY_CRC}`; `verify_packet` returns it and bounds before arithmetic:
   ```c
-  VerifyResult verify_packet(const uint8_t* data, size_t len, PacketHeader* header, const uint8_t** payload) {
-    if (len < HEADER_SIZE + CRC_SIZE) return VERIFY_SHORT;
-    memcpy(header, data, sizeof(PacketHeader));
-    if (header->magic[0] != MAGIC_0 || header->magic[1] != MAGIC_1 ||
-        header->magic[2] != MAGIC_2 || header->magic[3] != MAGIC_3) return VERIFY_MAGIC;
-    if (header->version != PROTOCOL_VERSION) return VERIFY_VERSION;
-    // Bound BEFORE any arithmetic: a corrupt 32-bit length must not wrap.
-    if (header->payload_len > MAX_PAYLOAD_SIZE) return VERIFY_LEN;
-    if (len != HEADER_SIZE + (size_t)header->payload_len + CRC_SIZE) return VERIFY_LEN;
-    uint32_t computed = crc32(data, HEADER_SIZE + header->payload_len);
-    uint32_t stored; memcpy(&stored, data + HEADER_SIZE + header->payload_len, 4);
-    if (computed != stored) return VERIFY_CRC;
-    *payload = data + HEADER_SIZE;
-    return VERIFY_OK;
-  }
+  if (len < HEADER_SIZE + CRC_SIZE) return VERIFY_SHORT;
+  ... magic/version ...
+  if (header->payload_len > MAX_PAYLOAD_SIZE) return VERIFY_LEN;          // before any addition
+  if (len != HEADER_SIZE + (size_t)header->payload_len + CRC_SIZE) return VERIFY_LEN;
   ```
-  (Exact-length equality is correct: the Pi encoder emits exactly `header+payload+crc`; the Python golden vectors confirm.)
+  `cobs_encode`: fix the 254-run bug exactly as the Pi fix (49d8707): a full 254-byte block emits `0xFF` and must **not** consume a following zero. `build_packet` takes `frame_id`.
 
-- [ ] **Step 3: fault_handler.{h,cpp} — halt, don't reboot.** In `setup()` first line: `install_fault_handlers();` which, for vector indices 3–6 (HardFault, MemManage, BusFault, UsageFault), 7–10, 12, 13 and every `i ≥ 16` whose `_VectorsRam[i] == unused_interrupt_vector`, sets `_VectorsRam[i] = fault_halt;` (`extern "C" void unused_interrupt_vector(void); extern void (*_VectorsRam[])(void);`). `fault_halt` copies the core's record-storing body (`startup.c:624–690`: ipsr, stack regs, CFSR/HFSR/MMFAR/BFAR, pc/lr/xpsr, time, len, crc into `arm_fault_info_struct*` at `0x2027FF80`) and then `for (;;) { asm volatile("wfi"); }` — no `SCB_AIRCR`. Interrupts stay disabled; USB stops; the Pi sees link loss → incident; the record survives the manual bootloader reset (it is in DMAMEM/OCRAM, not cleared by soft reset) and is served via `PKT_CRASH` on the next boot. Verification: temporary `#ifdef FAULT_INJECT` in handleTestPattern for pattern id 0xFE → `*(volatile uint32_t*)0xFFFFFFF0 = 1;` — build once with `-DFAULT_INJECT`, trigger, confirm the Teensy stays down > 30 s, reset manually, confirm `PKT_CRASH` text; rebuild without the flag.
+- [ ] **Step 3: fault_handler.{h,cpp} — park LEDs, preserve record, halt; never reset.**
+  `install_fault_handlers()` (first statement of `setup()`): `#include <imxrt.h>` (uses the core's `volatile` `_VectorsRam` declaration; no redeclaration). For `i` in `[1, NVIC_NUM_INTERRUPTS + 16)`: if `_VectorsRam[i] == unused_interrupt_vector` → `fault_halt` (covers NMI 2, HardFault 3, MemManage 4, BusFault 5, UsageFault 6, 7–10, SVC 11, 12, 13, every unattached IRQ; PendSV 14/SysTick 15 are core-owned and never point at it). Then **`_VectorsRam[IRQ_TEMPERATURE_PANIC + 16] = fault_halt`** (tempmon's `Panic_Temp_isr` calls the rebooting handler directly; a thermal panic still halts output safely).
+  `fault_halt()`: `__disable_irq();` store the same record the core stores (`startup.c:624–690` body: ipsr, stacked regs, CFSR/HFSR/MMFAR/BFAR, pc/lr/xpsr, temp, time, len, crc at `0x2027FF80`); `leds.parkOutputsIdle();` (timers off, outputs forced low, DMA disabled → strips hold their last complete frame; nothing flashes); `for (;;) asm volatile("wfi");`. USB stops → the Pi's health check and write timeouts raise an incident within ≤15 s (Task 2 detects *timeouts*, not only disappearance).
+  Verification: build once with `-DFAULT_INJECT` (test pattern id 0xFE → `*(volatile uint32_t*)0xFFFFFFF0 = 1;` from the loop, during an active frame stream and once during blackout): panel must freeze on its last frame without flashing; the Pi must raise an incident; the UI reset must report "not reachable"; **Power-cycle USB** (Task 3) must recover it; `PKT_CRASH` on the next connect must carry the record. Rebuild without the flag.
 
-- [ ] **Step 4: diag.h + main.cpp globals.** `struct Diag` with the fields of the DIAG layout plus internals: `verifyFail[6]`, `loopsThisSecond`, `loopStartUs`, `lastShowStartMs`, `showPending` (true between `show()` and `dma complete`), `txDroppedThisSecond`, `lastPushMs`. `stackFreeEstimate()` = `(uint32_t)&local - (uint32_t)&_ebss`. `volatile uint8_t lastOp` breadcrumb set at the start of each phase.
+- [ ] **Step 4: diag.h + globals.** `struct Diag` with the DIAG fields plus internals (`verifyFail[6]`, `loopsThisSecond`, `loopStartUs`, `showPending`, `showStartMs`, `txDroppedThisSecond`, `lastReject{reason,len,ms}`, `lastOp`). `stackFreeEstimate()` = `(uint32_t)&local - (uint32_t)&_ebss`. Retained `DMAMEM struct {uint32_t magic, counter;} bootGen`. `crashRecord` copy made in `setup()` **before** anything else touches the region; after copying, zero the record's `len`/`crc` so the next boot does not re-report it; `SRC_SRSR` captured then cleared with `SRC_SRSR = v & ~SRC_SRSR_TEMPSENSE_RST_B` (w1c bits cleared by writing 1, the w0c tempsense bit cleared by writing 0).
 
-- [ ] **Step 5: RX — bounded, non-blocking, decoder reset on every delimiter.**
+- [ ] **Step 5: RX — bounded, non-blocking, reset on every delimiter, probes don't overwrite evidence.**
   ```c
   lastOp = OP_RX;
-  for (int n = 0; n < USB_READ_CHUNK; n++) {       // USB_READ_CHUNK raised to 8192
-    int c = Serial.read();                          // never Stream::readBytes (1 s timeout semantics)
+  for (int n = 0; n < USB_READ_CHUNK; n++) {          // 8192
+    int c = Serial.read();                             // never Stream::readBytes (timeout semantics)
     if (c < 0) break;
     diag.rxBytes++; diag.lastRxByteMs = millis();
     if (c == 0) {
-      // Snapshot decoder state BEFORE dispatch so DIAG can report the state that preceded a failure
-      diag.decoderOutLenSnap = decoder.length(); diag.decoderRemainingSnap = decoder.remaining();
-      if (decoder.overflowed()) diag.oversize++;
+      if (decoder.overflowed()) { diag.oversize++; noteReject(REJECT_OVERSIZE, decoder.length()); }
       else if (decoder.length() == 0) diag.emptyPackets++;
       else handlePacket(decoder.data(), decoder.length());
-      decoder.reset();                                // ALWAYS — no byte pattern can leave stale state
+      decoder.reset();                                   // ALWAYS
     } else decoder.feed((uint8_t)c);
   }
   ```
-  `handlePacket`: `v = verify_packet(...)`; on failure `diag.verifyFail[v]++` (`badCrc` also increments STATS for compatibility) and return; on success `diag.pktOk++`; **only if type != PKT_DIAG && type != PKT_CRASH**: `lastPktType`, `lastGoodPktMs` updated (probes must not overwrite the evidence they read). New cases: `PKT_DIAG → sendDiag()`, `PKT_CRASH → sendCrash()`. `PKT_TEST_PATTERN` with `0xFF` **no longer clears `pendingFrameReady`** (leaving test mode must not drop a queued frame).
+  `handlePacket`: `v = verify_packet(...)`; failure → `diag.verifyFail[v]++`, `noteReject(v, len)` (stores reason, len, millis), `stats.badCrc++` only for `VERIFY_CRC` (STATS compatibility), return. Success → `diag.pktOk++`; **if type ∉ {DIAG, CRASH, PING}**: `lastPktType`, `lastGoodPktMs` updated (probes read evidence, they must not become it). `PKT_TEST_PATTERN` with `0xFF` no longer clears `pendingFrameReady`. Remove `runWatchdog()` and all `fadeLevel` code: the Pi owns output; when frames stop the panel holds the last frame (no fade-to-black, no black first frame on resume). `handleHello`: only `sendCaps(req_id)`.
 
-- [ ] **Step 6: LED path — never block, never show black on reconnect.**
+- [ ] **Step 6: LED path — DMA-aware, geometry commit first, never blocks.**
   ```c
-  if (!leds.busy()) {                      // patched busy(): true while DMA incomplete
-    if (showPending) { showPending = false; }
-    if (blackout) {
-      if (!blackShown) { clearAll(); leds.show(); blackShown = true; showPending = true; lastShowStartMs = millis(); }
-    } else if (activeTestPattern >= 0) { runTestPattern(); leds.show(); showPending = true; lastShowStartMs = millis(); fpsCounter++; }
-    else if (pendingFrameReady) { applyPendingFrame(); leds.show(); showPending = true; lastShowStartMs = millis(); /* existing bookkeeping */ }
-  } else if (showPending && millis() - lastShowStartMs > 1000) {
-    diag.stallFlags |= STALL_DMA;          // report only; loop keeps servicing USB
-  }
+  bool idle = !leds.busy();                       // patched: false while DMA incomplete
+  if (idle) {
+    showPending = false;
+    if (geometryStaged) commitGeometry();          // priority over any new show
+    if (blackout) { if (!blackShown) startShow(SHOW_BLACK); }
+    else if (activeTestPattern >= 0) startShow(SHOW_TEST);
+    else if (pendingFrameReady) startShow(SHOW_FRAME);
+  } else if (showPending && millis() - showStartMs > 1000) setStall(STALL_DMA);
+  if (idle) clearStall(STALL_DMA);
   ```
-  `blackShown = false` whenever `blackout` is set true (PKT_BLACKOUT case). `handleHello`: remove `blackout = false;` and `activeTestPattern = -1;`. Delete the startup dim-green flash in `setup()`.
+  `startShow(kind)`: `lastOp = OP_SHOW; clearAll()/runTestPattern()/applyPendingFrame(); leds.show(); showPending = true; showStartMs = millis();` plus the existing bookkeeping for frames (`framesApplied`, `fpsCounter`, `pendingFrameReady=false`) and `blackShown = true` for black. `blackShown = false` whenever `PKT_BLACKOUT` sets `blackout=true`. Delete the startup dim-green flash.
 
-- [ ] **Step 7: CONFIG — stage geometry; re-init only when changed, only when idle; no black frame; EEPROM only when idle.**
-  ```c
-  // in handleConfig after validation:
-  bool changed = memcmp(ledsPerOutput, newLeds, sizeof(newLeds)) != 0;
-  if (changed) { memcpy(stagedLeds, newLeds, sizeof(newLeds)); geometryStaged = true; }
-  configReceived = true; sendAck();
-  // in loop(), before the LED path:
-  if (geometryStaged && !leds.busy() && !showPending) {
-    lastOp = OP_OCTO_BEGIN; memcpy(ledsPerOutput, stagedLeds, sizeof(stagedLeds)); recalcGeometry();
-    leds.begin(maxLedsPerStrip, displayMemory, drawingMemory, octoConfig); diag.octoBegins++;   // no clearAll/show: next frame fills everything
-    lastOp = OP_EEPROM; saveConfigToEEPROM(); diag.eepromWrites++;   // LEDs idle → interrupts-off flash write is harmless
-    pendingFrameReady = false; geometryStaged = false;
-  }
-  ```
-  `reconfigureOcto()` keeps its startup use only (no `clearAll(); show();` there either — the first frame or blackout show handles it).
+- [ ] **Step 7: CONFIG — staged transaction, ACK after commit, no EEPROM at runtime, no black frame.**
+  `handleConfig` (after validation): `memcpy(stagedLeds, newLeds); stagedReqId = req_id; geometryStaged = true;` (a newer CONFIG simply replaces the staged one). `commitGeometry()` (runs only when `idle`, before any show): if `memcmp(stagedLeds, ledsPerOutput) != 0` → `memcpy; recalcGeometry(); lastOp = OP_OCTO_BEGIN; leds.begin(maxLedsPerStrip, displayMemory, drawingMemory, octoConfig); diag.octoBegins++; pendingFrameReady = false;` (no `clearAll(); show()` — the next frame covers every pixel); always `geometryGeneration++; configReceived = true; geometryStaged = false; sendAck(stagedReqId, geometryGeneration);`. Frames whose length ≠ `frameSize` are counted `badFrame` as today. **Delete `saveConfigToEEPROM()` and `loadConfigFromEEPROM()`**: the Pi sends CONFIG on every connect and (Task 2) sends no frames until it is committed; a runtime flash write is an unbounded interrupts-off wait with no benefit. `setup()` calls `leds.begin()` with defaults only.
 
-- [ ] **Step 8: TX — non-blocking, atomic framed writes, backpressure counted.**
+- [ ] **Step 8: TX — non-blocking, atomic framed write, backpressure counted.**
   ```c
-  void sendPacket(uint8_t type, const uint8_t* payload, size_t len) {
-    uint8_t raw[HEADER_SIZE + 1024 + CRC_SIZE];
-    size_t rawLen = build_packet(type, payload, len, raw, sizeof(raw)); if (!rawLen) return;
+  void sendPacket(uint8_t type, const uint8_t* payload, size_t len, uint32_t req_id) {
+    uint8_t raw[HEADER_SIZE + 256 + CRC_SIZE];                       // largest response: CRASH (140 B), DIAG (160 B)
+    size_t rawLen = build_packet(type, payload, len, raw, sizeof(raw), req_id); if (!rawLen) return;
     uint8_t encoded[sizeof(raw) + sizeof(raw) / 254 + 2];
     size_t encLen = cobs_encode(raw, rawLen, encoded, sizeof(encoded) - 1); if (!encLen) return;
-    encoded[encLen++] = 0x00;                                   // delimiter inside the same write
-    if (Serial.availableForWrite() < (int)encLen) { diag.txDropped++; diag.txDroppedThisSecond++; return; }  // host not reading: never block the loop
+    encoded[encLen++] = 0x00;                                          // delimiter in the same write
+    if (Serial.availableForWrite() < (int)encLen) { diag.txDropped++; diag.txDroppedThisSecond++; return; }  // never block on a host that stopped reading
     lastOp = OP_SEND; uint32_t t0 = micros();
-    size_t written = Serial.write(encoded, encLen);
-    if (written != encLen) diag.txDropped++;                    // availableForWrite guaranteed room; count anyway
+    if (Serial.write(encoded, encLen) != encLen) diag.txDropped++;
     uint32_t dt = micros() - t0; if (dt > diag.maxTxUs) diag.maxTxUs = dt;
   }
   ```
-  Per-second housekeeping (existing FPS block): `loopsPerSec = loopsThisSecond; loopsThisSecond = 0; if (txDroppedThisSecond) stallFlags |= STALL_TX_BACKPRESSURE; else stallFlags &= ~STALL_TX_BACKPRESSURE; txDroppedThisSecond = 0;` and **push `sendDiag()`** (unsolicited, 128 B/s). RX-stall flag: `if (rxBytes && now - lastRxByteMs < 500 && now - lastGoodPktMs > 2000) stallFlags |= STALL_RX_NO_VALID_PACKET;`.
+  Once-per-second block: `loopsPerSec`, `STALL_TX` active ⇐ `txDroppedThisSecond > 0`, RX-stall active ⇐ `rxBytes && now - lastRxByteMs < 500 && now - lastGoodPktMs > 2000` (cleared when a valid non-probe packet arrives), `sendDiag(0)` push.
 
-- [ ] **Step 9: CAPS/boot.** `setup()`: `install_fault_handlers(); diag.resetReason = SRC_SRSR; SRC_SRSR = diag.resetReason /* w1c */; diag.bootId = ARM_DWT_CYCCNT ^ micros(); if (CrashReport) { CrashReport.printTo(crashBuf); }` (`crashBuf` is a 1 KB `Print` subclass). `sendCaps()` fills bytes 24–35 as specified.
-
-- [ ] **Step 10: Build, native harness, flash, verify.** `bash teensy/firmware/test_native/run.sh` → `OK`; `bash pi/scripts/flash_teensy.sh ledfanatic.local` → `firmware: 1.3.0 OK`; journal shows `CONFIG ACK received`; ask the user to confirm the panel shows the current effect with no flash. Commit `firmware 1.3.0: bounded RX/TX/LED paths, DIAG push, halting fault handler, no re-init on reconnect`.
+- [ ] **Step 9: Build, harness, flash, verify.** `test_native/run.sh` → `OK`; `flash_teensy.sh` → `firmware: 1.3.0 OK`; journal `CONFIG ACK received`; user confirms the current effect is showing with no flash; `GET /api/teensy/diag` (after Task 2) shows `stall_active = 0`. Commit `firmware 1.3.0: bounded RX/TX/LED paths, DIAG push, request ids, halting fault handler, nothing autonomous`.
 
 ---
 
-### Task 2: Pi protocol + transport — dispatcher, trace, detection only
+### Task 2: Pi protocol + transport — writer, dispatcher, trace, detection only
 
-**Files:** Modify `pi/app/models/protocol.py`, `pi/app/transport/usb.py`; Create `pi/app/transport/trace.py`, `pi/app/transport/dispatcher.py`; Tests `pi/tests/test_protocol.py`, `test_transport_trace.py`, `test_transport_dispatch.py`, `test_transport_detection.py` (replaces `test_transport_recovery.py`).
+**Files:** Modify `pi/app/models/protocol.py`, `pi/app/transport/usb.py`; Create `pi/app/transport/trace.py`, `pi/app/transport/dispatcher.py`, `pi/app/transport/detection.py`; Tests `test_protocol.py`, `test_transport_trace.py`, `test_transport_dispatch.py`, `test_transport_detection.py` (replaces `test_transport_recovery.py`).
 
 **Interfaces:**
-- `PacketType.DIAG = 0x32`, `CRASH = 0x33`; `DIAG_FIELDS = 32`; `parse_diag_payload(bytes) -> dict|None` (names = Task 1 list, snake_case) + `reset_reason_text: str` (joined names of all set `SRC_SRSR` bits, e.g. `"power_on"`, `"software_or_lockup"`, `"power_on+jtag"`, `"unknown(0x200)"`), `stall_flags_text: list[str]`, `last_op_text`. `parse_caps_payload` additionally returns `uptime_ms`, `reset_reason`, `boot_id` (0 when zero-filled by old firmware).
-- `TransportTrace(maxlen=4000)`: `.tx(ptype, nbytes, write_ms, frame_id=None, ok=True)`, `.rx(ptype, nbytes)`, `.rejected(reason, head_hex)` (first 64 B of an undecodable/invalid chunk), `.event(kind, **detail)`, `.snapshot()`, `.freeze() -> list` (copy taken *before* any probe runs, so probes don't mutate the evidence), `.summary()`.
-- `RxDispatcher`: the **only** reader once connected. `drain()` reads all packets under the write lock (brief), then *outside* the lock: POTS → `on_pots` callback, DIAG → `transport.last_teensy_diag` (+ `trace.rx`), CRASH/STATS/CAPS/CONFIG_ACK/NAK → resolve `waiters[ptype]` future if any, else `trace.event('unsolicited', ...)`. `async request(ptype_req, ptype_resp, payload=b'', timeout=0.5)`: register future → write under lock (≤ a few ms) → `await asyncio.wait_for(fut, timeout)` **without** the lock → on timeout remove waiter, return None. Cancellation-safe: writes happen in `to_thread` only for FRAME; command writes are synchronous short writes. `send_config`, `request_stats`, `request_diag`, `request_crash` all use `request()`. Handshake (CAPS) also uses it (`drain()` becomes active immediately after port open; the `caps is None` guard is removed because the dispatcher now owns CAPS routing).
-- Detection (all produce exactly one `incident` per episode via `on_incident(kind, detail)`, never a reboot): `stall` (3 missed PINGs | 2 failed handshakes with port present | CONFIG timeout); `write_timeout` (`send_frame` raises `SerialTimeoutException` → `connected=False`, incident with the exception, the last 50 trace entries and `last_teensy_diag`); `link_lost` (port disappears while `connected`); `frame_stall` (over 10 s not in blackout/test mode: Pi `frames_sent` grew ≥ 100 but Teensy `frames_received` (from pushed DIAG) grew 0); `unexpected_reboot` (on connect: CAPS `boot_id` differs from the previous connection's and the Pi did not initiate a reset → incident includes the *previous* trace/DIAG preserved before replacement and the `PKT_CRASH` text); `teensy_stall_flag` (pushed DIAG shows nonzero `stall_flags` or growth in `oversize`/`bad_*`/`tx_dropped`; one incident per flag-set per 10 min). Health check keeps PING every 5 s; DIAG now arrives pushed so no DIAG polling.
-- `transport.stalled: dict|None` latched on stall/write_timeout/link_lost/frame_stall, cleared on a healthy PING after a successful HELLO+CONFIG. `transport.maintenance: bool` — while true the reconnect loop does not open the port (set by Task 3 around reset). `async reboot()`: disconnect under lock + `reboot_teensy(port)` (existing module); **called only by `TeensyMaintenance.reset`**.
-- `on_incident` is invoked via `asyncio.create_task(_safe(cb))` with try/except + `logger.exception`; a failing recorder never propagates into `reconnect_loop`/`drain`.
+- protocol: `PacketType.DIAG=0x32, CRASH=0x33`; `DIAG_FIELDS=40`; `parse_diag_payload`, `parse_crash_payload` (→ dict with decoded cfsr/hfsr/… and `text`), `parse_caps_payload` adds `uptime_ms, reset_reason, boot_id, crash_present, geometry_generation`; `parse_config_ack_payload → geometry_generation|None`; `decode_reset_reason(raw) -> str` (all `SRC_SRSR_*` masks joined with `+`, `unknown(0x..)` for undefined bits); `build_packet(..., frame_id=)` already exists.
+- `TransportTrace(byte_budget=512*1024, event_maxlen=4000)`: events `tx(ptype, req_id, nbytes_requested, nbytes_written, write_ms, ok, raw: bytes)`, `rx(ptype, req_id, raw: bytes)`, `rejected(reason, raw: bytes)`, `event(kind, **detail)`. Raw chunks live in a byte-budget ring (oldest evicted); each event records `raw_offset/len/truncated`. `freeze() -> dict` deep-copies events + raw hex **before any probe runs**.
+- `SerialWriter` (in `usb.py`): the only code that calls `serial.write`. `async write(framed: bytes, *, deadline: float) -> int`: acquires the lock (deadline includes acquisition), runs `await asyncio.shield(asyncio.to_thread(serial.write, framed))` so a cancelled caller cannot release the lock while the worker is still writing; records `trace.tx`; `SerialTimeoutException` → `trace.event('write_timeout')`, `connected=False`, raises `LinkError`.
+- `RxDispatcher`: the only reader after port open. `drain()` (pots loop, 50 ms) reads under the lock then routes outside it: `POTS → on_pots`; `DIAG req_id==0 → last_teensy_diag (+ detection.on_diag)`; any response with `req_id≠0 → waiters.pop(req_id)` (resolve; CONFIG_NAK resolves the CONFIG waiter with `None`); unmatched → `trace.event('unsolicited')`. `async request(ptype, payload=b'', timeout=0.5) -> (header, payload)|None`: `req_id = next_id(); fut = waiters[req_id] = Future()`; `await writer.write(...)`; `await wait_for(fut, timeout)`; on timeout `waiters.pop(req_id, None)` only if it is still that future. Late replies after timeout are traced, not delivered. Concurrent requests never collide (unique ids).
+- Connection state machine (replaces `connected`/`_last_config_ack` logic): `CLOSED → OPEN (port open, dispatcher running) → HELLO_OK (CAPS) → CONFIGURED (CONFIG_ACK with new geometry_generation) → READY (brightness pinned, blackout restored)`. `send_frame` sends **only in READY** and only the raw format (legacy 3-byte format removed; firmware 1.3.0 always committed before READY). Layout changes re-run CONFIG and drop to `CONFIGURED` until ACK. `get_status()` exposes `state`, `boot_id`, `geometry_generation`.
+- `detection.py` — `LinkDetector(transport, on_incident)` evaluates every 1 s and on events; one incident per *episode* (opens on transition into a bad state, closes when the clearing condition holds; a new episode after close creates a new incident):
+  - `stall`: 3 missed PINGs (every 5 s) | 2 failed handshakes with the port present | CONFIG not committed within 3 s.
+  - `write_timeout`: `LinkError` from the writer.
+  - `link_lost`: port disappears from any non-CLOSED state.
+  - `output_stall`: in READY, not blackout/test, over a same-boot 10 s window: Pi frames written ≥100 but Teensy `frames_received` Δ=0 **or** `frames_applied` Δ=0; also `pushed DIAG age > 3 s` while READY (Teensy TX dead). Clears only when both deltas progress again.
+  - `teensy_flag`: `stall_active` gains a bit, or `oversize/bad_*/tx_dropped` grow; closes when `stall_active` loses the bit / counters stop growing for 60 s.
+  - `unexpected_reboot`: on CAPS, `boot_id` ≠ previous connection's **or** DIAG `uptime_ms` < previous, and no `ExpectedReboot(prev_boot_id, expires)` is armed for that previous boot → incident with the previous connection's frozen trace/DIAG/CAPS and the `PKT_CRASH` record. `ExpectedReboot` is armed by Task 3 only, consumed by the first matching new boot, expires after 20 s, cleared in `finally`.
+  - `transport.stalled` = the open episode (kind, reason, since, incident id) for the UI; cleared when the episode closes.
+- `on_incident` runs via `asyncio.create_task(_isolated(cb))` with `try/except logger.exception`.
 
-Tests: DIAG/CAPS parsing incl. every reset bit and combination; trace maxlen/freeze/rejected; dispatcher: concurrent `send_frame` + `request_stats` never hold the lock while waiting (assert lock is free during the await via a probe task), unsolicited DIAG cached, waiter timeout cleans up, POTS routed; detection: each trigger fires `on_incident` exactly once per episode, a raising callback leaves the loop alive, `reboot_teensy` is **never** awaited by any detection path, `boot_id` change → `unexpected_reboot` with previous trace attached, `frame_stall` not raised during blackout.
+Tests: parsing (every reset bit + combos, CAPS extension, CONFIG_ACK generation); trace byte budget/eviction/truncation/freeze; writer: lock held through a cancelled write (probe task cannot acquire until the worker finishes), timeout → `LinkError`; dispatcher: two concurrent STATS resolve to their own callers, late reply after timeout is traced not delivered, CONFIG_NAK resolves `None`, pushed DIAG with req_id 0 updates the cache while a solicited DIAG resolves its waiter; state machine: `send_frame` refused before READY, reconnect to an already-configured Teensy sends no frame until CONFIG ACK; detection: each kind opens exactly one incident per episode, re-asserting within an episode adds no incident, clear + re-assert opens a new one, `frames_received` growing with `frames_applied` flat → `output_stall`, blackout suppresses `output_stall`, `boot_id` change with no `ExpectedReboot` → `unexpected_reboot` carrying the previous trace, with an armed matching `ExpectedReboot` → none, expired → incident; a raising callback leaves drain/reconnect alive; **`reboot_teensy` is never awaited by any detection path**.
 
-Commit: `transport: RX dispatcher with futures, bounded trace, stall/write-timeout/link-loss/reboot detection (no auto-reset)`.
+Commit: `transport: serialized writer, request-id dispatcher, READY gating, byte-budget trace, episode detection (no auto-reset)`.
 
 ---
 
-### Task 3: IncidentRecorder + manual reset (single-flight) + API
+### Task 3: IncidentRecorder, manual reset (single-flight), USB power-cycle, API
 
-**Files:** Create `pi/app/core/incidents.py`, `pi/app/core/teensy_maintenance.py`, `pi/app/api/routes/teensy.py`; Modify `pi/app/api/server.py`, `deps.py`, `main.py` (`transport.on_incident = incidents.capture_event`; `transport.on_pots` = pots loop), `pi/scripts/setup.sh` (`usermod -aG systemd-journal pillar`; `mkdir -p /opt/ledfanatic/logs/incidents`); Tests `pi/tests/test_incidents.py`, `test_teensy_routes.py`.
+**Files:** Create `pi/app/core/incidents.py`, `pi/app/core/teensy_maintenance.py`, `pi/app/api/routes/teensy.py`; Modify `server.py`, `deps.py`, `main.py`, `pi/scripts/setup.sh` (`usermod -aG systemd-journal pillar`; `mkdir -p /opt/ledfanatic/logs/incidents`; optional `apt-get install uhubctl` + sudoers line `pillar ALL=(ALL) NOPASSWD: /usr/sbin/uhubctl` — only with the user's OK); Tests `test_incidents.py`, `test_teensy_maintenance.py`, `test_teensy_routes.py`.
 
 **Interfaces:**
-- `IncidentRecorder(transport, render_state, state_manager, brightness_engine, logs_dir)`
-  - `async capture(trigger, reason, extra=None) -> str` (incident id `YYYYmmdd-HHMMSS-<trigger>-<6 hex>`; file created with `open(..., 'x')`, written to `.tmp` then `os.replace`). Bundle `schema_version: 1`: `trigger, reason, at, transport.get_status(), stalled, last_stats, last_diag (pushed), trace (frozen first), live_diag (request_diag 0.5 s; null + 'timeout' marker on failure), crash_text (request_crash), render {scene, params, target_fps, actual_fps, blackout, brightness_effective}, system {uptime, loadavg, mem_available_kb}, journal_service (journalctl -u ledfanatic -n 300), journal_kernel (journalctl -k --since -10min), each journal entry = {rc, text|error}`.
-  - `async capture_event(kind, detail)` → `capture(kind, detail.get('reason', kind), detail)`; bounded retry (3×, 2 s apart) on OSError; failures logged, never raised.
-  - `async append(incident_id, key, value)` (atomic rewrite), `list()`, `path_for(id)` (regex `^\d{8}-\d{6}-[a-z_]+-[0-9a-f]{6}\.json$`).
-- `TeensyMaintenance(transport, incidents)`: `asyncio.Lock` single-flight; `async reset(reason='manual') -> dict`: if locked → raise `BusyError` (route → 409 with the in-flight incident id). Else: `transport.maintenance = True`; `incident = await incidents.capture('manual_reset', reason)`; `ok = await transport.reboot()`; `transport.maintenance = False`; wait ≤ 10 s for a **new** `boot_id` + CONFIG ACK; `post = {rebooted: ok, reconnected, boot_id, reset_reason_text (None if DIAG/CAPS unavailable), crash_text, error}`; `await incidents.append(incident, 'post_reset', post)`; return `{incident, **post}` — never raises for a failed reboot/absent DIAG. Sets `transport.expected_reboot = True` so Task 2's `unexpected_reboot` detector ignores this one.
-- Routes `/api/teensy`: `GET /diag` (last pushed DIAG + age; 503 if none), `GET /incidents`, `GET /incidents/{id}` (FileResponse), `POST /reset` (auth) → 200 dict | 409 busy.
-- `build_state_payload` adds `transport: {connected, firmware_version, stalled: {kind, reason, since, incident} | null, maintenance}`.
+- `IncidentRecorder(transport, render_state, state_manager, brightness_engine, logs_dir, fallback_dir=Path('/tmp/ledfanatic-incidents'))`
+  - `async capture(trigger, reason, extra=None) -> CaptureResult(id, path|None, error|None)`; id `YYYYmmdd-HHMMSS-<trigger>-<6 hex>`; `open(..., 'x')`, write `.tmp`, `os.replace`; on OSError retry 3× (2 s) then try `fallback_dir`; never raises. Bundle `schema_version 2`: `trigger, reason, at, transport.get_status() (state, boot_id, geometry_generation), stalled, last_stats, last_diag (pushed, with age), trace (frozen first), live_diag (request 0.5 s; `{error:'timeout'}` on failure), crash (request_crash), render {scene, params, target_fps, actual_fps, blackout, brightness_effective}, system {uptime, loadavg, mem_available_kb}, journal_service {rc, text|error} (journalctl -u ledfanatic -n 300), journal_kernel {rc, text|error} (journalctl -k --since -10min), extra`.
+  - `async capture_event(kind, detail)` (the `on_incident` hook), `async append(id, key, value) -> bool` (atomic rewrite; false + log on failure, value also logged so it is never lost), `list()`, `path_for(id)` (regex `^\d{8}-\d{6}-[a-z_]+-[0-9a-f]{6}\.json$`, resolved path must stay inside `logs_dir`).
+- `TeensyMaintenance(transport, incidents, detector)`: `asyncio.Lock` single-flight → `BusyError(current_incident_id)`.
+  - `async reset(reason='manual') -> dict`:
+    ```
+    async with lock:
+      prev_boot = transport.boot_id; cap = await incidents.capture('manual_reset', reason)   # proceeds even if cap.error (user asked for recovery; error is reported)
+      detector.arm_expected_reboot(prev_boot, ttl=20)
+      transport.maintenance = True
+      try:
+        rebooted = await transport.reboot()                      # 134-baud + loader -b
+        reconnected = await transport.wait_for(READY, timeout=10)
+      finally:
+        transport.maintenance = False; detector.disarm_expected_reboot_if_unconsumed()
+      post = {rebooted, reconnected, new_boot_id, reset_reason_text (None if unknown), crash, capture_error: cap.error}
+      await incidents.append(cap.id, 'post_reset', post)
+      return {incident: cap.id, **post}
+    ```
+    Cancellation at any await still runs the `finally`.
+  - `async usb_power_cycle(reason) -> dict` (only if `uhubctl` is installed and the user approved its sudoers line): capture → `sudo uhubctl -l 1-1 -a cycle -d 3` → wait READY ≤15 s → append. Documented caveat: the Pi 4 switches **all** USB ports together.
+- Routes `/api/teensy`: `GET /diag` (last pushed DIAG + age, 503 if none), `GET /crash`, `GET /incidents`, `GET /incidents/{id}`, `POST /reset` (auth; 200 | 409 `{busy: true, incident}`), `POST /usb-power-cycle` (auth; 404 if unavailable).
+- `build_state_payload` adds `transport: {state, firmware_version, boot_id, stalled: {kind, reason, since, incident}|null, maintenance, usb_power_cycle_available}`.
 
-Tests: bundle shape with fake transport; two captures in the same second produce two files; `path_for('../x')` → None; recorder OSError retried then logged; `reset` concurrent → second gets `BusyError`; `reset` with `reboot()` False and `request_diag()` None returns a dict with `rebooted: false, reset_reason_text: null`; routes map these to 200/409.
+Tests: bundle shape (frozen trace precedes probe; live_diag timeout marker); two captures in one second → two files; `path_for` rejects traversal; OSError → retries → fallback dir; `reset` concurrent → `BusyError`; `reset` with `reboot()` False and `request_diag()` None → dict with `rebooted:false, reset_reason_text:null`; cancellation during `wait_for` clears `maintenance`; `append` failure returns False and logs the value; routes 200/409/404.
 
-Commit: `feat: forensic incident bundles + single-flight manual Teensy reset`.
+Commit: `feat: forensic incident bundles, single-flight manual reset, optional USB power-cycle`.
 
 ---
 
@@ -207,11 +198,9 @@ Commit: `feat: forensic incident bundles + single-flight manual Teensy reset`.
 
 **Files:** `pi/app/ui/static/index.html`, `js/app.js`, `css/app.css`.
 
-- Global banner on every tab when `state.transport.stalled`: "Teensy {kind} since HH:MM — evidence saved as {incident}. [Reset Teensy]".
-- System → Status: "Teensy" card: connected/firmware/boot reason; last DIAG summary (`bad_*`, `oversize`, `tx_dropped`, `stall_flags_text`, `rx_backlog`, `max_loop_us`); **Reset Teensy** (confirm: "Saves a diagnostic bundle, then reboots the Teensy. The panel goes dark ~5 s and may flash while the data lines float."); button disabled while in flight; 409 → toast with the running incident id; result toast shows `reset_reason_text` and incident id. Incidents list with download links.
-- Run `/fda:quick` on the new elements; fix severity ≥ 3.
-
-Commit: `ui: Teensy stall banner, manual reset, incident downloads`.
+- Global banner on every tab while `state.transport.stalled`: "Teensy {kind} since HH:MM — evidence saved as {incident}. [Reset Teensy]" (+ "[Power-cycle USB]" when available).
+- System → Status "Teensy" card: state/firmware/boot reason/boot id; last DIAG summary (`bad_*`, `oversize`, `tx_dropped`, `stall_active/latched` names, `rx_backlog`, `max_loop_us`, `last_op`); **Reset Teensy** (confirm: "Saves a diagnostic bundle, then reboots the Teensy. The panel goes dark ~5 s and may flash while the data lines float."); disabled while in flight; 409 → toast with the running incident id; result toast with `reset_reason_text`, `reconnected`, incident id, `capture_error` if any. Incidents list with download links.
+- Run `/fda:quick`; fix severity ≥ 3. Commit `ui: Teensy stall banner, manual reset, incident downloads`.
 
 ---
 
@@ -219,21 +208,19 @@ Commit: `ui: Teensy stall banner, manual reset, incident downloads`.
 
 **Files:** `pi/app/core/renderer.py`, `pi/app/main.py:_on_teensy_connect`.
 
-- Renderer: `self._expected_frame_bytes = sum(output_config_list(layout)) * 3`, recomputed where the layout is (re)built; in `_render_frame`, if `len(pixel_bytes) != expected` → `logger.error` (once per 10 s), `trace.event('bad_frame_len', got, want)`, skip send. Test by monkeypatching `pack_frame` to return a short buffer.
-- `_on_teensy_connect`: CONFIG → `pin_teensy_brightness()` → `set_blackout(render_state.blackout)`. **No** `TEST_PATTERN_NONE` (BLACKOUT already clears firmware test state, and firmware 1.3.0 no longer alters Pi-owned state on HELLO). Log `INFO Teensy link healthy again (incident <id>)` when `stalled` clears.
+- Renderer: `_expected_frame_bytes = sum(output_config_list(layout)) * 3` recomputed where the layout is (re)built; mismatch → `logger.error` (once/10 s), `trace.event('bad_frame_len')`, skip. Renderer skips the send entirely while `transport.state != READY` (no frame is ever sent in a wrong format).
+- `_on_teensy_connect`: CONFIG (wait for ACK, store `geometry_generation`) → `pin_teensy_brightness()` → `set_blackout(render_state.blackout)` → `transport.mark_ready()`. No `TEST_PATTERN_NONE`. Log `INFO Teensy link healthy again (incident <id>)` when an episode closes.
 
-Commit: `renderer: refuse wrong-size frames; reconnect restores Pi-owned state only`.
+Commit: `renderer: frames only in READY; refuse wrong-size frames`.
 
 ---
 
 ### Task 6: Soak acceptance
 
-60 fps Rainbow Ink ≥ 2 h, then 90 fps ≥ 2 h, then 2 h in **blackout** at 90 fps (the starvation case). Read `GET /api/teensy/diag` at start/end. Pass per soak: `bad_short=bad_magic=bad_version=bad_len=bad_crc=oversize=tx_dropped=0`, `stall_flags=0`, `rx_backlog < 8192` at every sample, `max_loop_us < 20000`, `max_tx_us < 5000`, `frames_received == frames_applied ± 1` (outside blackout), `GET /api/teensy/incidents` adds nothing, journal has no `write took` warnings. If all pass at 90 fps restore `target_fps` 90; else stay at 60 and record the DIAG that failed. Update memory `teensy_rx_wedge_recovery.md` with outcome + DIAG reading procedure.
+`pi/tools/soak_check.py` (new) consumes the 1 Hz pushed DIAG via `GET /api/teensy/diag` every second for the soak duration and evaluates **deltas over same-boot, non-blackout intervals**: `Δbad_* = Δoversize = Δtx_dropped = 0`; `stall_active == 0` at every sample; `max rx_backlog < 8192`; `max_loop_us < 20000`; `max_tx_us < 5000`; `Δframes_received == Δframes_applied ± Δframes_pending_dropped` with `Δframes_pending_dropped == 0` outside blackout; `boot_id` constant; no new incidents. Soaks: 60 fps Rainbow Ink ≥2 h; 90 fps ≥2 h; blackout at 90 fps ≥2 h (starvation case; here only backlog/stall/boot criteria apply). Pass at 90 → restore `target_fps` 90; else stay at 60 and record the failing sample. Update memory `teensy_rx_wedge_recovery.md`.
 
 ---
 
-## Self-review
+## Self-review (round-2 findings → resolution)
 
-- Owner requirements: no auto-reset (Pi recovery removed Task 2; firmware never had a watchdog; core fault reboot replaced by halting handler Task 1) ✔; manual reset button with complete capture, single-flight (Tasks 3–4) ✔; "every bit of data": Pi trace incl. rejected bytes + write outcomes, pushed Teensy DIAG independent of RX, crash record across reset, both journals (Tasks 1–3) ✔; never flash: startup flash removed, no black show on reconnect/geometry change, DMA never re-init mid-transfer (Task 1); residual float-on-reset flash is hardware and only occurs on a user-initiated reset ✔; never freeze: every loop wait bounded (RX budget, TX availableForWrite, patched busy(), staged geometry), lengths bounded before arithmetic, verified by a sanitizer harness on the real decoder (Tasks 0–1) ✔.
-- Codex round-1 findings (19) each map to a Task: fault handler→1.3; length overflow→1.2; busy()→1.1/1.6; CONFIG re-init/EEPROM/black→1.7; TX blocking→1.8; lock model→2 dispatcher; stall triggers→2 detection; unexpected resets→1.9+2; RX-independent evidence→1.8 push + USB regs; reset single-flight→3; reset-reason bits→1 interfaces+2 tests; DIAG self-overwrite→1.5; raw trace→2 trace.rejected; post-reset None→3; incident id collision→3; kernel journal→3; native harness→0; TEST_PATTERN_NONE→1.5+5; on_stall isolation→2.
-- Honest gap: 100 % cannot be asserted until the soaks pass and, if a wedge ever recurs, its bundle classifies it. The instrumentation exists so that happens on the first recurrence, not the tenth.
+Fault paths NMI/SVC/tempmon → Task 1.3 replaces every vector equal to the core handler incl. SVC/NMI and overrides the temperature-panic vector; pre-`setup()` faults are an accepted residual. Halt blocks UI reset → USB power-cycle path (Task 3) + timeouts raise the incident; stated residual. Fault mid-transfer flashes → `parkOutputsIdle()` before halting. `_VectorsRam` type → use core declaration. Geometry starvation → commit runs first when idle, before any show. Writer blocking/cancellation → `SerialWriter` with shield, deadline incl. lock. Reconnect legacy-format frames → READY gating, legacy format removed. DIAG waiter never resolved → req-id routing resolves both solicited DIAG and cache. Watchdog black frame → watchdog removed. Maintenance latch → try/finally, structured errors. ACK before effective → ACK after commit with generation; staged replaced by latest; A→B→A compares staged vs current at commit. Waiter collisions/NAK → unique req ids; NAK resolves `None`. EEPROM unbounded → removed. `CrashReport.printTo` → raw record copy; tempsense bit handled. Boot id → retained counter + seed + uptime rollback. Trace raw bytes → byte-budget ring with offsets/outcomes. DMA/USB detail → vendored `debugState`, USB backlog/IRQ; USBSTS latching is a stated residual. Decoder evidence → live vs last-reject fields; probes excluded. Output stall → received *and* applied deltas, stale push, clears on progress. `expected_reboot` → scoped `ExpectedReboot(prev_boot, ttl)`, consumed/expired/cleared. Flag dedup → active/latched + episodes. Soak criteria → deltas, continuous sampling.
