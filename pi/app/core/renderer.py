@@ -442,10 +442,10 @@ class Renderer:
       effective = self.brightness_engine.get_effective_brightness(
         datetime.now(timezone.utc)
       )
-      logical_frame = (logical_frame * effective).astype(np.uint8)
-
-      # Apply gamma
+      # Gamma first, then brightness: scaling before gamma turned a 33% cap
+      # into ~9% LED output (0.33^2.2), so low settings looked like "off"
       logical_frame = self._gamma_lut[logical_frame]
+      logical_frame = (logical_frame * effective).astype(np.uint8)
 
       # Test patterns: override frame based on active test mode
       if self._test_mode is not None:
