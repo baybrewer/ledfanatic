@@ -406,6 +406,13 @@ class TeensyTransport:
   async def _check_health(self):
     stats = await self.request_stats()
     if stats and 'error' not in stats:
+      prev = self.last_teensy_stats
+      if prev and stats.get('uptime_ms', 0) >= prev.get('uptime_ms', 0):
+        # Corrupt/short packets arrive in bursts; timestamped deltas let us
+        # correlate them with whatever else was happening
+        deltas = {k: stats.get(k, 0) - prev.get(k, 0) for k in ('bad_crc', 'bad_frame')}
+        if any(deltas.values()):
+          logger.warning(f"Teensy link errors in last {HEALTH_INTERVAL_S:.0f}s: {deltas}")
       self.last_teensy_stats = stats
       self._health_misses = 0
       self._recovery_attempts = 0
