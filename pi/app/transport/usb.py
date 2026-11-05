@@ -14,6 +14,7 @@ from typing import Optional
 import serial
 import serial.tools.list_ports
 
+from .teensy_reset import reboot_teensy, boot_from_bootloader
 from ..models.protocol import (
   PacketType, build_packet, verify_packet, frame_packet,
   build_hello_payload, build_frame_payload, build_blackout_payload,
@@ -26,6 +27,14 @@ logger = logging.getLogger(__name__)
 
 TEENSY_VID = 0x16C0
 TEENSY_PID = 0x0483
+
+# Stall detection: the Teensy has wedged (stops processing USB input while its
+# loop keeps running) — see teensy_reset.py. Recovery = remote reboot.
+HEALTH_INTERVAL_S = 5.0
+HEALTH_MISSES_TO_STALL = 3       # consecutive unanswered PINGs while connected
+HANDSHAKE_FAILS_TO_STALL = 2     # consecutive failed HELLOs with the port present
+RECOVERY_BACKOFF_S = 30.0
+MAX_RECOVERY_ATTEMPTS = 3        # per stall incident; rearmed by a healthy PING
 
 
 class TeensyTransport:
@@ -45,6 +54,15 @@ class TeensyTransport:
     self.frames_sent = 0
     self.send_errors = 0
     self.reconnect_count = 0
+    self.recoveries = 0
+    self.last_recovery: Optional[dict] = None
+    self.last_teensy_stats: Optional[dict] = None
+    self._health_misses = 0
+    self._handshake_fails = 0
+    self._last_recovery_at = 0.0
+    self._recovery_attempts = 0
+    self._config_timed_out = False   # unanswered CONFIG (a NAK is an answer)
+    self._stuck_in_bootloader = False
 
   def find_teensy_port(self) -> Optional[str]:
     for port in serial.tools.list_ports.comports():
@@ -235,6 +253,7 @@ class TeensyTransport:
       config_list = output_config
     else:
       config_list = output_config_to_list(output_config)
+    self._config_timed_out = False
     payload = build_config_payload(config_list)
     packet = build_packet(PacketType.CONFIG, payload)
     framed = frame_packet(packet)
@@ -251,14 +270,16 @@ class TeensyTransport:
           result = self._read_packet()
           if result:
             header, _ = result
-            if header.packet_type in {PacketType.CONFIG_ACK, PacketType.CONFIG_NAK}:
-              acked = header.packet_type == PacketType.CONFIG_ACK
-              self._last_config_ack = acked
-              if acked:
-                logger.info(f"CONFIG acknowledged (active pins: {config_list})")
-              else:
-                logger.warning("CONFIG rejected (NAK)")
-              return acked
+            if header.packet_type not in {PacketType.CONFIG_ACK, PacketType.CONFIG_NAK}:
+              # Pushed POTS packets queue ahead of the ACK; drain them without sleeping
+              continue
+            acked = header.packet_type == PacketType.CONFIG_ACK
+            self._last_config_ack = acked
+            if acked:
+              logger.info(f"CONFIG acknowledged (active pins: {config_list})")
+            else:
+              logger.warning("CONFIG rejected (NAK)")
+            return acked
           await asyncio.sleep(0.05)
     except (serial.SerialException, OSError) as e:
       logger.error(f"Failed to send CONFIG: {e}")
@@ -267,6 +288,7 @@ class TeensyTransport:
 
     logger.warning("CONFIG: no response (timeout)")
     self._last_config_ack = False
+    self._config_timed_out = True
     return False
 
   async def _wait_for_response(
@@ -349,11 +371,15 @@ class TeensyTransport:
 
   async def reconnect_loop(self):
     """Background task: keep trying to connect. Calls on_connect_callback after each reconnect."""
+    last_health = time.monotonic()
     while True:
       try:
         if not self.connected:
           success = await self.connect()
           if success:
+            self._handshake_fails = 0
+            self._stuck_in_bootloader = False
+            self._health_misses = 0
             self.reconnect_count += 1
             logger.info(f"Reconnected (attempt #{self.reconnect_count})")
             # Resend CONFIG after every reconnect
@@ -362,9 +388,69 @@ class TeensyTransport:
                 await self._on_connect_callback()
               except Exception as e:
                 logger.error(f"on_connect callback failed: {e}", exc_info=True)
+            if self._config_timed_out:
+              await self._recover("CONFIG unanswered after connect")
+          elif self._stuck_in_bootloader:
+            await self._recover("Teensy left in bootloader")
+          elif self.find_teensy_port():
+            self._handshake_fails += 1
+            if self._handshake_fails >= HANDSHAKE_FAILS_TO_STALL:
+              await self._recover(f"{self._handshake_fails} failed handshakes")
+        elif time.monotonic() - last_health >= HEALTH_INTERVAL_S:
+          last_health = time.monotonic()
+          await self._check_health()
         await asyncio.sleep(self.reconnect_interval)
       except asyncio.CancelledError:
         break
+
+  async def _check_health(self):
+    stats = await self.request_stats()
+    if stats and 'error' not in stats:
+      self.last_teensy_stats = stats
+      self._health_misses = 0
+      self._recovery_attempts = 0
+      self._stuck_in_bootloader = False
+      return
+    self._health_misses += 1
+    if self._health_misses >= HEALTH_MISSES_TO_STALL:
+      await self._recover(f"{self._health_misses} unanswered PINGs")
+
+  async def _recover(self, reason: str):
+    """Reboot a wedged Teensy. Logs the last good Teensy stats for diagnosis."""
+    now = time.monotonic()
+    if now - self._last_recovery_at < RECOVERY_BACKOFF_S:
+      return
+    if self._recovery_attempts >= MAX_RECOVERY_ATTEMPTS:
+      if self._recovery_attempts == MAX_RECOVERY_ATTEMPTS:
+        logger.error("Teensy recovery gave up after "
+                     f"{MAX_RECOVERY_ATTEMPTS} attempts; power-cycle it")
+        self._recovery_attempts += 1
+      return
+    self._recovery_attempts += 1
+    self._last_recovery_at = now
+    port = (self.serial.port if self.serial else None) or self.find_teensy_port()
+    logger.warning(
+      f"Teensy stall detected ({reason}); frames_sent={self.frames_sent} "
+      f"send_errors={self.send_errors} last_teensy_stats={self.last_teensy_stats}"
+    )
+    async with self._lock:
+      self.disconnect()
+    self._health_misses = 0
+    self._handshake_fails = 0
+    serial_port = self.find_teensy_port()
+    if self._stuck_in_bootloader and not serial_port:
+      ok = await boot_from_bootloader()
+    else:
+      ok = await reboot_teensy(serial_port or port)
+    # No serial port after a failed run = left in HalfKay; retry boot-only
+    self._stuck_in_bootloader = not ok and not self.find_teensy_port()
+    self.recoveries += 1
+    self.last_recovery = {
+      'reason': reason, 'ok': ok, 'at': time.time(),
+      'last_teensy_stats': self.last_teensy_stats,
+    }
+    if ok:
+      await asyncio.sleep(2.0)  # let the Teensy re-enumerate before reconnecting
 
   def get_status(self) -> dict:
     return {
@@ -374,4 +460,6 @@ class TeensyTransport:
       'frames_sent': self.frames_sent,
       'send_errors': self.send_errors,
       'reconnect_count': self.reconnect_count,
+      'recoveries': self.recoveries,
+      'last_recovery': self.last_recovery,
     }

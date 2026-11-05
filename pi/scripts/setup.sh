@@ -27,7 +27,8 @@ sudo apt-get install -y \
   avahi-daemon \
   network-manager \
   rsync \
-  git
+  git \
+  teensy-loader-cli
 
 # Create directory structure
 sudo mkdir -p /opt/ledfanatic/{config,media,cache,logs,src}
@@ -69,6 +70,10 @@ done
 sudo cp "${PI_DIR}/systemd/ledfanatic.service" /etc/systemd/system/
 sudo systemctl daemon-reload
 sudo systemctl enable ledfanatic
+
+# Let the service reboot a wedged Teensy via its bootloader (teensy_reset.py)
+sudo cp "${PI_DIR}/config/udev/49-teensy.rules" /etc/udev/rules.d/
+sudo udevadm control --reload-rules
 
 # Allow pillar user to restart service and reboot without password
 echo 'pillar ALL=(ALL) NOPASSWD: /bin/systemctl restart ledfanatic, /bin/systemctl stop ledfanatic, /sbin/reboot' | \

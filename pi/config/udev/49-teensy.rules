@@ -1,0 +1,3 @@
+# Teensy HalfKay bootloader: lets the ledfanatic service (dialout) reboot a
+# wedged Teensy remotely via teensy_loader_cli. See app/transport/teensy_reset.py
+SUBSYSTEM=="usb", ATTRS{idVendor}=="16c0", ATTRS{idProduct}=="0478", MODE="0660", GROUP="dialout"
