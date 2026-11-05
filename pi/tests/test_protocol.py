@@ -500,3 +500,39 @@ class TestPotsPayload:
     assert header.packet_type == PacketType.POTS
     assert len(payload) == POTS_PAYLOAD_SIZE
     assert parse_pots_payload(payload) == (10, 20, 30)
+
+
+def _firmware_cobs_decode(encoded: bytes) -> bytes:
+  """Literal port of COBSDecoder.feed in teensy/firmware/include/protocol.h."""
+  out = bytearray()
+  remaining = last_code = 0
+  had_block = False
+  for b in encoded:
+    if remaining == 0:
+      if had_block and last_code < 255:
+        out.append(0)
+      last_code, remaining, had_block = b, b - 1, True
+    else:
+      out.append(b)
+      remaining -= 1
+  return bytes(out)
+
+
+def test_cobs_full_block_followed_by_zero_keeps_the_zero():
+  # Regression: a 254-byte non-zero run then 0x00 lost the zero (frames failed CRC)
+  for run in (253, 254, 255, 508, 509):
+    for tail in (b'', b'\x00', b'\x00\x05', b'\x00\x00'):
+      data = b'\x07' * run + tail
+      encoded = cobs_encode(data)
+      assert 0 not in encoded
+      assert cobs_decode(encoded) == data, (run, tail)
+      assert _firmware_cobs_decode(encoded) == data, (run, tail)
+
+
+def test_cobs_random_frames_roundtrip_through_firmware_decoder():
+  import random
+  rng = random.Random(0)
+  for _ in range(300):
+    data = bytes(rng.choice((0, rng.randrange(1, 256))) if rng.random() < 0.01
+                 else rng.randrange(1, 256) for _ in range(4980))
+    assert _firmware_cobs_decode(cobs_encode(data)) == data

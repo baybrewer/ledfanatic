@@ -159,8 +159,10 @@ def cobs_encode(data: bytes) -> bytes:
 
     block_len = idx - block_start
 
-    if block_len == 254 and (idx >= len(data) or data[idx] != 0):
-      # Non-zero run hit 254 limit without a zero — emit 0xFF continuation
+    if block_len == 254:
+      # Full block: 0xFF means "no implied zero", so a zero right after the
+      # run must NOT be consumed here — it becomes the next (0x01) block.
+      # Consuming it silently dropped the zero (~5% of real frames failed CRC).
       output.append(0xFF)
       output.extend(data[block_start:block_start + block_len])
       trailing_zero = False
