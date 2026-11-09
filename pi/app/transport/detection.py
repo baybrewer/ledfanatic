@@ -48,6 +48,7 @@ class Episode:
   incident_id: Optional[str] = None
   last_asserted: float = 0.0         # detector clock
   flag_bits: int = 0                 # teensy_flag: union of stall_active bits seen
+  terminal_write: Optional[dict] = None   # outcome waiting for incident_id before it is appended
 
   def to_dict(self) -> dict:
     return {'kind': self.kind, 'reason': self.reason, 'since': self.since,
@@ -66,6 +67,10 @@ class LinkDetector:
                now: Callable[[], float] = time.monotonic):
     self.transport = transport
     self.on_incident = on_incident
+    # (incident_id, key, value) -> Awaitable[bool]: IncidentRecorder.append.
+    # Evidence that only exists after the incident was emitted (the terminal
+    # outcome of the write in flight at teardown) is added through this.
+    self.on_append: Optional[Callable[..., Awaitable]] = None
     self._now = now
     self.open_episodes: dict[str, Episode] = {}
     self.emitted: deque = deque(maxlen=200)          # (kind, reason, at) for status/tests
@@ -82,6 +87,8 @@ class LinkDetector:
     self._ready_since: Optional[float] = None        # detector clock; None when not READY
     self._fault_boot_ids: set[int] = set()
     self._window: Optional[dict] = None              # output_stall sampling window
+    # The teardown episode whose incident still owes the in-flight write's outcome
+    self._teardown_episode: Optional[Episode] = None
     # Optional transport hook: a boot change seen in pushed DIAG (no disconnect
     # happened) means the Teensy lost its CONFIG and needs renegotiation
     self.on_live_reboot: Optional[Callable[[int, int], None]] = None
@@ -106,6 +113,21 @@ class LinkDetector:
     self._failed_attempts.clear()
     self._prev_diag = None
     self._diag_seen_this_connection = False
+    self._pushes_diag = _pushes_diag(caps)
+    self._window = None
+    if caps.get('faulted'):
+      self._fault('CAPS reports fault-idle mode', boot_id, caps=caps)
+
+  def on_rehandshake(self, caps: dict):
+    """CAPS refreshed on the open port after a live reboot. The reboot itself
+    was already observed (and reported) from pushed DIAG, so this only moves
+    the boot baseline and firmware facts; running reboot detection again here
+    would emit the same incident twice."""
+    boot_id = caps.get('boot_id') or 0
+    self._close_fault_if_new_boot(boot_id)
+    if boot_id:
+      self._current_boot_id = boot_id
+    self._established = True
     self._pushes_diag = _pushes_diag(caps)
     self._window = None
     if caps.get('faulted'):
@@ -138,7 +160,11 @@ class LinkDetector:
     self._window = None
     self._ping_misses = 0
     if reason == 'link_lost' and not getattr(t, 'maintenance', False):
-      self._open('link_lost', 'serial port disappeared')
+      self._teardown_episode = self._open('link_lost', 'serial port disappeared')
+    elif reason != 'write_timeout':
+      # on_write_timeout already claimed this teardown; any other reason is a
+      # graceful or maintenance close whose last write is not incident evidence
+      self._teardown_episode = None
 
   def on_handshake_failed(self, consecutive: int):
     if consecutive >= HANDSHAKE_FAILS_TO_STALL:
@@ -165,7 +191,32 @@ class LinkDetector:
                  {'origin': 'config'})
 
   def on_write_timeout(self, detail: Optional[dict] = None):
-    self._open('write_timeout', 'serial write timed out', detail or {})
+    self._teardown_episode = self._open('write_timeout', 'serial write timed out', detail or {})
+
+  def on_terminal_write(self, outcome: dict):
+    """The writer finished the write that was in flight when the link went
+    down. The incident for that teardown was emitted (and its evidence frozen)
+    before this write returned, so its outcome is appended to the same bundle
+    rather than lost; the immediate failure snapshot is left untouched."""
+    self._trace('terminal_write', **outcome)
+    ep, self._teardown_episode = self._teardown_episode, None
+    if ep is None:
+      return
+    ep.terminal_write = outcome
+    self._flush_terminal_write(ep)
+
+  def _flush_terminal_write(self, ep: Episode):
+    # Either side may arrive first: the outcome (write_timeout fires inside the
+    # write itself) or the incident id (persisted in a thread). Append once both exist.
+    if ep.terminal_write is None or not ep.incident_id or self.on_append is None:
+      return
+    outcome, ep.terminal_write = ep.terminal_write, None
+    try:
+      loop = asyncio.get_running_loop()
+    except RuntimeError:
+      logger.warning(f"terminal write for incident {ep.incident_id} not recorded: no running event loop")
+      return
+    loop.create_task(self._isolated_append(ep.incident_id, 'terminal_write', outcome))
 
   def on_state(self, state: LinkState):
     if state == LinkState.READY:
@@ -427,8 +478,19 @@ class LinkDetector:
       if episode is not None and incident_id:
         episode.incident_id = incident_id
         self._refresh_stalled()
+        self._flush_terminal_write(episode)
     except Exception:
       logger.exception(f"on_incident callback failed for {kind}")
+
+  async def _isolated_append(self, incident_id: str, key: str, value: dict):
+    try:
+      result = self.on_append(incident_id, key, value)
+      if inspect.isawaitable(result):
+        result = await result
+      if result is False:
+        logger.error(f"incident {incident_id}: {key} not persisted")
+    except Exception:
+      logger.exception(f"on_append failed for incident {incident_id} ({key})")
 
 
 def _pushes_diag(caps: dict) -> bool:

@@ -117,7 +117,9 @@ class TeensyMaintenance:
     t.maintenance = True
     post = {'cycled': False, 'reconnected': False, 'error': None, 'output': None}
     try:
-      t.disconnect('maintenance_power_cycle')
+      # Cutting hub power under an open port with a write in flight would turn
+      # the write being preserved into an I/O error; wait for the port to close
+      await t.disconnect_and_drain('maintenance_power_cycle')
       rc, output = await _run_uhubctl(self._uhubctl)
       post['output'] = output
       post['cycled'] = rc == 0

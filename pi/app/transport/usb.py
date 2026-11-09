@@ -427,6 +427,18 @@ class TeensyTransport:
     self._reset_connection_state()
     self._set_state(LinkState.CLOSED)
 
+  async def disconnect_and_drain(self, reason: str = 'disconnect'):
+    """disconnect(), then wait until the writer has finished its in-flight
+    write and closed the port. Anything that will touch the device next (the
+    134-baud reboot request, a USB power-cycle, process exit) must call this
+    rather than disconnect(): two port lifetimes must never overlap, and the
+    write being preserved must not be interrupted by them."""
+    rx_task = self._rx_task
+    self.disconnect(reason)
+    await self.writer.wait_stopped()
+    if rx_task is not None:
+      await asyncio.gather(rx_task, return_exceptions=True)
+
   async def _handshake(self) -> Optional[dict]:
     payload = build_hello_payload("ledfanatic-pi", "1.0.0")
     try:
@@ -524,6 +536,7 @@ class TeensyTransport:
     """Send a FRAME (raw packed pixel bytes from pack_frame). Only in READY."""
     if self.state != LinkState.READY:
       return False
+    gen = self._conn_gen
     self.frame_id += 1
     timestamp_us = int(time.monotonic() * 1_000_000) & 0xFFFFFFFFFFFFFFFF
     framed = frame_packet(build_packet(
@@ -540,19 +553,25 @@ class TeensyTransport:
       self.trace.event('frame_write_wait_timeout', frame_id=self.frame_id)
       return False
     self.frames_sent += 1
-    self.test_pattern_active = None    # firmware drops its test pattern on an accepted FRAME
+    if self._same_connection(gen):
+      self.test_pattern_active = None    # firmware drops its test pattern on an accepted FRAME
     return True
 
   async def send_command(self, packet_type: int, payload: bytes = b'') -> bool:
+    """Fire-and-forget command on the current connection. True when the write
+    completed *and* the connection it was issued on is still the live one; a
+    write that lands while the port is draining is true on the wire but must
+    not count as state restored on whatever connection comes next."""
     if not self.connected:
       return False
+    gen = self._conn_gen
     framed = frame_packet(build_packet(packet_type, payload))
     try:
       await self.writer.write(framed, packet_type, 0, timeout=1.0)
-      return True
     except (LinkError, asyncio.TimeoutError) as e:
       logger.error(f"Command send failed: {e}")
       return False
+    return self._same_connection(gen)
 
   async def send_blackout(self, enabled: bool) -> bool:
     """Send explicit blackout command: True=on, False=off."""
@@ -576,69 +595,125 @@ class TeensyTransport:
       self.test_pattern_active = None if pattern_id == 0xFF else pattern_id
     return ok
 
+  async def apply_geometry(self, layout_provider: Callable[[], Optional[tuple['CompiledLayout', list[int]]]],
+                           commit: Callable[['CompiledLayout'], None], *,
+                           commit_offline: bool = False,
+                           timeout: float = CONFIG_TIMEOUT_S,
+                           attempts: Optional[int] = None,
+                           retry_delay: Optional[float] = None) -> bool:
+    """The one geometry transaction: select layout → CONFIG → commit → promote.
+
+    Everything happens under the CONFIG lock, and the layout is read via
+    `layout_provider()` only *after* the lock is held, so a bring-up queued
+    behind a layout change sends the geometry that change committed, never one
+    it captured earlier. `commit(compiled)` runs on ACK, before any state
+    promotion: the renderer and the firmware therefore agree on the frame size
+    before a single frame is allowed out. A commit that raises leaves the link
+    in HELLO_OK (no frames) and the reconnect loop re-runs this transaction.
+
+    Returns True only on CONFIG ACK. With `commit_offline`, a disconnected
+    link still runs commit (there is no firmware geometry to disagree with and
+    the next bring-up CONFIGs whatever is current) but still returns False.
+    """
+    async with self._config_lock:
+      selected = layout_provider()
+      if selected is None:
+        logger.warning("No compiled layout available for CONFIG")
+        return False
+      compiled, config_list = selected
+      if not self.connected:
+        if commit_offline:
+          commit(compiled)
+        return False
+      return await self._config_transaction(list(config_list), timeout, attempts, retry_delay,
+                                            commit=lambda: commit(compiled))
+
   async def send_config(self, output_config, timeout: float = CONFIG_TIMEOUT_S,
                         attempts: Optional[int] = None,
                         retry_delay: Optional[float] = None) -> bool:
-    """Send CONFIG and wait for ACK/NAK. True on ACK.
-
-    Serialized by a lock: an overlapping CONFIG waits for the previous ACK/NAK,
-    so READY can only describe the latest committed geometry. While the ACK is
-    pending the link drops to HELLO_OK so no frame can reach a geometry the
-    firmware has not committed. A lost ACK is retried (bounded) and the CONFIG
-    stall episode stays open until READY; nothing here ever resets the Teensy.
-    ACK restores READY if brightness and blackout were already restored on this
-    connection (layout change), else CONFIGURED (caller finishes with mark_ready()).
-    """
+    """Low-level CONFIG primitive: send and wait for ACK/NAK, True on ACK.
+    Production code goes through apply_geometry(), which also commits the
+    renderer under the same lock; this exists for tests and tooling that only
+    need the firmware side."""
     if not self.connected:
       return False
     config_list = output_config if isinstance(output_config, list) \
       else output_config_to_list(output_config)
+    async with self._config_lock:
+      return await self._config_transaction(config_list, timeout, attempts, retry_delay)
+
+  async def _config_transaction(self, config_list: list[int], timeout: float,
+                                attempts: Optional[int], retry_delay: Optional[float],
+                                commit: Optional[Callable[[], None]] = None) -> bool:
+    """CONFIG → ACK/NAK under the already-held lock.
+
+    While the ACK is pending the link drops to HELLO_OK so no frame can reach a
+    geometry the firmware has not committed. A lost ACK is retried (bounded)
+    and the CONFIG stall episode stays open until READY; nothing here ever
+    resets the Teensy. The transaction is bound to the connection generation it
+    started under: a reply arriving after a reconnect or live reboot is
+    discarded. ACK restores READY if brightness and blackout were already
+    restored on this connection (layout change), else CONFIGURED (the bring-up
+    finishes with mark_ready()).
+    """
+    if not self.connected:
+      return False
     attempts = attempts or CONFIG_ATTEMPTS
     retry_delay = CONFIG_RETRY_DELAY_S if retry_delay is None else retry_delay
-    async with self._config_lock:
-      if not self.connected:
-        return False
-      conn_id = self._conn_id
-      was_ready = self.state == LinkState.READY
-      self._set_state(LinkState.HELLO_OK)
-      payload = build_config_payload(config_list)
-      reply = None
-      for attempt in range(1, attempts + 1):
-        try:
-          reply = await self.request(PacketType.CONFIG, payload, timeout, raise_on_timeout=True)
-          break
-        except LinkError as e:
-          logger.error(f"Failed to send CONFIG: {e}")
-          self._detect(self.detector.on_config_result, False, False)
-          return False
-        except asyncio.TimeoutError:
-          logger.warning(f"CONFIG: no response (attempt {attempt}/{attempts})")
-          if not self._same_connection(conn_id):
-            return False
-          self._detect(self.detector.on_config_result, False, True)
-          if attempt == attempts:
-            return False   # episode stays open; reconnect_loop re-runs the bring-up later
-          await asyncio.sleep(retry_delay)
-          if not self._same_connection(conn_id):
-            return False
-      if not self._same_connection(conn_id):
-        return False   # link dropped while waiting
-      if reply is None:
-        logger.warning("CONFIG rejected (NAK)")
-        if was_ready:
-          self._set_state(LinkState.READY)   # old geometry is still committed and pinned
+    gen = self._conn_gen
+    was_ready = self.state == LinkState.READY
+    self._set_state(LinkState.HELLO_OK)
+    payload = build_config_payload(config_list)
+    reply = None
+    for attempt in range(1, attempts + 1):
+      try:
+        reply = await self.request(PacketType.CONFIG, payload, timeout, raise_on_timeout=True)
+        break
+      except LinkError as e:
+        logger.error(f"Failed to send CONFIG: {e}")
         self._detect(self.detector.on_config_result, False, False)
         return False
-      self.geometry_generation = parse_config_ack_payload(reply[1])
-      logger.info(f"CONFIG acknowledged (active pins: {config_list}, "
-                  f"geometry_generation: {self.geometry_generation})")
-      # The stall episode closes on READY (detector.on_state), not on the ACK:
-      # a committed geometry with unrestored brightness/blackout is not healthy yet
-      self._set_state(LinkState.READY if self._ready_pinned else LinkState.CONFIGURED)
-      return True
+      except asyncio.TimeoutError:
+        logger.warning(f"CONFIG: no response (attempt {attempt}/{attempts})")
+        if not self._same_connection(gen):
+          return False
+        self._detect(self.detector.on_config_result, False, True)
+        if attempt == attempts:
+          return False   # episode stays open; reconnect_loop re-runs the bring-up later
+        await asyncio.sleep(retry_delay)
+        if not self._same_connection(gen):
+          return False
+    if not self._same_connection(gen):
+      return False   # link dropped or the Teensy rebooted while waiting
+    if reply is None:
+      logger.warning("CONFIG rejected (NAK)")
+      if was_ready:
+        self._set_state(LinkState.READY)   # old geometry is still committed and pinned
+      self._detect(self.detector.on_config_result, False, False)
+      return False
+    geometry_generation = parse_config_ack_payload(reply[1])
+    if commit is not None:
+      try:
+        commit()
+      except Exception:
+        # Firmware holds the new geometry but the renderer may not: stay in
+        # HELLO_OK (no frames) so the loop re-runs the transaction
+        logger.exception("layout commit failed after CONFIG ACK; link held below READY")
+        return False
+    self.geometry_generation = geometry_generation
+    logger.info(f"CONFIG acknowledged (active pins: {config_list}, "
+                f"geometry_generation: {self.geometry_generation})")
+    # The stall episode closes on READY (detector.on_state), not on the ACK:
+    # a committed geometry with unrestored brightness/blackout is not healthy yet
+    self._set_state(LinkState.READY if self._ready_pinned else LinkState.CONFIGURED)
+    return True
 
-  def _same_connection(self, conn_id: int) -> bool:
-    return self.connected and self._conn_id == conn_id
+  def _same_connection(self, gen: int) -> bool:
+    return self.connected and self._conn_gen == gen
+
+  def _same_session(self, gen: int) -> bool:
+    """Same port and boot, handshake not necessarily done (OPEN counts)."""
+    return self.state.at_least(LinkState.OPEN) and self._conn_gen == gen
 
   def mark_ready(self) -> bool:
     """Connect sequence finished. READY only when this connection holds a
@@ -669,7 +744,9 @@ class TeensyTransport:
     """Reboot the Teensy via the 134-baud bootloader request. Never called by
     detection; only TeensyMaintenance on an explicit user action."""
     port = (self.serial.port if self.serial else None) or self.find_teensy_port()
-    self.disconnect('maintenance_reboot')
+    # The bootloader request opens the same device at 134 baud: our port must
+    # be fully closed (in-flight write returned) before that happens
+    await self.disconnect_and_drain('maintenance_reboot')
     if not port:
       logger.error("Teensy reboot: no serial port")
       return False
@@ -679,35 +756,63 @@ class TeensyTransport:
 
   def _on_live_reboot(self, prev_boot_id: int, new_boot_id: int):
     """A pushed DIAG showed a new boot without a USB disconnect: the Teensy has
-    forgotten CONFIG/brightness/blackout, so stop sending frames and bring it up
-    again. Detection owns the incident; this only restores the link."""
-    logger.warning(f"Teensy rebooted in place (boot {prev_boot_id} -> {new_boot_id}); re-running bring-up")
+    forgotten CONFIG/brightness/blackout and our CAPS (boot_id, firmware,
+    fault flag) describe a boot that no longer exists. Bump the generation so
+    every in-flight CONFIG/restoration from the old boot is discarded, drop to
+    OPEN (no commands) and bring the link up again from HELLO. Detection owns
+    the incident; this only restores the link."""
+    logger.warning(f"Teensy rebooted in place (boot {prev_boot_id} -> {new_boot_id}); "
+                   f"renegotiating from HELLO")
+    self._conn_gen += 1
     self._reset_connection_state()
-    if self.state.at_least(LinkState.HELLO_OK):
-      self._set_state(LinkState.HELLO_OK)
+    if self.state.at_least(LinkState.OPEN):
+      self._set_state(LinkState.OPEN)
     if self._bring_up_task is not None and not self._bring_up_task.done():
       self._bring_up_task.cancel()
     self._bring_up_task = None
-    self._start_bring_up()
+    self._start_bring_up(renegotiate=True)
 
-  def _start_bring_up(self):
+  def _start_bring_up(self, renegotiate: bool = False):
     """Run the connect sequence (CONFIG → brightness → blackout → mark_ready)
-    as an owned task so the loop keeps ticking the detector meanwhile."""
-    if self._on_connect_callback is None:
+    as an owned task so the loop keeps ticking the detector meanwhile. With
+    `renegotiate` the sequence starts at HELLO (live reboot)."""
+    if self._on_connect_callback is None and not renegotiate:
       return
     if self._bring_up_task is not None and not self._bring_up_task.done():
       return
     self._last_bring_up = time.monotonic()
     self._bring_up_task = asyncio.get_running_loop().create_task(
-      self._run_bring_up(), name='teensy-bring-up')
+      self._run_bring_up(renegotiate), name='teensy-bring-up')
 
-  async def _run_bring_up(self):
+  async def _run_bring_up(self, renegotiate: bool = False):
     try:
-      await self._on_connect_callback()
+      if renegotiate and not await self._renegotiate():
+        return
+      if self._on_connect_callback is not None:
+        await self._on_connect_callback()
     except asyncio.CancelledError:
       raise
     except Exception as e:
       logger.error(f"on_connect callback failed: {e}", exc_info=True)
+
+  async def _renegotiate(self) -> bool:
+    """HELLO → CAPS on the open port after a live reboot. Refreshes caps,
+    boot_id and firmware facts and tells the detector, so status, incident
+    metadata and the next manual reset describe the boot that is actually
+    running. Failure tears the connection down; the loop reconnects normally."""
+    gen = self._conn_gen
+    caps = await self._handshake()
+    if not self._same_session(gen):
+      return False   # port dropped or another reboot happened meanwhile
+    if caps is None:
+      logger.warning("Handshake after live reboot failed")
+      self.disconnect('handshake_failed')
+      return False
+    self.caps = caps
+    logger.info(f"Teensy caps after live reboot: {caps}")
+    self._set_state(LinkState.HELLO_OK)
+    self._detect(self.detector.on_rehandshake, caps)
+    return True
 
   def _bring_up_due(self, now: float) -> bool:
     """Connected but below READY (lost CONFIG ACK, failed restoration): retry the
