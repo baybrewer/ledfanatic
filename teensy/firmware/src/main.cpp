@@ -270,7 +270,7 @@ void handlePacket(const uint8_t* data, size_t len) {
   PacketHeader header;
   const uint8_t* payload;
 
-  if (!verify_packet(data, len, &header, &payload)) {
+  if (verify_packet(data, len, &header, &payload) != VERIFY_OK) {
     stats.badCrc++;
     return;
   }

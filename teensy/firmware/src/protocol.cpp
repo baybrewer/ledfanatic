@@ -57,90 +57,94 @@ uint32_t crc32(const uint8_t* data, size_t len) {
 }
 
 // --- COBS encoder ---
+// Mirrors pi/app/models/protocol.py cobs_encode (after 49d8707). A full 254-byte run is
+// emitted with code 0xFF, which by definition implies no zero after it, so a zero that
+// follows the run must NOT be consumed here — it becomes the next (0x01) block. The old
+// encoder consumed it and silently dropped the zero (~4 % of real frames failed CRC).
 size_t cobs_encode(const uint8_t* input, size_t len, uint8_t* output, size_t max_out) {
-    size_t out_idx = 0;
-    size_t read_idx = 0;
-    bool trailing_zero = false;
+  if (len == 0) {
+    if (max_out < 1) return 0;
+    output[0] = 0x01;
+    return 1;
+  }
 
-    while (read_idx < len) {
-        size_t block_start = read_idx;
-        // Scan for next zero or 254-byte limit
-        while (read_idx < len && input[read_idx] != 0 && (read_idx - block_start) < 254) {
-            read_idx++;
-        }
+  size_t out_idx = 0;
+  size_t read_idx = 0;
+  bool trailing_zero = false;
 
-        size_t block_len = read_idx - block_start;
-
-        if (block_len == 254 && (read_idx >= len || input[read_idx] != 0)) {
-            // Non-zero run hit 254 limit — emit 0xFF continuation
-            if (out_idx >= max_out) return 0;
-            output[out_idx++] = 0xFF;
-            for (size_t i = 0; i < block_len; i++) {
-                if (out_idx >= max_out) return 0;
-                output[out_idx++] = input[block_start + i];
-            }
-            trailing_zero = false;
-            // Do not consume a zero — continue scanning
-        } else {
-            // Normal block ended by zero or end of input
-            if (out_idx >= max_out) return 0;
-            output[out_idx++] = (uint8_t)(block_len + 1);
-            for (size_t i = 0; i < block_len; i++) {
-                if (out_idx >= max_out) return 0;
-                output[out_idx++] = input[block_start + i];
-            }
-            // Consume zero if present
-            if (read_idx < len && input[read_idx] == 0) {
-                read_idx++;
-                trailing_zero = true;
-            } else {
-                trailing_zero = false;
-                break; // End of input
-            }
-        }
+  while (read_idx < len) {
+    size_t block_start = read_idx;
+    while (read_idx < len && input[read_idx] != 0 && (read_idx - block_start) < 254) {
+      read_idx++;
     }
+    size_t block_len = read_idx - block_start;
 
-    // If data ended with a zero, emit trailing 0x01 block
-    if (trailing_zero || len == 0) {
-        if (out_idx >= max_out) return 0;
-        output[out_idx++] = 0x01;
+    // 1 code byte + block_len data bytes
+    if (out_idx + 1 + block_len > max_out) return 0;
+
+    if (block_len == 254) {
+      output[out_idx++] = 0xFF;
+      memcpy(output + out_idx, input + block_start, block_len);
+      out_idx += block_len;
+      trailing_zero = false;
+      // Do not consume a following zero — rescan from it.
+    } else {
+      output[out_idx++] = (uint8_t)(block_len + 1);
+      memcpy(output + out_idx, input + block_start, block_len);
+      out_idx += block_len;
+      if (read_idx < len && input[read_idx] == 0) {
+        read_idx++;
+        trailing_zero = true;
+      } else {
+        trailing_zero = false;
+      }
     }
+  }
 
-    return out_idx;
+  // Input ended with a zero: it is represented by an empty final block.
+  if (trailing_zero) {
+    if (out_idx >= max_out) return 0;
+    output[out_idx++] = 0x01;
+  }
+
+  return out_idx;
 }
 
 // --- Packet verification ---
-bool verify_packet(const uint8_t* data, size_t len, PacketHeader* header, const uint8_t** payload) {
-  if (len < HEADER_SIZE + CRC_SIZE) return false;
+// Every bound is checked before the arithmetic that depends on it: payload_len comes
+// off the wire and 0xFFFFFFE5 + HEADER_SIZE + CRC_SIZE wraps to a tiny number on a
+// 32-bit size_t, which would have let a bogus length pass a "len < expected" check.
+VerifyResult verify_packet(const uint8_t* data, size_t len, PacketHeader* header,
+                           const uint8_t** payload) {
+  if (len < HEADER_SIZE + CRC_SIZE) return VERIFY_SHORT;
 
   memcpy(header, data, sizeof(PacketHeader));
 
-  // Check magic
   if (header->magic[0] != MAGIC_0 || header->magic[1] != MAGIC_1 ||
       header->magic[2] != MAGIC_2 || header->magic[3] != MAGIC_3) {
-    return false;
+    return VERIFY_MAGIC;
   }
 
-  // Check version
-  if (header->version != PROTOCOL_VERSION) return false;
+  if (header->version != PROTOCOL_VERSION) return VERIFY_VERSION;
 
-  // Check total length
-  size_t expected = HEADER_SIZE + header->payload_len + CRC_SIZE;
-  if (len < expected) return false;
+  if (header->payload_len > MAX_PAYLOAD_SIZE) return VERIFY_LEN;
+  size_t payload_len = header->payload_len;
+  if (len != HEADER_SIZE + payload_len + CRC_SIZE) return VERIFY_LEN;
 
-  // Verify CRC
-  uint32_t computed = crc32(data, HEADER_SIZE + header->payload_len);
+  uint32_t computed = crc32(data, HEADER_SIZE + payload_len);
   uint32_t stored;
-  memcpy(&stored, data + HEADER_SIZE + header->payload_len, sizeof(uint32_t));
-  if (computed != stored) return false;
+  memcpy(&stored, data + HEADER_SIZE + payload_len, sizeof(uint32_t));
+  if (computed != stored) return VERIFY_CRC;
 
   *payload = data + HEADER_SIZE;
-  return true;
+  return VERIFY_OK;
 }
 
 // --- Packet building ---
 size_t build_packet(uint8_t type, const uint8_t* payload, size_t payload_len,
-                    uint8_t* output, size_t max_out) {
+                    uint8_t* output, size_t max_out, uint32_t frame_id) {
+  // Cap first so the size sum below cannot wrap on a 32-bit size_t.
+  if (payload_len > MAX_PAYLOAD_SIZE) return 0;
   if (HEADER_SIZE + payload_len + CRC_SIZE > max_out) return 0;
 
   PacketHeader hdr;
@@ -151,9 +155,9 @@ size_t build_packet(uint8_t type, const uint8_t* payload, size_t payload_len,
   hdr.version = PROTOCOL_VERSION;
   hdr.type = type;
   hdr.flags = 0;
-  hdr.frame_id = 0;
+  hdr.frame_id = frame_id;
   hdr.timestamp_us = 0;
-  hdr.payload_len = payload_len;
+  hdr.payload_len = (uint32_t)payload_len;
 
   memcpy(output, &hdr, sizeof(PacketHeader));
   if (payload_len > 0 && payload) {

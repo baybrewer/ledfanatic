@@ -536,3 +536,179 @@ def test_cobs_random_frames_roundtrip_through_firmware_decoder():
     data = bytes(rng.choice((0, rng.randrange(1, 256))) if rng.random() < 0.01
                  else rng.randrange(1, 256) for _ in range(4980))
     assert _firmware_cobs_decode(cobs_encode(data)) == data
+
+
+# --- Firmware 1.3.0 additions: reset reason, CAPS extension, CONFIG_ACK, DIAG, CRASH ---
+
+from app.models.protocol import (  # noqa: E402
+  DIAG_FIELDS, DIAG_FIELD_NAMES, DIAG_PAYLOAD_SIZE, CRASH_PAYLOAD_SIZE, CRASH_CORE_FMT,
+  CRASH_EXT_FMT, SRC_SRSR_BITS, STALL_FAULTED,
+  decode_reset_reason, parse_config_ack_payload, parse_diag_payload, parse_crash_payload,
+  core_fault_record_crc,
+)
+
+
+class TestResetReason:
+  @pytest.mark.parametrize('bit,name', list(SRC_SRSR_BITS.items()))
+  def test_every_bit_named(self, bit, name):
+    assert decode_reset_reason(1 << bit) == name
+
+  def test_all_nine_bits_present(self):
+    assert set(SRC_SRSR_BITS.values()) == {
+      'IPP_RESET_B', 'LOCKUP_SYSRESETREQ', 'CSU_RESET_B', 'IPP_USER_RESET_B', 'WDOG_RST_B',
+      'JTAG_RST_B', 'JTAG_SW_RST', 'WDOG3_RST_B', 'TEMPSENSE_RST_B',
+    }
+
+  def test_combination_joined_in_bit_order(self):
+    assert decode_reset_reason(0x3) == 'IPP_RESET_B+LOCKUP_SYSRESETREQ'
+    assert decode_reset_reason((1 << 4) | (1 << 8)) == 'WDOG_RST_B+TEMPSENSE_RST_B'
+
+  def test_unknown_bits_reported(self):
+    assert decode_reset_reason(1 << 12) == 'unknown(0x1000)'
+    assert decode_reset_reason((1 << 1) | (1 << 20)) == 'LOCKUP_SYSRESETREQ+unknown(0x100000)'
+
+  def test_zero(self):
+    assert decode_reset_reason(0) == 'none'
+
+  def test_packet_type_values(self):
+    assert PacketType.DIAG == 0x32 and PacketType.CRASH == 0x33
+
+
+class TestCapsExtension:
+  def _caps(self, **ext):
+    payload = bytearray(56)
+    payload[:5] = b'1.3.0'
+    payload[16] = 1
+    payload[17] = 5
+    struct.pack_into('<H', payload, 18, 344)
+    payload[20:23] = b'BGR'
+    struct.pack_into('<III', payload, 24, ext.get('uptime_ms', 0), ext.get('reset_reason', 0),
+                     ext.get('boot_id', 0))
+    payload[36] = ext.get('crash_present', 0)
+    struct.pack_into('<I', payload, 37, ext.get('geometry_generation', 0))
+    payload[41] = ext.get('faulted', 0)
+    return bytes(payload)
+
+  def test_extension_fields(self):
+    caps = parse_caps_payload(self._caps(uptime_ms=12345, reset_reason=0x2, boot_id=0xABCDE,
+                                         crash_present=1, geometry_generation=7, faulted=1))
+    assert caps['uptime_ms'] == 12345
+    assert caps['reset_reason'] == 0x2
+    assert caps['reset_reason_text'] == 'LOCKUP_SYSRESETREQ'
+    assert caps['boot_id'] == 0xABCDE
+    assert caps['crash_present'] is True
+    assert caps['geometry_generation'] == 7
+    assert caps['faulted'] is True
+    assert caps['firmware_version'] == '1.3.0' and caps['color_order'] == 'BGR'
+
+  def test_old_firmware_zero_filled(self):
+    caps = parse_caps_payload(self._caps())
+    assert caps['boot_id'] == 0 and caps['uptime_ms'] == 0
+    assert caps['crash_present'] is False and caps['faulted'] is False
+    assert caps['geometry_generation'] == 0
+
+
+class TestConfigAck:
+  def test_generation(self):
+    assert parse_config_ack_payload(struct.pack('<I', 42)) == 42
+
+  def test_empty_legacy_ack(self):
+    assert parse_config_ack_payload(b'') is None
+
+  def test_zero_is_not_none(self):
+    assert parse_config_ack_payload(struct.pack('<I', 0)) == 0
+
+
+class TestDiagPayload:
+  def test_layout_contract(self):
+    assert DIAG_FIELDS == 44 and DIAG_PAYLOAD_SIZE == 176
+    assert DIAG_FIELD_NAMES[0] == 'uptime_ms'
+    assert DIAG_FIELD_NAMES[25] == 'stall_active' and DIAG_FIELD_NAMES[26] == 'stall_latched'
+    assert DIAG_FIELD_NAMES[35] == 'last_op'
+    assert DIAG_FIELD_NAMES[43] == 'fault_count'
+
+  def test_parse_all_fields_in_order(self):
+    values = list(range(100, 100 + DIAG_FIELDS))
+    diag = parse_diag_payload(struct.pack(f'<{DIAG_FIELDS}I', *values))
+    for i, name in enumerate(DIAG_FIELD_NAMES):
+      assert diag[name] == 100 + i
+
+  def test_decoded_helpers(self):
+    values = [0] * DIAG_FIELDS
+    values[1] = 1 << 4                     # reset_reason WDOG
+    values[25] = 0b101                     # stall_active RX_NO_PACKET + TX_DROPPED
+    values[26] = STALL_FAULTED | 0b1       # stall_latched
+    values[35] = 5                         # last_op show
+    diag = parse_diag_payload(struct.pack(f'<{DIAG_FIELDS}I', *values))
+    assert diag['stall_active_names'] == ['RX_NO_PACKET', 'TX_DROPPED']
+    assert diag['stall_latched_names'] == ['RX_NO_PACKET', 'FAULTED']
+    assert diag['last_op_name'] == 'show'
+    assert diag['reset_reason_text'] == 'WDOG_RST_B'
+
+  def test_short_rejected(self):
+    assert parse_diag_payload(b'\x00' * (DIAG_PAYLOAD_SIZE - 1)) is None
+
+
+def build_crash_fixture(valid=1, source=2, src_srsr=0x2, ipsr=3, cfsr=(1 << 9) | (1 << 15),
+                        hfsr=1 << 30, bfar=0xFFFFFFF0, temp=41.5, time_=1700000000,
+                        pc=0x60001234, lr=0x60000ABD, exc_return=0xFFFFFFF9, corrupt_crc=False):
+  """CRASH payload laid out exactly like the firmware: 16 B prefix, the core's
+  44-byte arm_fault_info_struct (len, ipsr, cfsr, hfsr, mmfar, bfar, ret, xpsr,
+  float temp, time, crc) with the core's own CRC, then the 36-byte extension."""
+  core_no_crc = struct.pack('<IIIIIIIIfI', 11, ipsr, cfsr, hfsr, 0, bfar, 0x60001000,
+                            0x21000000, temp, time_)
+  crc = core_fault_record_crc(core_no_crc)
+  if corrupt_crc:
+    crc ^= 1
+  core = core_no_crc + struct.pack('<I', crc)
+  assert len(core) == 44 and struct.calcsize(CRASH_CORE_FMT) == 44
+  ext = struct.pack(CRASH_EXT_FMT, 1, 2, 3, 4, 12, lr, pc, 0x21000000, exc_return)
+  assert len(ext) == 36
+  payload = struct.pack('<IIII', valid, source, 0, src_srsr) + core + ext
+  assert len(payload) == CRASH_PAYLOAD_SIZE
+  return payload
+
+
+class TestCrashPayload:
+  def test_core_crc_matches_teensy_algorithm(self):
+    # Reference: the core xors whole words into a reflected CRC32 with no final
+    # inversion, which equals zlib.crc32 over the same bytes inverted
+    data = struct.pack('<10I', *range(1, 11))
+    assert core_fault_record_crc(data) == (zlib.crc32(data) ^ 0xFFFFFFFF)
+
+  def test_decode_valid_record(self):
+    crash = parse_crash_payload(build_crash_fixture())
+    assert crash['valid'] is True and crash['crc_ok'] is True
+    assert crash['source'] == 2 and crash['source_name'] == 'previous_boot'
+    assert crash['exception'] == 'HardFault'
+    assert crash['cfsr_names'] == ['PRECISERR', 'BFARVALID']
+    assert crash['hfsr_names'] == ['FORCED']
+    assert crash['core']['bfar'] == 0xFFFFFFF0
+    assert crash['core']['temp'] == pytest.approx(41.5)
+    assert crash['core']['time'] == 1700000000
+    assert crash['ext']['pc'] == 0x60001234 and crash['ext']['lr'] == 0x60000ABD
+    assert crash['ext']['exc_return'] == 0xFFFFFFF9
+    assert crash['faulted_in_thread_mode'] is True
+    assert crash['reset_reason_text'] == 'LOCKUP_SYSRESETREQ'
+    assert 'HardFault' in crash['text'] and 'pc=0x60001234' in crash['text']
+    assert 'BFAR=0xfffffff0' in crash['text'] and 'PRECISERR' in crash['text']
+
+  def test_handler_mode_from_exc_return(self):
+    crash = parse_crash_payload(build_crash_fixture(exc_return=0xFFFFFFF1))
+    assert crash['faulted_in_thread_mode'] is False
+    assert 'handler mode' in crash['text']
+
+  def test_bad_crc_flagged_not_rejected(self):
+    crash = parse_crash_payload(build_crash_fixture(corrupt_crc=True))
+    assert crash['valid'] is True and crash['crc_ok'] is False
+    assert 'crc=BAD' in crash['text']
+
+  def test_no_record(self):
+    crash = parse_crash_payload(b'\x00' * CRASH_PAYLOAD_SIZE)
+    assert crash['valid'] is False and crash['text'] == 'no crash record'
+    assert crash['faulted_in_thread_mode'] is None
+
+  def test_irq_name_and_short_payload(self):
+    crash = parse_crash_payload(build_crash_fixture(ipsr=16 + 20))
+    assert crash['exception'] == 'IRQ20'
+    assert parse_crash_payload(b'\x00' * 95) is None

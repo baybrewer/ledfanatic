@@ -29,6 +29,53 @@ HELLO_PAYLOAD_SIZE = 48
 POTS_PAYLOAD_SIZE = 6  # 3 x uint16 LE (brightness, menu, pattern), ADC range 0-1023
 POTS_STRUCT_FMT = '<HHH'
 
+# DIAG: 44 x uint32 LE, pushed by firmware 1.3.0 every second and on request.
+# Order is the wire contract — never reorder, only append (and bump DIAG_FIELDS).
+DIAG_FIELD_NAMES = (
+  'uptime_ms', 'reset_reason', 'boot_id', 'rx_bytes', 'pkt_ok',
+  'bad_short', 'bad_magic', 'bad_version', 'bad_len', 'bad_crc',
+  'oversize', 'empty_packets', 'last_pkt_type', 'ms_since_rx_byte', 'ms_since_good_pkt',
+  'live_decoder_out_len', 'live_decoder_remaining', 'last_reject_reason', 'last_reject_len',
+  'last_reject_ms_ago', 'loops_per_sec', 'max_loop_us', 'max_tx_us', 'tx_dropped',
+  'ms_since_show_start', 'stall_active', 'stall_latched', 'stack_free', 'frames_received',
+  'frames_applied', 'frames_pending_dropped', 'octo_begins', 'rx_backlog', 'usb_sts',
+  'usb_irq', 'last_op', 'dma3_csr_es', 'tmr4_enbl_sctrl0', 'crash_present',
+  'geometry_generation', 'bad_framing', 'frames_pending', 'ignored_in_fault_mode', 'fault_count',
+)
+DIAG_FIELDS = 44
+assert len(DIAG_FIELD_NAMES) == DIAG_FIELDS
+DIAG_PAYLOAD_SIZE = DIAG_FIELDS * 4
+DIAG_STRUCT_FMT = f'<{DIAG_FIELDS}I'
+
+# stall_active / stall_latched bit names (bit 3 is latched-only)
+STALL_BIT_NAMES = {0: 'RX_NO_PACKET', 1: 'DMA_INCOMPLETE', 2: 'TX_DROPPED', 3: 'FAULTED'}
+STALL_FAULTED = 1 << 3
+
+LAST_OP_NAMES = {
+  0: 'none', 1: 'rx', 2: 'handle_frame', 3: 'handle_config', 4: 'geometry_commit',
+  5: 'show', 6: 'send', 7: 'pots', 8: 'octo_begin',
+}
+
+# CRASH: 4 x uint32 prefix + 44 B core arm_fault_info_struct + 36 B extension
+CRASH_PAYLOAD_SIZE = 96
+CRASH_CORE_SIZE = 44
+CRASH_CORE_FMT = '<IIIIIIIIfII'   # len, ipsr, cfsr, hfsr, mmfar, bfar, ret, xpsr, temp, time, crc
+CRASH_EXT_FMT = '<9I'             # r0, r1, r2, r3, r12, lr, pc, xpsr, exc_return
+CRASH_SOURCE_NAMES = {0: 'none', 1: 'live', 2: 'previous_boot'}
+
+# i.MX RT1062 SRC_SRSR reset-status bits (imxrt.h names)
+SRC_SRSR_BITS = {
+  0: 'IPP_RESET_B',          # power-on reset
+  1: 'LOCKUP_SYSRESETREQ',   # CPU lockup or software SYSRESETREQ (e.g. bootloader request)
+  2: 'CSU_RESET_B',
+  3: 'IPP_USER_RESET_B',     # external reset pin
+  4: 'WDOG_RST_B',
+  5: 'JTAG_RST_B',
+  6: 'JTAG_SW_RST',
+  7: 'WDOG3_RST_B',
+  8: 'TEMPSENSE_RST_B',      # thermal shutdown
+}
+
 
 class PacketType(IntEnum):
   HELLO = 0x01
@@ -41,6 +88,8 @@ class PacketType(IntEnum):
   PONG = 0x21
   STATS = 0x30
   POTS = 0x31
+  DIAG = 0x32
+  CRASH = 0x33
   TEST_PATTERN = 0x40
   BLACKOUT = 0x41
   BRIGHTNESS = 0x42
@@ -270,13 +319,175 @@ def parse_caps_payload(payload: bytes) -> Optional[dict]:
   outputs = payload[17]
   leds_per_strip = struct.unpack('<H', payload[18:20])[0]
   color_order = payload[20:24].rstrip(b'\x00').decode('utf-8', errors='replace')
+  # Bytes 24-41 were zero-filled before firmware 1.3.0, so old firmware decodes
+  # as uptime 0 / boot_id 0 / not faulted rather than failing.
+  uptime_ms, reset_reason, boot_id = struct.unpack('<III', payload[24:36])
+  crash_present = payload[36]
+  geometry_generation = struct.unpack('<I', payload[37:41])[0]
+  faulted = payload[41]
   return {
     'firmware_version': fw_ver,
     'protocol_version': proto_ver,
     'outputs': outputs,
     'leds_per_strip': leds_per_strip,
     'color_order': color_order,
+    'uptime_ms': uptime_ms,
+    'reset_reason': reset_reason,
+    'reset_reason_text': decode_reset_reason(reset_reason),
+    'boot_id': boot_id,
+    'crash_present': bool(crash_present),
+    'geometry_generation': geometry_generation,
+    'faulted': bool(faulted),
   }
+
+
+def parse_config_ack_payload(payload: bytes) -> Optional[int]:
+  """CONFIG_ACK payload = uint32 geometry_generation of the committed geometry.
+
+  Pre-1.3.0 firmware sent an empty ACK; None keeps that distinguishable from 0.
+  """
+  if len(payload) < 4:
+    return None
+  return struct.unpack('<I', payload[:4])[0]
+
+
+def decode_reset_reason(raw: int) -> str:
+  """Name every set SRC_SRSR bit, '+'-joined; undefined bits become unknown(0x..)."""
+  names = [name for bit, name in SRC_SRSR_BITS.items() if raw & (1 << bit)]
+  known_mask = sum(1 << bit for bit in SRC_SRSR_BITS)
+  unknown = raw & ~known_mask & 0xFFFFFFFF
+  if unknown:
+    names.append(f'unknown(0x{unknown:x})')
+  return '+'.join(names) if names else 'none'
+
+
+def decode_stall_bits(raw: int) -> list[str]:
+  names = [name for bit, name in STALL_BIT_NAMES.items() if raw & (1 << bit)]
+  unknown = raw & ~sum(1 << bit for bit in STALL_BIT_NAMES) & 0xFFFFFFFF
+  if unknown:
+    names.append(f'unknown(0x{unknown:x})')
+  return names
+
+
+def parse_diag_payload(payload: bytes) -> Optional[dict]:
+  """Parse a DIAG payload (DIAG_FIELDS x uint32 LE) into a named dict.
+
+  Adds decoded helpers (`*_names`, `last_op_name`, `reset_reason_text`) so
+  consumers never re-implement the bit tables.
+  """
+  if len(payload) < DIAG_PAYLOAD_SIZE:
+    return None
+  values = struct.unpack(DIAG_STRUCT_FMT, payload[:DIAG_PAYLOAD_SIZE])
+  diag = dict(zip(DIAG_FIELD_NAMES, values))
+  diag['stall_active_names'] = decode_stall_bits(diag['stall_active'])
+  diag['stall_latched_names'] = decode_stall_bits(diag['stall_latched'])
+  diag['last_op_name'] = LAST_OP_NAMES.get(diag['last_op'], f"unknown({diag['last_op']})")
+  diag['reset_reason_text'] = decode_reset_reason(diag['reset_reason'])
+  return diag
+
+
+# --- CRASH record (core arm_fault_info_struct + extension) ---
+
+CFSR_BITS = {
+  # MemManage (MMFSR)
+  0: 'IACCVIOL', 1: 'DACCVIOL', 3: 'MUNSTKERR', 4: 'MSTKERR', 5: 'MLSPERR', 7: 'MMARVALID',
+  # BusFault (BFSR)
+  8: 'IBUSERR', 9: 'PRECISERR', 10: 'IMPRECISERR', 11: 'UNSTKERR', 12: 'STKERR',
+  13: 'LSPERR', 15: 'BFARVALID',
+  # UsageFault (UFSR)
+  16: 'UNDEFINSTR', 17: 'INVSTATE', 18: 'INVPC', 19: 'NOCP', 24: 'UNALIGNED', 25: 'DIVBYZERO',
+}
+HFSR_BITS = {1: 'VECTTBL', 30: 'FORCED', 31: 'DEBUGEVT'}
+IPSR_NAMES = {
+  0: 'Thread', 2: 'NMI', 3: 'HardFault', 4: 'MemManage', 5: 'BusFault', 6: 'UsageFault',
+  11: 'SVCall', 12: 'DebugMonitor', 14: 'PendSV', 15: 'SysTick',
+}
+
+
+def _named_bits(raw: int, table: dict) -> list[str]:
+  return [name for bit, name in table.items() if raw & (1 << bit)]
+
+
+def core_fault_record_crc(record: bytes) -> int:
+  """CRC the Teensy core computes over the first 10 words of arm_fault_info_struct.
+
+  Mirrors startup.c / CrashReport.cpp::isvalid: init 0xFFFFFFFF, each word xor'd
+  in whole, 32 reflected shifts, no final inversion (so it is NOT zlib.crc32).
+  """
+  crc = 0xFFFFFFFF
+  for (word,) in struct.iter_unpack('<I', record[:CRASH_CORE_SIZE - 4]):
+    crc ^= word
+    for _ in range(32):
+      crc = (crc >> 1) ^ (0xEDB88320 if crc & 1 else 0)
+  return crc
+
+
+def _ipsr_name(ipsr: int) -> str:
+  exc = ipsr & 0x1FF
+  if exc in IPSR_NAMES:
+    return IPSR_NAMES[exc]
+  if exc >= 16:
+    return f'IRQ{exc - 16}'
+  return f'exception({exc})'
+
+
+def parse_crash_payload(payload: bytes) -> Optional[dict]:
+  """Parse a 96-byte CRASH payload into decoded fields plus a human `text`.
+
+  valid=0 means the firmware had no CRC-valid record; the rest is zeros.
+  """
+  if len(payload) < CRASH_PAYLOAD_SIZE:
+    return None
+  valid, source, src_gpr5, src_srsr = struct.unpack('<IIII', payload[:16])
+  core_raw = payload[16:16 + CRASH_CORE_SIZE]
+  core_vals = struct.unpack(CRASH_CORE_FMT, core_raw)
+  core = dict(zip(
+    ('len', 'ipsr', 'cfsr', 'hfsr', 'mmfar', 'bfar', 'ret', 'xpsr', 'temp', 'time', 'crc'),
+    core_vals,
+  ))
+  ext_vals = struct.unpack(CRASH_EXT_FMT, payload[16 + CRASH_CORE_SIZE:CRASH_PAYLOAD_SIZE])
+  ext = dict(zip(('r0', 'r1', 'r2', 'r3', 'r12', 'lr', 'pc', 'xpsr', 'exc_return'), ext_vals))
+
+  result = {
+    'valid': bool(valid),
+    'source': source,
+    'source_name': CRASH_SOURCE_NAMES.get(source, f'unknown({source})'),
+    'src_gpr5': src_gpr5,
+    'src_srsr': src_srsr,
+    'reset_reason_text': decode_reset_reason(src_srsr),
+    'core': core,
+    'ext': ext,
+    'crc_ok': bool(valid) and core_fault_record_crc(core_raw) == core['crc'],
+    'exception': _ipsr_name(core['ipsr']),
+    'cfsr_names': _named_bits(core['cfsr'], CFSR_BITS),
+    'hfsr_names': _named_bits(core['hfsr'], HFSR_BITS),
+    # EXC_RETURN bit 3: 1 = thread mode (main loop), 0 = handler mode (inside an ISR)
+    'faulted_in_thread_mode': bool(ext['exc_return'] & 0x8) if valid else None,
+  }
+  if not valid:
+    result['text'] = 'no crash record'
+    return result
+  lines = [
+    f"{result['exception']} ({result['source_name']}) at pc=0x{ext['pc']:08x} "
+    f"lr=0x{ext['lr']:08x} xpsr=0x{ext['xpsr']:08x} "
+    f"{'thread' if result['faulted_in_thread_mode'] else 'handler'} mode",
+    f"CFSR=0x{core['cfsr']:08x} [{' '.join(result['cfsr_names']) or '-'}] "
+    f"HFSR=0x{core['hfsr']:08x} [{' '.join(result['hfsr_names']) or '-'}]",
+  ]
+  if core['cfsr'] & (1 << 7):
+    lines.append(f"MMFAR=0x{core['mmfar']:08x}")
+  if core['cfsr'] & (1 << 15):
+    lines.append(f"BFAR=0x{core['bfar']:08x}")
+  lines.append(
+    f"r0-r3={ext['r0']:08x} {ext['r1']:08x} {ext['r2']:08x} {ext['r3']:08x} "
+    f"r12={ext['r12']:08x} exc_return=0x{ext['exc_return']:08x}",
+  )
+  lines.append(
+    f"temp={core['temp']:.1f}C time={core['time']} reset={result['reset_reason_text']} "
+    f"crc={'ok' if result['crc_ok'] else 'BAD'}",
+  )
+  result['text'] = '\n'.join(lines)
+  return result
 
 
 def parse_stats_payload(payload: bytes) -> Optional[dict]:

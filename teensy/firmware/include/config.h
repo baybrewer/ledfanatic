@@ -21,6 +21,7 @@
 #define HEADER_SIZE       24
 #define CRC_SIZE          4
 #define MAX_PAYLOAD_SIZE  (TOTAL_OUTPUTS * MAX_LEDS_PER_OUTPUT * 3 + 8)  // worst-case frame
+#define MAX_PACKET_BYTES  (HEADER_SIZE + MAX_PAYLOAD_SIZE + CRC_SIZE)        // decoded packet cap
 
 // --- Packet types ---
 #define PKT_HELLO              0x01

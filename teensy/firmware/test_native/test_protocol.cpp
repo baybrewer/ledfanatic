@@ -59,7 +59,7 @@ static Bytes encode(const Bytes& raw) {
   size_t n = cobs_encode(raw.data(), raw.size(), out.data(), out.size());
   CHECK(n > 0);
   out.resize(n);
-  for (uint8_t b : out) CHECK(b != 0x00);
+  CHECK(std::memchr(out.data(), 0x00, out.size()) == nullptr);
   return out;
 }
 
@@ -69,10 +69,8 @@ enum FrameOutcome { FRAME_OVERSIZE, FRAME_INCOMPLETE, FRAME_EMPTY, FRAME_PACKET 
 // Feed an encoded block followed by a delimiter the way the firmware RX loop does and
 // report what the loop would do. Leaves the decoded bytes readable until reset_decoder().
 static FrameOutcome feed_frame(const Bytes& encoded) {
-  for (uint8_t b : encoded) {
-    CHECK(b != 0x00);
-    g_decoder.feed(b);
-  }
+  CHECK(std::memchr(encoded.data(), 0x00, encoded.size()) == nullptr);
+  for (uint8_t b : encoded) g_decoder.feed(b);
   // Delimiter arrives: the loop never feeds it, it inspects the decoder instead.
   if (g_decoder.overflowed()) return FRAME_OVERSIZE;
   if (g_decoder.remaining() > 0) return FRAME_INCOMPLETE;
@@ -143,14 +141,12 @@ static const GoldenVector GOLDEN[] = {
 
 // Python cobs_encode(b'A'*254 + b'\x00' + b'B') — the 254-run bug case (49d8707).
 static const char* PY_A254_0_B =
-  "ff4141414141414141414141414141414141414141414141414141414141414141414141414141414141"
+  "ff41414141414141414141414141414141414141414141414141414141414141414141414141414141414141"
   "4141414141414141414141414141414141414141414141414141414141414141414141414141414141414141"
   "4141414141414141414141414141414141414141414141414141414141414141414141414141414141414141"
   "4141414141414141414141414141414141414141414141414141414141414141414141414141414141414141"
   "4141414141414141414141414141414141414141414141414141414141414141414141414141414141414141"
-  "4141414141414141414141414141414141414141414141414141414141414141414141414141414141414141"
-  "4141414141414141414141414141414141414141414141414141414141414141414141414141"
-  "010242";
+  "4141414141414141414141414141414141414141414141414141414141414141414141010242";
 
 // Python frame_packet(build_packet(PacketType.PING)) — a real framed packet, delimiter included.
 static const char* PY_PING_FRAMED = "0750494c4c0120010101010101010101010101010101010105c364d3cb00";
@@ -415,7 +411,9 @@ static void emit_vectors() {
   for (size_t i = 0; i < crash.size(); i++) crash[i] = (uint8_t)(i % 5 == 0 ? 0 : 0xFF);
   inputs.push_back(build(0x33, crash, 0xDEADBEEFu));
   for (const Bytes& raw : inputs) {
-    std::printf("%s %s\n", to_hex(raw).c_str(), to_hex(encode(raw)).c_str());
+    // "-" stands for the empty input so every line has two fields.
+    std::string raw_hex = raw.empty() ? "-" : to_hex(raw);
+    std::printf("%s %s\n", raw_hex.c_str(), to_hex(encode(raw)).c_str());
   }
 }
 

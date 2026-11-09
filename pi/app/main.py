@@ -540,6 +540,8 @@ def main():
       # older firmware/sessions would dim everything twice.
       await deps.display.pin_teensy_brightness()
       await deps.display.set_blackout(deps.render_state.blackout)
+      # Frames flow only from READY; without a CONFIG ACK this stays pending
+      transport.mark_ready()
     transport._on_connect_callback = _on_teensy_connect
 
     _background_tasks.append(asyncio.create_task(transport.reconnect_loop()))
