@@ -326,6 +326,7 @@ extern "C" void fault_idle_loop(void) {
   diag.stallLatched |= STALL_FAULTED;
   uint32_t lastPush = millis();
   for (;;) {
+    txWaitRemainingUs = TX_WAIT_US;   // same per-iteration budget as loop(): fault mode must still answer DIAG/CRASH
     pollRx();
     uint32_t now = millis();
     if (now - lastPush >= STATS_INTERVAL_MS) {
