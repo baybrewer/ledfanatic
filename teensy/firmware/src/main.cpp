@@ -136,6 +136,25 @@ static inline uint32_t floatBits(float f) {
   return bits;
 }
 
+// Non-blocking replacement for the core's tempmonGetTemp(), which spins on the
+// FINISHED bit with no deadline; the main loop may never stall on a sensor. Mirrors the
+// core's conversion (same OCOTP calibration fuses) and only touches cachedTempBits when
+// a fresh measurement is ready, so the previous reading survives a not-ready pass.
+// Float here, in the main loop, so the fault recorder never has to.
+static void refreshCachedTemp() {
+  const uint32_t TEMPSENSE0_FINISHED = 0x4U;
+  if (!(TEMPMON_TEMPSENSE0 & TEMPSENSE0_FINISHED)) return;
+  uint32_t calibration = HW_OCOTP_ANA1;
+  float hotTemp = (float)(calibration & 0xFFU);
+  float hotCount = (float)((calibration & 0xFFF00U) >> 8U);
+  float roomCount = (float)((calibration & 0xFFF00000U) >> 20U);
+  float roomMinusHot = roomCount - hotCount;
+  if (roomMinusHot == 0.0f) return;  // blank fuses: no usable calibration, keep the old value
+  float measured = (float)((TEMPMON_TEMPSENSE0 & 0xFFF00U) >> 8U);
+  float tempC = hotTemp - (measured - hotCount) * (hotTemp - 25.0f) / roomMinusHot;
+  cachedTempBits = floatBits(tempC);
+}
+
 // -------------------------------------------------------------------
 // Recalculate derived geometry values from ledsPerOutput[]
 void recalcGeometry() {

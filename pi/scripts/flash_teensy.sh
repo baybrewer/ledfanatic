@@ -41,19 +41,30 @@ if ! command -v teensy_loader_cli >/dev/null 2>&1; then
 fi
 
 # The service owns the serial port; it must let go before HalfKay can be requested.
+# Whatever happens after this point (loader timeout, error, Ctrl-C), the Pi must not be
+# left with its frame service stopped — the EXIT trap restarts it and keeps the failure
+# status so the caller still sees a bad flash.
 sudo systemctl stop ledfanatic
+trap 'rc=$?; sudo systemctl start ledfanatic || true; exit $rc' EXIT
 
 # Opening the CDC port at 134 baud is the Teensy's "reboot to bootloader" request.
-# It may already be in the bootloader (no ttyACM) — then there is nothing to ask.
+# It may already be in the bootloader (no ttyACM) — then there is nothing to ask. If the
+# port exists but refuses the touch, the loader would wait on a Teensy that was never
+# asked to reboot, so fail now instead.
 if [[ -e "${TEENSY_DEV}" ]]; then
-  stty -F "${TEENSY_DEV}" 134 || true
+  if ! stty -F "${TEENSY_DEV}" 134; then
+    echo "flash_teensy: bootloader request on ${TEENSY_DEV} failed" >&2
+    exit 1
+  fi
   sleep 1
 fi
 
-# -w waits for the bootloader to enumerate, -v reports progress.
-sudo teensy_loader_cli --mcu=TEENSY41 -w -v "${REMOTE_HEX}"
-
-sudo systemctl start ledfanatic
+# -w waits for the bootloader to enumerate (forever by itself), -v reports progress.
+# A bounded wait is what turns "Teensy never showed up" into a reported failure.
+if ! sudo timeout 60 teensy_loader_cli --mcu=TEENSY41 -w -v "${REMOTE_HEX}"; then
+  echo "flash_teensy: teensy_loader_cli failed or timed out after 60s" >&2
+  exit 1
+fi
 REMOTE
 
 echo "Waiting for firmware ${EXPECTED_VERSION} to report via /api/system/status..."
