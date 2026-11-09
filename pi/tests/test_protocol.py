@@ -646,7 +646,10 @@ class TestDiagPayload:
     assert diag['reset_reason_text'] == 'WDOG_RST_B'
 
   def test_short_rejected(self):
-    assert parse_diag_payload(b'\x00' * (DIAG_PAYLOAD_SIZE - 1)) is None
+    # Anything below the oldest pushing firmware's 44 fields is garbage; a
+    # trailing partial word on a longer payload is ignored, not fatal.
+    assert parse_diag_payload(b'\x00' * (44 * 4 - 1)) is None
+    assert parse_diag_payload(b'\x00' * (DIAG_PAYLOAD_SIZE - 1)) is not None
 
 
 def build_crash_fixture(valid=1, source=2, src_srsr=0x2, ipsr=3, cfsr=(1 << 9) | (1 << 15),
@@ -712,3 +715,11 @@ class TestCrashPayload:
     crash = parse_crash_payload(build_crash_fixture(ipsr=16 + 20))
     assert crash['exception'] == 'IRQ20'
     assert parse_crash_payload(b'\x00' * 95) is None
+
+
+def test_parse_diag_accepts_44_field_payload_from_firmware_1_3_0():
+  values = list(range(1, 45))
+  diag = parse_diag_payload(struct.pack('<44I', *values))
+  assert diag is not None
+  assert diag['fault_count'] == 44 and diag['tx_dropped_push'] == 0
+  assert parse_diag_payload(struct.pack('<43I', *values[:43])) is None

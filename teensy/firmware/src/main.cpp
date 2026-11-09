@@ -94,6 +94,7 @@ void sendCrash(uint32_t reqId);
 void sendAck(uint32_t reqId, uint32_t generation);
 void sendNak(uint32_t reqId);
 void sendPacket(uint8_t type, const uint8_t* payload, size_t len, uint32_t reqId);
+static uint32_t txWaitRemainingUs = TX_WAIT_US;
 void readPots();
 void sendPots();
 void applyPendingFrame();
@@ -259,6 +260,7 @@ void pollRx() {
 void loop() {
   diag.loopStartUs = micros();
   diag.loopsThisSecond++;
+  txWaitRemainingUs = TX_WAIT_US;   // one bounded TX wait budget per iteration, shared by every response
 
   pollRx();
 
@@ -704,12 +706,16 @@ void sendPacket(uint8_t type, const uint8_t* payload, size_t len, uint32_t reqId
   if (Serial.availableForWrite() < (int)encLen) {
     if (reqId == 0) { diag.txDroppedPush++; return; }
     while (Serial.availableForWrite() < (int)encLen) {
-      if (micros() - t0 > TX_WAIT_US) {
+      uint32_t waited = micros() - t0;
+      if (waited >= txWaitRemainingUs) {
+        txWaitRemainingUs = 0;
         diag.txDropped++;
         diag.txDroppedThisSecond++;
         return;
       }
     }
+    uint32_t waited = micros() - t0;
+    txWaitRemainingUs = (waited < txWaitRemainingUs) ? txWaitRemainingUs - waited : 0;
   }
   setOp(OP_SEND);
   t0 = micros();

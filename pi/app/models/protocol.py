@@ -44,6 +44,7 @@ DIAG_FIELD_NAMES = (
   'tx_dropped_push',
 )
 DIAG_FIELDS = 45
+DIAG_MIN_FIELDS = 44   # oldest DIAG-pushing firmware (1.3.0)
 assert len(DIAG_FIELD_NAMES) == DIAG_FIELDS
 DIAG_PAYLOAD_SIZE = DIAG_FIELDS * 4
 DIAG_STRUCT_FMT = f'<{DIAG_FIELDS}I'
@@ -376,9 +377,13 @@ def parse_diag_payload(payload: bytes) -> Optional[dict]:
   Adds decoded helpers (`*_names`, `last_op_name`, `reset_reason_text`) so
   consumers never re-implement the bit tables.
   """
-  if len(payload) < DIAG_PAYLOAD_SIZE:
+  # Firmware 1.3.0 sends 44 fields, 1.3.1+ 45: fields are only ever appended,
+  # so an older payload is read as-is and the missing tail defaults to zero.
+  count = len(payload) // 4
+  if count < DIAG_MIN_FIELDS:
     return None
-  values = struct.unpack(DIAG_STRUCT_FMT, payload[:DIAG_PAYLOAD_SIZE])
+  count = min(count, DIAG_FIELDS)
+  values = list(struct.unpack(f'<{count}I', payload[:count * 4])) + [0] * (DIAG_FIELDS - count)
   diag = dict(zip(DIAG_FIELD_NAMES, values))
   diag['stall_active_names'] = decode_stall_bits(diag['stall_active'])
   diag['stall_latched_names'] = decode_stall_bits(diag['stall_latched'])
