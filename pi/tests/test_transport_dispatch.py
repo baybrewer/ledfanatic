@@ -738,3 +738,253 @@ async def test_maintenance_pauses_reconnect_loop():
     await task
   except asyncio.CancelledError:
     pass
+
+
+# --- Codex round 2: connection generation, geometry transaction, drain, live reboot, terminal write ---
+
+CFG10 = [10, 0, 0, 0, 0, 0, 0, 0]
+CFG12 = [12, 0, 0, 0, 0, 0, 0, 0]
+
+
+def _ptypes(written):
+  return [_decode(w)[0].packet_type for w in written]
+
+
+@pytest.mark.asyncio
+async def test_restoration_completing_during_drain_cannot_pin_next_connection():
+  """Review repro: link drops during a BRIGHTNESS write, a reconnect starts
+  while the old writer drains, then CONFIG + BLACKOUT alone must not reach READY."""
+  old, new = FakeTeensy(), FakeTeensy()
+  ports = [old, new]
+  old_port_open_at_open = []
+
+  def open_port(*a, **k):
+    old_port_open_at_open.append(old.is_open)
+    return ports.pop(0)
+
+  t = TeensyTransport(reconnect_interval=0.01, handshake_timeout=0.5)
+  t.find_teensy_port = lambda: '/dev/fake'
+  with patch.object(usb.serial, 'Serial', open_port):
+    try:
+      assert await t.connect() is True
+      assert await t.send_config(CFG10) is True
+      old.write_delay = 0.05
+      pinning = asyncio.ensure_future(t.send_brightness(1.0))
+      await asyncio.sleep(0.01)
+      t.disconnect('link_lost')
+      assert await t.connect() is True
+      assert old_port_open_at_open[1] is False      # new port opened only after the old one closed
+      assert await pinning is False                 # landed on the dead port: not restoration
+      assert t._brightness_pinned is False
+      assert await t.send_config(CFG10) is True and t.state == LinkState.CONFIGURED
+      assert await t.send_blackout(False)
+      assert t.mark_ready() is False and t.state == LinkState.CONFIGURED
+      assert await t.send_frame(b'\x01' * 30) is False
+      assert await t.send_brightness(1.0) and t.mark_ready() is True
+      assert PacketType.BRIGHTNESS in _ptypes(new.written)   # pinned on *this* connection
+    finally:
+      t.disconnect()
+
+
+@pytest.mark.asyncio
+async def test_apply_geometry_reads_current_layout_after_acquiring_lock():
+  """Review repro: a layout request commits 12 LEDs while a queued bring-up
+  holds a 10-LED layout it captured earlier; the firmware must end on 12."""
+  teensy = FakeTeensy()
+  t, patcher = _connected_transport(teensy)
+  current = {'layout': 'L10', 'oc': CFG10}
+  commits = []
+
+  def route_commit(compiled):
+    current.update(layout=compiled, oc=CFG12)
+    commits.append(('route', compiled, t.state))
+
+  def bring_up_provider():
+    return current['layout'], list(current['oc'])
+
+  try:
+    await t.connect()
+    teensy.respond_config = False
+    route = asyncio.ensure_future(t.apply_geometry(lambda: ('L12', list(CFG12)), route_commit))
+    await _settle()
+    bring_up = asyncio.ensure_future(t.apply_geometry(
+      bring_up_provider, lambda compiled: commits.append(('bring_up', compiled, t.state))))
+    await _settle()
+    assert teensy.configs == 1 and commits == []        # bring-up waits for the route's outcome
+    rid = _tag_of(teensy.written[-1])
+    teensy.respond_config = True
+    teensy.feed(build_packet(PacketType.CONFIG_ACK, struct.pack('<I', 5), frame_id=rid))
+    assert await route is True
+    assert await bring_up is True
+    from app.models.protocol import build_config_payload
+    config_payloads = [_decode(w)[1] for w in teensy.written if _decode(w)[0].packet_type == PacketType.CONFIG]
+    assert config_payloads == [build_config_payload(CFG12), build_config_payload(CFG12)]
+    # commit runs on ACK, before any promotion: renderer and firmware agree before frames may flow
+    assert commits == [('route', 'L12', LinkState.HELLO_OK), ('bring_up', 'L12', LinkState.HELLO_OK)]
+    assert t.state == LinkState.CONFIGURED
+    assert await t.apply_geometry(lambda: None, lambda c: commits.append('never')) is False
+    assert 'never' not in commits
+  finally:
+    t.disconnect()
+    patcher.stop()
+
+
+@pytest.mark.asyncio
+async def test_apply_geometry_commit_failure_holds_link_below_ready():
+  teensy = FakeTeensy()
+  t, patcher = _connected_transport(teensy)
+  try:
+    await _bring_up(t)
+
+    def bad_commit(compiled):
+      raise RuntimeError('renderer exploded')
+    assert await t.apply_geometry(lambda: ('L12', list(CFG12)), bad_commit) is False
+    assert t.state == LinkState.HELLO_OK and await t.send_frame(b'\x01' * 36) is False
+    assert await t.apply_geometry(lambda: ('L12', list(CFG12)), lambda c: None) is True
+    assert t.state == LinkState.READY
+  finally:
+    t.disconnect()
+    patcher.stop()
+
+
+@pytest.mark.asyncio
+async def test_apply_geometry_offline_commit_is_explicit_and_still_false():
+  teensy = FakeTeensy()
+  t, patcher = _connected_transport(teensy)
+  commits = []
+  try:
+    assert await t.apply_geometry(lambda: ('L', list(CFG10)), commits.append) is False
+    assert commits == []
+    assert await t.apply_geometry(lambda: ('L', list(CFG10)), commits.append, commit_offline=True) is False
+    assert commits == ['L']
+  finally:
+    patcher.stop()
+
+
+@pytest.mark.asyncio
+async def test_reboot_drains_in_flight_write_before_bootloader_touch():
+  """Review repro: reboot() hook ran while the port was still open with a FRAME
+  write unfinished. The 134-baud touch must see a closed port and a traced TX."""
+  teensy = FakeTeensy()
+  t, patcher = _connected_transport(teensy)
+  seen = {}
+
+  async def fake_reboot(port):
+    seen['port_open'] = teensy.is_open
+    seen['writer_done'] = t.writer._task.done()
+    seen['frame_tx'] = len([e for e in t.trace.events
+                            if e.kind == 'tx' and e.detail['ptype'] == int(PacketType.FRAME)])
+    return True
+
+  try:
+    await _bring_up(t)
+    teensy.write_delay = 0.05
+    sending = asyncio.ensure_future(t.send_frame(b'\x07' * 30))
+    await asyncio.sleep(0.01)
+    with patch.object(usb, 'reboot_teensy', fake_reboot):
+      assert await t.reboot() is True
+    assert seen == {'port_open': False, 'writer_done': True, 'frame_tx': 1}
+    assert await sending is True and teensy.frames == [b'\x07' * 30]
+  finally:
+    t.disconnect()
+    patcher.stop()
+
+
+@pytest.mark.asyncio
+async def test_disconnect_and_drain_waits_for_port_close():
+  teensy = FakeTeensy()
+  t, patcher = _connected_transport(teensy)
+  try:
+    await _bring_up(t)
+    teensy.write_delay = 0.05
+    sending = asyncio.ensure_future(t.send_frame(b'\x07' * 30))
+    await asyncio.sleep(0.01)
+    await t.disconnect_and_drain('shutdown')
+    assert t.state == LinkState.CLOSED and teensy.is_open is False
+    assert t._rx_task is None and sending.done()
+    assert 'shutdown' not in [k for k, _, _ in t.detector.emitted]
+  finally:
+    patcher.stop()
+
+
+@pytest.mark.asyncio
+async def test_live_reboot_renegotiates_caps_before_config_and_drops_stale_transaction():
+  """Review repro: pushed DIAG moves boot 2 -> 3 with no disconnect. boot_id
+  must follow, HELLO must precede the new CONFIG, and the old boot's CONFIG ACK
+  must not promote the new one."""
+  teensy = FakeTeensy(boot_id=2)
+  t, patcher = _connected_transport(teensy)
+
+  async def connect_sequence():
+    await t.apply_geometry(lambda: ('L', list(CFG10)), lambda c: None)
+    await t.send_brightness(1.0)
+    await t.send_blackout(False)
+    t.mark_ready()
+
+  t._on_connect_callback = connect_sequence
+  try:
+    await _bring_up(t)
+    assert t.boot_id == 2 and t.detector._current_boot_id == 2
+    teensy.respond_config = False
+    stale = asyncio.ensure_future(t.send_config(CFG10, timeout=1.0, attempts=1))
+    await _settle()
+    rid_stale = _tag_of(teensy.written[-1])
+    n_before = len(teensy.written)
+    # The Teensy reboots in place: boot 3 announces itself through pushed DIAG
+    teensy.boot_id = 3
+    teensy.respond_config = True
+    teensy.feed(build_packet(PacketType.DIAG, _diag(boot_id=3, uptime_ms=100), frame_id=0))
+    await _settle()
+    assert t.state == LinkState.HELLO_OK and t.boot_id == 3   # HELLO/CAPS refreshed first
+    # The old boot's ACK arrives late: discarded, never a promotion
+    teensy.feed(build_packet(PacketType.CONFIG_ACK, struct.pack('<I', 77), frame_id=rid_stale))
+    assert await stale is False
+    assert await t.wait_for(LinkState.READY, timeout=2.0)
+    assert t.geometry_generation != 77
+    assert t.detector._current_boot_id == 3 and t.get_status()['boot_id'] == 3
+    after = _ptypes(teensy.written[n_before:])
+    assert after.index(PacketType.HELLO) < after.index(PacketType.CONFIG)
+    assert [k for k, _, _ in t.detector.emitted if k == 'unexpected_reboot'] == ['unexpected_reboot']
+  finally:
+    t.disconnect()
+    patcher.stop()
+
+
+@pytest.mark.asyncio
+async def test_terminal_write_outcome_is_appended_to_the_link_lost_incident():
+  """Review repro: disconnect mid-FRAME write. The incident's frozen snapshot
+  holds no FRAME TX yet; the write's outcome must still reach that incident."""
+  teensy = FakeTeensy()
+  t, patcher = _connected_transport(teensy)
+  incidents, appends = [], []
+
+  async def record(kind, detail):
+    incidents.append((kind, detail))
+    return {'id': f'inc-{len(incidents)}'}
+
+  async def append(incident_id, key, value):
+    appends.append((incident_id, key, value))
+    return True
+
+  t.detector.on_incident = record
+  t.detector.on_append = append
+  try:
+    await _bring_up(t)
+    teensy.write_delay = 0.05
+    sending = asyncio.ensure_future(t.send_frame(b'\x07' * 30))
+    await asyncio.sleep(0.01)
+    t.disconnect('link_lost')
+    await t.writer.wait_stopped()
+    assert await sending is True
+    await _settle()
+    assert [k for k, _ in incidents] == ['link_lost']
+    frozen = incidents[0][1]['evidence']['trace']['events']
+    assert not [e for e in frozen if e['kind'] == 'tx' and e['detail']['ptype'] == int(PacketType.FRAME)]
+    assert len(appends) == 1
+    incident_id, key, outcome = appends[0]
+    assert (incident_id, key) == ('inc-1', 'terminal_write')
+    assert outcome['ok'] is True and outcome['ptype'] == int(PacketType.FRAME)
+    assert outcome['frame_id'] == 1 and outcome['bytes'] == outcome['written'] == len(teensy.written[-1])
+  finally:
+    t.disconnect()
+    patcher.stop()

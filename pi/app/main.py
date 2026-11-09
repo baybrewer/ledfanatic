@@ -114,6 +114,7 @@ def main():
   incidents = IncidentRecorder(transport, render_state, state_manager, brightness_engine,
                                logs_dir=log_dir)
   transport.detector.on_incident = incidents.capture_event
+  transport.detector.on_append = incidents.append
   maintenance = TeensyMaintenance(transport, incidents, transport.detector)
 
   # Layout — load, validate, compile
@@ -536,12 +537,20 @@ def main():
     async def _on_teensy_connect():
       logger.info("Sending CONFIG to Teensy...")
       deps = app.state.deps
-      current_layout = deps.compiled_layout
-      if current_layout is None:
-        logger.warning("No compiled layout available for CONFIG")
-        return
-      oc = output_config_list(current_layout)
-      ok = await transport.send_config(oc)
+
+      def current_geometry():
+        # Read under the CONFIG lock (apply_geometry calls this after acquiring
+        # it) so a layout change committed just before us is what we send
+        layout = deps.compiled_layout
+        return None if layout is None else (layout, output_config_list(layout))
+
+      def commit(compiled):
+        # Normally a no-op: the layout routes already committed this object.
+        # Re-applying only on drift keeps reconnects from recreating the effect.
+        if deps.renderer.layout is not compiled:
+          deps.renderer.apply_layout(compiled, deps.layout_config)
+
+      ok = await transport.apply_geometry(current_geometry, commit)
       if ok:
         logger.info("CONFIG ACK received")
       else:
@@ -581,7 +590,8 @@ def main():
       task.cancel()
     await asyncio.gather(*_background_tasks, return_exceptions=True)
     audio_analyzer.stop()
-    transport.disconnect()
+    # The in-flight write finishes and the port closes before the process exits
+    await transport.disconnect_and_drain('shutdown')
     state_manager.force_save()
     logger.info("Shutdown complete")
 

@@ -24,6 +24,8 @@ class FakeTransport:
     self.reboot_result = True
     self.wait_result = True
     self.disconnects = []
+    self.drains = []
+    self.drain_gate = None            # asyncio.Event: disconnect_and_drain blocks until set
     self.request_diag = AsyncMock(return_value={'reset_reason_text': 'software'})
     self.request_crash = AsyncMock(return_value={'valid': False})
 
@@ -33,6 +35,12 @@ class FakeTransport:
 
   def disconnect(self, reason='x'):
     self.disconnects.append(reason)
+
+  async def disconnect_and_drain(self, reason='x'):
+    self.disconnect(reason)
+    if self.drain_gate is not None:
+      await self.drain_gate.wait()
+    self.drains.append(reason)
 
   async def reboot(self):
     self.reboot_calls += 1
@@ -268,12 +276,40 @@ async def test_usb_power_cycle_runs_sudo_uhubctl(monkeypatch):
   result = await m.usb_power_cycle('wedged')
   assert calls == [('sudo', '/usr/sbin/uhubctl', '-l', '1-1', '-a', 'cycle', '-d', '3')]
   assert inc.captures == [('usb_power_cycle', 'wedged')]
-  assert t.disconnects == ['maintenance_power_cycle']
+  assert t.disconnects == t.drains == ['maintenance_power_cycle']
   assert t.maintenance_at_wait is False and t.maintenance is False
   assert det.armed[0][0] == 11 and det.disarmed == 1
   assert result['cycled'] is True and result['reconnected'] is True
   assert 'hub 1-1' in result['output']
   assert inc.appends[0][1] == 'post_reset'
+
+
+@pytest.mark.asyncio
+async def test_usb_power_cycle_waits_for_port_drain_before_uhubctl(monkeypatch):
+  """Review repro: hub power must not be cut while the old port is still open
+  finishing a write."""
+  m, t, inc, det = make(uhubctl='/usr/sbin/uhubctl')
+  t.drain_gate = asyncio.Event()
+  calls = []
+
+  class FakeProc:
+    returncode = 0
+
+    async def communicate(self):
+      return b'ok', b''
+
+  async def fake_exec(*args, **kwargs):
+    calls.append(list(t.drains))
+    return FakeProc()
+  monkeypatch.setattr(tm.asyncio, 'create_subprocess_exec', fake_exec)
+
+  op = asyncio.create_task(m.usb_power_cycle())
+  await settle()
+  assert t.disconnects == ['maintenance_power_cycle'] and calls == []
+  t.drain_gate.set()
+  result = await op
+  assert calls == [['maintenance_power_cycle']]          # uhubctl ran after the drain completed
+  assert result['cycled'] is True
 
 
 @pytest.mark.asyncio

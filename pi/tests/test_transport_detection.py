@@ -522,3 +522,73 @@ def test_ping_success_closes_ping_stall(h):
   assert h.detector.open_episodes['stall'].detail['origin'] == 'ping'
   h.detector.on_ping_result(True)
   assert 'stall' not in h.detector.open_episodes
+
+
+# --- Codex round 2: terminal write evidence, CAPS refresh after live reboot ---
+
+def _appender(h):
+  appends = []
+
+  async def append(incident_id, key, value):
+    appends.append((incident_id, key, value))
+    return True
+  h.detector.on_append = append
+  return appends
+
+
+@pytest.mark.asyncio
+async def test_terminal_write_appends_to_link_lost_incident_once_id_is_known(h):
+  appends = _appender(h)
+  outcome = {'ok': True, 'ptype': 2, 'frame_id': 7, 'bytes': 40, 'written': 40}
+  h.detector.on_disconnected('link_lost')
+  h.detector.on_terminal_write(outcome)       # the recorder has not returned an id yet
+  await h.settle()
+  assert h.kinds() == ['link_lost']
+  assert appends == [('inc-1', 'terminal_write', outcome)]
+  # A graceful or maintenance close owes the bundle nothing
+  h.detector.on_state(LinkState.READY)
+  h.detector.on_disconnected('maintenance_reboot')
+  h.detector.on_terminal_write({'ok': True})
+  await h.settle()
+  assert len(appends) == 1
+
+
+@pytest.mark.asyncio
+async def test_terminal_write_reaches_write_timeout_incident_in_either_order(h):
+  appends = _appender(h)
+  first = {'ok': False, 'error': 'write_timeout', 'ptype': 2, 'frame_id': 3, 'bytes': 40}
+  # write_timeout fires inside the write: outcome arrives before the incident id
+  h.detector.on_write_timeout({'error': 'x'})
+  h.detector.on_disconnected('write_timeout')
+  h.detector.on_terminal_write(first)
+  await h.settle()
+  assert appends == [('inc-1', 'terminal_write', first)]
+  # ...and the other way round
+  h.detector.on_state(LinkState.READY)
+  second = {'ok': False, 'error': 'write_timeout', 'ptype': 2, 'frame_id': 9, 'bytes': 40}
+  h.detector.on_write_timeout()
+  h.detector.on_disconnected('write_timeout')
+  await h.settle()
+  h.detector.on_terminal_write(second)
+  await h.settle()
+  assert appends[-1] == ('inc-2', 'terminal_write', second)
+  kinds = [e.kind for e in h.transport.trace.events]
+  assert kinds.count('terminal_write') == 2
+
+
+@pytest.mark.asyncio
+async def test_rehandshake_after_live_reboot_moves_boot_without_second_incident(h):
+  h.detector.on_connected({'boot_id': 2, 'firmware_version': '1.3.0'})
+  h.push_diag(boot_id=2, uptime_ms=50_000)
+  h.push_diag(boot_id=3, uptime_ms=500)
+  h.detector.on_rehandshake({'boot_id': 3, 'firmware_version': '1.3.0', 'faulted': 0})
+  await h.settle()
+  assert h.kinds() == ['unexpected_reboot']
+  assert h.detector._current_boot_id == 3 and h.detector._established
+  h.push_diag(boot_id=3, uptime_ms=1500)
+  await h.settle()
+  assert h.kinds() == ['unexpected_reboot']        # boot 3 is now the baseline
+  # A faulted CAPS on the refreshed boot still opens the fault episode
+  h.detector.on_rehandshake({'boot_id': 3, 'firmware_version': '1.3.0', 'faulted': 1})
+  await h.settle()
+  assert h.kinds() == ['unexpected_reboot', 'fault']

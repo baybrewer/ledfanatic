@@ -73,16 +73,19 @@ def create_router(deps, require_auth) -> APIRouter:
             raise HTTPException(422, detail=errors)
 
         compiled = compile_layout(staged)
-        oc = output_config_list(compiled)
 
-        config_ok = await deps.transport.send_config(oc)
+        def commit(committed):
+            # Runs on CONFIG ACK, inside the transport's geometry transaction,
+            # before the link may send frames: firmware and renderer agree first
+            deps.layout_config = staged
+            deps.compiled_layout = committed
+            deps.renderer.apply_layout(committed, staged)
+
+        config_ok = await deps.transport.apply_geometry(
+            lambda: (compiled, output_config_list(compiled)), commit)
         if not config_ok:
             raise HTTPException(502, detail="Teensy rejected CONFIG or timed out")
 
-        # ACK received — commit
-        deps.layout_config = staged
-        deps.compiled_layout = compiled
-        deps.renderer.apply_layout(compiled, staged)
         save_layout(staged, deps.config_dir)
 
         logger.info(f"Layout applied: {compiled.width}x{compiled.height}, {compiled.total_mapped} LEDs")
@@ -200,13 +203,19 @@ def create_router(deps, require_auth) -> APIRouter:
             if errors:
                 raise HTTPException(400, f"Loaded config has errors: {'; '.join(errors)}")
             new_compiled = compile_layout(new_config)
-            oc = output_config_list(new_compiled)
-            ok = await deps.transport.send_config(oc)
-            if not ok:
-                logger.warning("CONFIG NAK after loading saved config")
-            deps.layout_config = new_config
-            deps.compiled_layout = new_compiled
-            deps.renderer.apply_layout(new_compiled, new_config)
+
+            def commit(committed):
+                deps.layout_config = new_config
+                deps.compiled_layout = committed
+                deps.renderer.apply_layout(committed, new_config)
+
+            # Offline there is no firmware geometry to disagree with, so the
+            # renderer still switches and the next bring-up CONFIGs this layout
+            ok = await deps.transport.apply_geometry(
+                lambda: (new_compiled, output_config_list(new_compiled)), commit,
+                commit_offline=True)
+            if not ok and deps.transport.connected:
+                raise HTTPException(502, "Teensy rejected CONFIG or timed out")
             logger.info(f"Loaded layout config: {filename}")
             return {"status": "ok"}
         except HTTPException:
