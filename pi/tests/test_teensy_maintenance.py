@@ -288,6 +288,98 @@ async def test_usb_power_cycle_is_single_flight_with_reset():
   await first
 
 
+# --- subprocess cleanup on cancellation ---
+
+class HangingProc:
+  """A child that never finishes on its own; records kill()/wait()."""
+
+  def __init__(self):
+    self.returncode = None
+    self.killed = False
+    self.waited = False
+
+  async def communicate(self):
+    await asyncio.Event().wait()
+
+  def kill(self):
+    self.killed = True
+    self.returncode = -9
+
+  async def wait(self):
+    self.waited = True
+    return self.returncode
+
+
+@pytest.mark.asyncio
+async def test_cancel_during_uhubctl_kills_and_reaps_child(monkeypatch):
+  m, t, inc, det = make(uhubctl='/usr/sbin/uhubctl')
+  proc = HangingProc()
+
+  async def fake_exec(*args, **kwargs):
+    return proc
+  monkeypatch.setattr(tm.asyncio, 'create_subprocess_exec', fake_exec)
+
+  awaiter = asyncio.create_task(m.usb_power_cycle())
+  for _ in range(5):
+    await asyncio.sleep(0)
+  assert m.busy and not proc.killed
+  m._task.cancel()
+  with pytest.raises(asyncio.CancelledError):
+    await awaiter
+  assert proc.killed and proc.waited
+  assert t.maintenance is False and det.disarmed == 1
+  assert inc.appends[0][2]['error'] == 'cancelled' and inc.appends[0][2]['cycled'] is False
+
+
+@pytest.mark.asyncio
+async def test_uhubctl_exception_after_spawn_still_reaps_child(monkeypatch):
+  proc = HangingProc()
+
+  async def fake_exec(*args, **kwargs):
+    return proc
+
+  async def boom(awaitable, timeout):
+    awaitable.close()
+    raise RuntimeError('loop torn down')
+  monkeypatch.setattr(tm.asyncio, 'create_subprocess_exec', fake_exec)
+  monkeypatch.setattr(tm.asyncio, 'wait_for', boom)
+  with pytest.raises(RuntimeError):
+    await tm._run_uhubctl('/usr/sbin/uhubctl')
+  assert proc.killed and proc.waited
+
+
+@pytest.mark.asyncio
+async def test_cancel_during_loader_wait_kills_and_reaps_loader(monkeypatch):
+  from app.transport import teensy_reset
+  proc = HangingProc()
+
+  async def fake_exec(*args, **kwargs):
+    return proc
+  monkeypatch.setattr(teensy_reset.shutil, 'which', lambda name: '/usr/bin/teensy_loader_cli')
+  monkeypatch.setattr(teensy_reset.asyncio, 'create_subprocess_exec', fake_exec)
+
+  task = asyncio.create_task(teensy_reset.boot_from_bootloader())
+  for _ in range(3):
+    await asyncio.sleep(0)
+  task.cancel()
+  with pytest.raises(asyncio.CancelledError):
+    await task
+  assert proc.killed and proc.waited
+
+
+@pytest.mark.asyncio
+async def test_loader_timeout_still_kills_and_reaps(monkeypatch):
+  from app.transport import teensy_reset
+  proc = HangingProc()
+
+  async def fake_exec(*args, **kwargs):
+    return proc
+  monkeypatch.setattr(teensy_reset.shutil, 'which', lambda name: '/usr/bin/teensy_loader_cli')
+  monkeypatch.setattr(teensy_reset.asyncio, 'create_subprocess_exec', fake_exec)
+  assert await teensy_reset.boot_from_bootloader(timeout=0.01) is False
+  assert proc.killed and proc.waited
+
+
 def test_find_uhubctl_falls_back_to_usr_sbin(monkeypatch):
   monkeypatch.setattr(tm.shutil, 'which', lambda name: None)
   monkeypatch.setattr(tm.os.path, 'exists', lambda p: p == '/usr/sbin/uhubctl')

@@ -99,11 +99,12 @@ def _diag(**over):
 class FakeTeensy(FakeSerial):
   """Answers requests like firmware 1.3.0: echoes the request id."""
 
-  def __init__(self, boot_id=1, respond_config=True, geometry_generation=1):
+  def __init__(self, boot_id=1, respond_config=True, geometry_generation=1, ignore_configs=0):
     super().__init__()
     self.boot_id = boot_id
     self.respond_config = respond_config
     self.geometry_generation = geometry_generation
+    self.ignore_configs = ignore_configs   # swallow the first N CONFIGs (lost ACK)
     self.frames: list[bytes] = []
     self.configs = 0
 
@@ -115,7 +116,9 @@ class FakeTeensy(FakeSerial):
       self.feed(build_packet(PacketType.CAPS, _caps(self.boot_id, geometry_generation=self.geometry_generation), frame_id=rid))
     elif header.packet_type == PacketType.CONFIG:
       self.configs += 1
-      if self.respond_config:
+      if self.ignore_configs > 0:
+        self.ignore_configs -= 1
+      elif self.respond_config:
         self.geometry_generation += 1
         self.feed(build_packet(PacketType.CONFIG_ACK, struct.pack('<I', self.geometry_generation), frame_id=rid))
     elif header.packet_type == PacketType.PING:
@@ -130,11 +133,11 @@ async def _settle(n=3):
     await asyncio.sleep(0.01)
 
 
-def _writer(fake, **kw):
+async def _writer(fake, **kw):
   trace = TransportTrace()
   errors = []
   w = SerialWriter(trace, on_link_error=lambda reason, exc: errors.append(reason))
-  w.start(fake)
+  await w.start(fake)
   return w, trace, errors
 
 
@@ -147,7 +150,7 @@ def _job(req_id, size=8):
 @pytest.mark.asyncio
 async def test_caller_timeout_mid_write_does_not_start_next_job_early():
   fake = FakeSerial(write_delay=0.08)
-  w, trace, _ = _writer(fake)
+  w, trace, _ = await _writer(fake)
   with pytest.raises(asyncio.TimeoutError):
     await w.write(_job(1), PacketType.PING, 1, timeout=0.01)   # write still in flight
   await w.write(_job(2), PacketType.PING, 2, timeout=1.0)
@@ -159,7 +162,7 @@ async def test_caller_timeout_mid_write_does_not_start_next_job_early():
 @pytest.mark.asyncio
 async def test_timed_out_in_flight_write_leaves_writer_alive_and_traced():
   fake = FakeSerial(write_delay=0.05)
-  w, trace, _ = _writer(fake)
+  w, trace, _ = await _writer(fake)
   with pytest.raises(asyncio.TimeoutError):
     await w.write(_job(1), PacketType.PING, 1, timeout=0.01)
   await asyncio.sleep(0.1)                 # the in-flight write completes; set_result must not raise
@@ -174,7 +177,7 @@ async def test_timed_out_in_flight_write_leaves_writer_alive_and_traced():
 @pytest.mark.asyncio
 async def test_job_cancelled_before_start_is_skipped():
   fake = FakeSerial(write_delay=0.05)
-  w, trace, _ = _writer(fake)
+  w, trace, _ = await _writer(fake)
   first = asyncio.ensure_future(w.write(_job(1), PacketType.PING, 1, timeout=1.0))
   await asyncio.sleep(0.005)               # job 1 is being written in the thread
   with pytest.raises(asyncio.TimeoutError):
@@ -190,7 +193,7 @@ async def test_job_cancelled_before_start_is_skipped():
 @pytest.mark.asyncio
 async def test_serial_timeout_becomes_link_error():
   fake = FakeSerial(raise_on_write=serial.SerialTimeoutException('Write timeout'))
-  w, trace, errors = _writer(fake)
+  w, trace, errors = await _writer(fake)
   with pytest.raises(LinkError):
     await w.write(_job(1), PacketType.PING, 1, timeout=1.0)
   assert errors == ['write_timeout']
@@ -202,37 +205,61 @@ async def test_serial_timeout_becomes_link_error():
 
 
 @pytest.mark.asyncio
-async def test_stop_fails_pending_jobs():
+async def test_stop_fails_queued_jobs_but_completes_the_in_flight_write():
   fake = FakeSerial(write_delay=0.05)
-  w, _, _ = _writer(fake)
+  w, trace, _ = await _writer(fake)
   first = asyncio.ensure_future(w.write(_job(1), PacketType.PING, 1, timeout=1.0))
   second = asyncio.ensure_future(w.write(_job(2), PacketType.PING, 2, timeout=1.0))
   await asyncio.sleep(0.005)
-  w.stop()
+  task = w.stop(close_port=True)
+  assert not w.running and fake.is_open          # port stays open under the in-flight write
   with pytest.raises(LinkError):
     await second
   with pytest.raises(LinkError):
-    await first
-  with pytest.raises(LinkError):
     await w.write(_job(3), PacketType.PING, 3)
+  assert await first == len(_job(1))            # the started write ran to completion
+  await task
+  assert fake.is_open is False
+  assert [_tag_of(f) for f in fake.written] == [1]
+  tx = [e for e in trace.events if e.kind == 'tx']
+  assert len(tx) == 1 and tx[0].detail['req_id'] == 1 and tx[0].detail['ok']
+  assert trace.events[-1].kind == 'writer_stopped'
+
+
+@pytest.mark.asyncio
+async def test_start_after_stop_waits_for_the_old_writer():
+  """A new port lifetime never overlaps a write still in flight on the old one."""
+  old, new = FakeSerial(write_delay=0.05), FakeSerial()
+  w, trace, _ = await _writer(old)
+  first = asyncio.ensure_future(w.write(_job(1), PacketType.PING, 1, timeout=1.0))
+  await asyncio.sleep(0.005)
+  w.stop(close_port=True)
+  await w.start(new)
+  assert old.is_open is False and old.order == [('start', 1), ('end', 1)]
+  assert await first == len(_job(1))
+  await w.write(_job(2), PacketType.PING, 2, timeout=1.0)
+  assert [_tag_of(f) for f in new.written] == [2]
+  tx = [e.detail['req_id'] for e in trace.events if e.kind == 'tx']
+  assert tx == [1, 2]
+  w.stop()
 
 
 # --- RxDispatcher ---
 
-def _dispatcher(fake):
+async def _dispatcher(fake):
   trace = TransportTrace()
   pots, diags = [], []
   d = RxDispatcher(trace, on_pots=lambda h, p: pots.append(p), on_diag=diags.append)
   d.attach(fake)
   w = SerialWriter(trace)
-  w.start(fake)
+  await w.start(fake)
   return d, w, trace, pots, diags
 
 
 @pytest.mark.asyncio
 async def test_concurrent_stats_resolve_to_their_own_callers():
   fake = FakeSerial()
-  d, w, trace, _, _ = _dispatcher(fake)
+  d, w, trace, _, _ = await _dispatcher(fake)
   a = asyncio.ensure_future(d.request(w, PacketType.PING, timeout=1.0))
   b = asyncio.ensure_future(d.request(w, PacketType.PING, timeout=1.0))
   await _settle()
@@ -252,7 +279,7 @@ async def test_concurrent_stats_resolve_to_their_own_callers():
 @pytest.mark.asyncio
 async def test_late_reply_after_timeout_is_traced_not_delivered():
   fake = FakeSerial()
-  d, w, trace, _, _ = _dispatcher(fake)
+  d, w, trace, _, _ = await _dispatcher(fake)
   assert await d.request(w, PacketType.PING, timeout=0.02) is None
   rid = _tag_of(fake.written[0])
   assert d.waiters == {}
@@ -267,7 +294,7 @@ async def test_late_reply_after_timeout_is_traced_not_delivered():
 @pytest.mark.asyncio
 async def test_config_nak_resolves_none():
   fake = FakeSerial()
-  d, w, trace, _, _ = _dispatcher(fake)
+  d, w, trace, _, _ = await _dispatcher(fake)
   req = asyncio.ensure_future(d.request(w, PacketType.CONFIG, b'\x00' * 17, timeout=1.0))
   await _settle()
   rid = _tag_of(fake.written[0])
@@ -280,7 +307,7 @@ async def test_config_nak_resolves_none():
 @pytest.mark.asyncio
 async def test_pushed_diag_caches_while_solicited_diag_resolves_waiter():
   fake = FakeSerial()
-  d, w, trace, _, diags = _dispatcher(fake)
+  d, w, trace, _, diags = await _dispatcher(fake)
   req = asyncio.ensure_future(d.request(w, PacketType.DIAG, timeout=1.0))
   await _settle()
   rid = _tag_of(fake.written[0])
@@ -326,6 +353,51 @@ def test_legacy_reply_without_request_id_reaches_sole_waiter():
   loop.close()
 
 
+def test_incomplete_tail_is_traced_at_read_time_and_on_detach():
+  fake = FakeSerial()
+  trace = TransportTrace()
+  d = RxDispatcher(trace)
+  d.attach(fake)
+  fake.rx.extend(b'\x03\x01\x02')          # a packet whose delimiter never arrives
+  assert d.drain() == 0
+  raw = [e for e in trace.events if e.kind == 'rx_raw']
+  assert len(raw) == 1 and trace.raw_for(raw[0]) == b'\x03\x01\x02'
+  assert trace.raw_bytes_retained == 3
+  d.detach('link_lost')
+  tail = [e for e in trace.events if e.kind == 'rx_tail_discarded']
+  assert len(tail) == 1
+  assert tail[0].detail['reason'] == 'link_lost'
+  assert tail[0].detail['wire'] == {'offset': 0, 'len': 3, 'chunks': [raw[0].raw_offset]}
+
+
+def test_packet_and_rejection_events_reference_wire_bytes():
+  """Packets are referenced by the chunks they were cut from, not re-copied decoded."""
+  fake = FakeSerial()
+  trace = TransportTrace()
+  d = RxDispatcher(trace)
+  d.attach(fake)
+  framed = frame_packet(build_packet(PacketType.STATS, _stats(), frame_id=0))
+  fake.rx.extend(framed[:5])                  # split across two serial reads
+  d.drain()
+  fake.rx.extend(framed[5:])
+  assert d.drain() == 1
+  raw = [e for e in trace.events if e.kind == 'rx_raw']
+  assert b''.join(trace.raw_for(r) for r in raw) == framed
+  rx = next(e for e in trace.events if e.kind == 'rx')
+  assert rx.raw_offset is None                # no second copy in the ring
+  assert rx.detail['wire'] == {'offset': 0, 'len': len(framed),
+                               'chunks': [raw[0].raw_offset, raw[1].raw_offset]}
+  bad = bytearray(framed)
+  bad[-3] ^= 0xFF                             # corrupt the CRC, keep COBS framing valid
+  fake.rx.extend(bad)
+  d.drain()
+  rej = next(e for e in trace.events if e.kind == 'rejected')
+  assert rej.detail['reason'] in ('verify', 'cobs')
+  assert rej.detail['wire']['offset'] == len(framed) and rej.detail['wire']['len'] == len(framed)
+  wire_chunk = next(e for e in trace.events if e.kind == 'rx_raw' and e.raw_offset in rej.detail['wire']['chunks'])
+  assert trace.raw_for(wire_chunk) == bytes(bad)
+
+
 def test_request_ids_are_nonzero_and_unique():
   d = RxDispatcher(TransportTrace())
   ids = [d.next_id() for _ in range(1000)]
@@ -344,6 +416,15 @@ def _connected_transport(teensy: FakeTeensy):
   return t, patcher
 
 
+async def _bring_up(t: TeensyTransport, config=(10, 0, 0, 0, 0, 0, 0, 0)):
+  """The connect sequence main.py runs: CONFIG → brightness → blackout → mark_ready."""
+  assert await t.connect() is True
+  assert await t.send_config(list(config)) is True
+  assert await t.send_brightness(1.0) and await t.send_blackout(False)
+  assert t.mark_ready() is True
+  assert t.state == LinkState.READY
+
+
 @pytest.mark.asyncio
 async def test_send_frame_refused_before_ready_and_raw_format_only():
   teensy = FakeTeensy()
@@ -358,7 +439,7 @@ async def test_send_frame_refused_before_ready_and_raw_format_only():
     assert t.state == LinkState.CONFIGURED and t.geometry_generation == 2
     assert await t.send_frame(b'\x01' * 30) is False
     assert await t.send_brightness(1.0) and await t.send_blackout(False)
-    t.mark_ready()
+    assert t.mark_ready() is True
     assert t.state == LinkState.READY
     pixels = bytes(range(30))
     assert await t.send_frame(pixels) is True
@@ -376,9 +457,7 @@ async def test_reconnect_to_configured_teensy_sends_no_frame_until_ack():
   teensy = FakeTeensy()
   t, patcher = _connected_transport(teensy)
   try:
-    await t.connect()
-    await t.send_config([10, 0, 0, 0, 0, 0, 0, 0])
-    t.mark_ready()
+    await _bring_up(t)
     assert await t.send_frame(b'\x02' * 30)
     t.disconnect('link_lost')
     assert t.state == LinkState.CLOSED and not t.connected
@@ -387,14 +466,18 @@ async def test_reconnect_to_configured_teensy_sends_no_frame_until_ack():
     teensy.respond_config = False
     assert await t.connect() is True
     assert await t.send_frame(b'\x03' * 30) is False
-    assert await t.send_config([10, 0, 0, 0, 0, 0, 0, 0], timeout=0.05) is False
+    assert await t.send_config([10, 0, 0, 0, 0, 0, 0, 0], timeout=0.05, attempts=1) is False
     assert t.state == LinkState.HELLO_OK
-    t.mark_ready()                              # connect sequence finished without an ACK
+    assert t.mark_ready() is False              # connect sequence finished without an ACK
     assert t.state == LinkState.HELLO_OK
     assert await t.send_frame(b'\x03' * 30) is False
     teensy.respond_config = True
     assert await t.send_config([10, 0, 0, 0, 0, 0, 0, 0]) is True
-    assert t.state == LinkState.READY           # pinned already on this connection
+    # Brightness/blackout from the previous connection do not carry over
+    assert t.state == LinkState.CONFIGURED
+    assert await t.send_frame(b'\x04' * 30) is False
+    assert await t.send_brightness(1.0) and await t.send_blackout(False)
+    assert t.mark_ready() is True
     assert await t.send_frame(b'\x04' * 30) is True
     assert teensy.frames == [b'\x02' * 30, b'\x04' * 30]
   finally:
@@ -407,9 +490,7 @@ async def test_layout_change_in_ready_gates_frames_until_ack():
   teensy = FakeTeensy()
   t, patcher = _connected_transport(teensy)
   try:
-    await t.connect()
-    await t.send_config([10, 0, 0, 0, 0, 0, 0, 0])
-    t.mark_ready()
+    await _bring_up(t)
     teensy.respond_config = False
     pending = asyncio.ensure_future(t.send_config([12, 0, 0, 0, 0, 0, 0, 0], timeout=0.5))
     await _settle()
@@ -456,6 +537,185 @@ async def test_drain_incoming_returns_only_pots():
     assert [h.packet_type for h, _ in packets] == [PacketType.POTS]
     assert t.last_teensy_diag['uptime_ms'] == 5
     assert await t.drain_incoming() == []
+  finally:
+    t.disconnect()
+    patcher.stop()
+
+
+@pytest.mark.asyncio
+async def test_stale_mark_ready_cannot_promote_the_next_connection():
+  """Review repro: link drops mid-restoration, the connect sequence still calls
+  mark_ready(), and after reconnect CONFIG alone must not reach READY."""
+  teensy = FakeTeensy()
+  t, patcher = _connected_transport(teensy)
+  try:
+    await t.connect()
+    assert await t.send_config([10, 0, 0, 0, 0, 0, 0, 0]) is True
+    assert await t.send_brightness(1.0)
+    t.disconnect('link_lost')                   # blackout restore never happened
+    assert t.mark_ready() is False and t.state == LinkState.CLOSED
+    await t.connect()
+    assert await t.send_config([10, 0, 0, 0, 0, 0, 0, 0]) is True
+    assert t.state == LinkState.CONFIGURED
+    assert await t.send_frame(b'\x01' * 30) is False
+    assert await t.send_brightness(1.0)
+    assert t.mark_ready() is False              # blackout still unrestored on this connection
+    assert await t.send_blackout(False)
+    assert t.mark_ready() is True and t.state == LinkState.READY
+  finally:
+    t.disconnect()
+    patcher.stop()
+
+
+@pytest.mark.asyncio
+async def test_lost_config_ack_is_retried_and_stall_clears_only_on_ready():
+  teensy = FakeTeensy(ignore_configs=1)
+  t, patcher = _connected_transport(teensy)
+  try:
+    await t.connect()
+    with patch.object(usb, 'reboot_teensy') as reboot:
+      ok = await t.send_config([10, 0, 0, 0, 0, 0, 0, 0], timeout=0.05, attempts=3, retry_delay=0.01)
+      reboot.assert_not_called()
+    assert ok is True and teensy.configs == 2
+    assert t.state == LinkState.CONFIGURED
+    assert 'stall' in t.detector.open_episodes  # the ACK alone does not end the episode
+    assert await t.send_brightness(1.0) and await t.send_blackout(False)
+    assert t.mark_ready() is True
+    assert 'stall' not in t.detector.open_episodes
+    assert len([e for e in t.detector.emitted if e[0] == 'stall']) == 1
+  finally:
+    t.disconnect()
+    patcher.stop()
+
+
+@pytest.mark.asyncio
+async def test_config_exhausting_attempts_keeps_episode_open_without_reset():
+  teensy = FakeTeensy(respond_config=False)
+  t, patcher = _connected_transport(teensy)
+  try:
+    await t.connect()
+    with patch.object(usb, 'reboot_teensy') as reboot:
+      ok = await t.send_config([10, 0, 0, 0, 0, 0, 0, 0], timeout=0.02, attempts=3, retry_delay=0.01)
+      reboot.assert_not_called()
+    assert ok is False and teensy.configs == 3
+    assert t.state == LinkState.HELLO_OK and t.connected
+    assert 'stall' in t.detector.open_episodes
+    assert t.mark_ready() is False
+  finally:
+    t.disconnect()
+    patcher.stop()
+
+
+@pytest.mark.asyncio
+async def test_reconnect_loop_reruns_bring_up_when_stuck_below_ready():
+  """A connect sequence whose CONFIG ACK was lost is re-run by the loop, never
+  answered with a reboot; the second run reaches READY."""
+  teensy = FakeTeensy(ignore_configs=1)
+  t, patcher = _connected_transport(teensy)
+  runs = []
+
+  async def connect_sequence():
+    runs.append(1)
+    await t.send_config([10, 0, 0, 0, 0, 0, 0, 0], timeout=0.03, attempts=1)
+    await t.send_brightness(1.0)
+    await t.send_blackout(False)
+    t.mark_ready()
+
+  t._on_connect_callback = connect_sequence
+  # The fake port has no /dev node; keep the loop's port-presence check honest otherwise
+  with patch.object(usb, 'BRING_UP_RETRY_S', 0.05), patch.object(usb, 'reboot_teensy') as reboot, \
+       patch.object(usb.os.path, 'exists', lambda path: True):
+    loop_task = asyncio.ensure_future(t.reconnect_loop())
+    try:
+      assert await t.wait_for(LinkState.READY, timeout=2.0)
+      assert runs == [1, 1] and teensy.configs == 2
+      reboot.assert_not_called()
+      assert 'stall' not in t.detector.open_episodes
+      assert t.get_status()['stalled'] is None
+    finally:
+      loop_task.cancel()
+      try:
+        await loop_task
+      except asyncio.CancelledError:
+        pass
+      t.disconnect()
+      patcher.stop()
+
+
+@pytest.mark.asyncio
+async def test_overlapping_config_requests_are_serialized():
+  teensy = FakeTeensy()
+  t, patcher = _connected_transport(teensy)
+  try:
+    await _bring_up(t)
+    base = teensy.configs
+    teensy.respond_config = False
+    a = asyncio.ensure_future(t.send_config([10, 0, 0, 0, 0, 0, 0, 0], timeout=1.0, attempts=1))
+    b = asyncio.ensure_future(t.send_config([12, 0, 0, 0, 0, 0, 0, 0], timeout=1.0, attempts=1))
+    await _settle()
+    assert teensy.configs == base + 1 and t.state == LinkState.HELLO_OK   # B waits for A's outcome
+    rid_a = _tag_of(teensy.written[-1])
+    teensy.feed(build_packet(PacketType.CONFIG_ACK, struct.pack('<I', 5), frame_id=rid_a))
+    assert await a is True
+    await _settle()
+    # B is now the pending (latest) geometry: no READY, no frames, until its own ACK
+    assert teensy.configs == base + 2 and t.state == LinkState.HELLO_OK
+    assert await t.send_frame(b'\x01' * 36) is False
+    rid_b = _tag_of(teensy.written[-1])
+    assert rid_b != rid_a
+    teensy.feed(build_packet(PacketType.CONFIG_ACK, struct.pack('<I', 6), frame_id=rid_b))
+    assert await b is True
+    assert t.state == LinkState.READY and t.geometry_generation == 6
+    assert await t.send_frame(b'\x01' * 36) is True
+  finally:
+    t.disconnect()
+    patcher.stop()
+
+
+@pytest.mark.asyncio
+async def test_disconnect_mid_frame_write_records_tx_before_port_close():
+  teensy = FakeTeensy()
+  t, patcher = _connected_transport(teensy)
+  try:
+    await _bring_up(t)
+    teensy.write_delay = 0.05
+    sending = asyncio.ensure_future(t.send_frame(b'\x07' * 30))
+    await asyncio.sleep(0.01)
+    t.disconnect('link_lost')
+    assert t.state == LinkState.CLOSED and teensy.is_open   # close waits for the write
+    await t.writer.wait_stopped()
+    assert teensy.is_open is False
+    assert await sending is True
+    frame_tx = [e for e in t.trace.events if e.kind == 'tx' and e.detail['ptype'] == int(PacketType.FRAME)]
+    assert len(frame_tx) == 1 and frame_tx[0].detail['ok']
+    assert teensy.frames == [b'\x07' * 30]
+  finally:
+    t.disconnect()
+    patcher.stop()
+
+
+@pytest.mark.asyncio
+async def test_test_pattern_flag_cleared_by_frame_blackout_and_reconnect():
+  teensy = FakeTeensy()
+  t, patcher = _connected_transport(teensy)
+  try:
+    await _bring_up(t)
+    assert await t.send_test_pattern(1) and t.test_pattern_active == 1
+    assert await t.send_frame(b'\x01' * 30) and t.test_pattern_active is None
+    assert await t.send_test_pattern(2) and t.test_pattern_active == 2
+    assert await t.send_blackout(True) and t.test_pattern_active is None
+    assert await t.send_test_pattern(3) and t.test_pattern_active == 3
+    assert await t.send_blackout(False) and t.test_pattern_active is None
+    assert await t.send_test_pattern(4) and t.test_pattern_active == 4
+    assert await t.send_test_pattern(0xFF) and t.test_pattern_active is None
+    assert await t.send_test_pattern(5) and t.test_pattern_active == 5
+    t.disconnect('link_lost')
+    assert t.test_pattern_active is None        # a new boot/connection starts clean
+    await t.connect()
+    assert t.test_pattern_active is None
+    # A failed send leaves the flag alone: the firmware never saw the command
+    t.disconnect()
+    assert await t.send_test_pattern(6) is False and t.test_pattern_active is None
   finally:
     t.disconnect()
     patcher.stop()

@@ -91,11 +91,17 @@ class TransportTrace:
       detail['error'] = error
     return self._add('tx', detail, raw)
 
-  def rx(self, ptype: int, req_id: int, raw: Optional[bytes] = None) -> TraceEvent:
-    return self._add('rx', {'ptype': int(ptype), 'req_id': req_id}, raw)
+  def rx_raw(self, raw: bytes) -> TraceEvent:
+    """One serial-read chunk exactly as it came off the wire (delimiters,
+    partial tails and all). Packet/rejection events point back at these via
+    `wire` so framing failures can be reconstructed from the real bytes."""
+    return self._add('rx_raw', {'nbytes': len(raw)}, raw)
 
-  def rejected(self, reason: str, raw: Optional[bytes] = None) -> TraceEvent:
-    return self._add('rejected', {'reason': reason}, raw)
+  def rx(self, ptype: int, req_id: int, raw: Optional[bytes] = None, **detail) -> TraceEvent:
+    return self._add('rx', {'ptype': int(ptype), 'req_id': req_id, **detail}, raw)
+
+  def rejected(self, reason: str, raw: Optional[bytes] = None, **detail) -> TraceEvent:
+    return self._add('rejected', {'reason': reason, **detail}, raw)
 
   def event(self, kind: str, **detail) -> TraceEvent:
     return self._add(kind, detail)

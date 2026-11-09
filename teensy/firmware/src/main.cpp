@@ -210,7 +210,7 @@ void setup() {
                   ^ ((uint32_t)analogRead(A11) << 10) ^ (uint32_t)analogRead(A12);
   diag.bootId = boot_retained_init(seed);
 
-  cachedTempBits = floatBits(tempmonGetTemp());
+  refreshCachedTemp();
 
   Serial.begin(115200);  // baud ignored on Teensy USB
 
@@ -304,8 +304,7 @@ void loop() {
       setStall(STALL_RX);
     }
 
-    // Float here, in the main loop, so the fault recorder never has to.
-    cachedTempBits = floatBits(tempmonGetTemp());
+    refreshCachedTemp();
 
     sendDiag(0);
     lastSecondMs = now;

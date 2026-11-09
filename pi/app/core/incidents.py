@@ -28,6 +28,7 @@ logger = logging.getLogger(__name__)
 SCHEMA_VERSION = 2
 INCIDENT_ID_RE = re.compile(r'^\d{8}-\d{6}-[a-z_]+-[0-9a-f]{6}$')
 INCIDENT_FILE_RE = re.compile(r'^\d{8}-\d{6}-[a-z_]+-[0-9a-f]{6}\.json$')
+RESERVE_SUFFIX = '.json.lock'   # never matches INCIDENT_FILE_RE, so reservations are invisible
 WRITE_ATTEMPTS = 3
 RETRY_DELAY_S = 2.0
 LIVE_DIAG_TIMEOUT_S = 0.5
@@ -197,15 +198,24 @@ class IncidentRecorder:
     while True:
       incident_id = f'{stamp}-{trigger}-{secrets.token_hex(3)}'
       final = root / f'{incident_id}.json'
+      lock = root / f'{incident_id}{RESERVE_SUFFIX}'
       try:
-        # 'x' reserves the id atomically: a second capture in the same second
-        # with the same random suffix gets FileExistsError and re-rolls
-        with open(final, 'x'):
-          pass
+        # O_EXCL reserves the id atomically. The reservation is a separate
+        # file so an id in flight (or abandoned by a failed write) never
+        # shows up to list()/path_for as an empty bundle
+        os.close(os.open(lock, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o644))
       except FileExistsError:
         continue
-      _replace_contents(final, text)
-      return incident_id, final
+      try:
+        if final.exists():
+          continue      # published earlier by a capture that already released its lock
+        _replace_contents(final, text)
+        return incident_id, final
+      except BaseException:
+        _unlink_quietly(final.with_name(final.name + '.tmp'))
+        raise
+      finally:
+        _unlink_quietly(lock)
 
   async def append(self, incident_id: str, key: str, value) -> bool:
     """Atomically add `key` to an existing bundle. False (and the value logged
@@ -296,6 +306,15 @@ def _replace_contents(final: Path, text: str):
     f.flush()
     os.fsync(f.fileno())
   os.replace(tmp, final)
+
+
+def _unlink_quietly(path: Path):
+  try:
+    path.unlink()
+  except FileNotFoundError:
+    pass
+  except OSError as e:
+    logger.warning(f"incident cleanup: could not remove {path}: {e!r}")
 
 
 def _dump(value) -> str:

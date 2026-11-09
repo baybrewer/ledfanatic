@@ -15,6 +15,7 @@ from app.core.brightness import BrightnessEngine
 from app.core.renderer import Renderer, RenderState
 from app.effects.base import Effect
 from app.layout import load_layout, compile_layout, output_config_list
+from app.layout.schema import LayoutConfig, MatrixConfig, OutputConfig, LinearSegment
 from app.transport.link_state import LinkState
 
 
@@ -101,11 +102,34 @@ def test_ready_and_correct_length_sends_once(env):
   assert renderer.state.frames_sent == 1
 
 
+def _small_layout():
+  """Two 10-LED columns on one output: a different LED total than config/layout.yaml."""
+  config = LayoutConfig(
+    version=1,
+    matrix=MatrixConfig(width=2, height=10),
+    outputs=[OutputConfig(id='ch0', channel=0, color_order='BGR', segments=[
+      LinearSegment(id='c0', start=(0, 0), direction='+y', length=10, physical_offset=0),
+      LinearSegment(id='c1', start=(1, 9), direction='-y', length=10, physical_offset=10),
+    ])],
+  )
+  return compile_layout(config)
+
+
 def test_apply_layout_recomputes_expected_bytes(env):
-  renderer, _, layout = env
+  renderer, transport, layout = env
   before = renderer._expected_frame_bytes
-  renderer.apply_layout(layout)
-  assert renderer._expected_frame_bytes == before == sum(output_config_list(layout)) * 3
+  small = _small_layout()
+  want = sum(output_config_list(small)) * 3
+  assert want != before, "test needs a layout with a different LED total"
+  renderer.apply_layout(small)
+  assert renderer._expected_frame_bytes == want
+  # A frame rendered for the new geometry must pass the guard — otherwise the
+  # stream freezes after every layout change
+  renderer.current_effect = GreenEffect(small.width, small.height)
+  _run(renderer._render_frame())
+  transport.send_frame.assert_awaited_once()
+  assert len(transport.send_frame.await_args.args[0]) == want
+  transport.trace.event.assert_not_called()
 
 
 def test_bare_mock_transport_without_trace_still_skips(monkeypatch):

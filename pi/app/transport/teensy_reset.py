@@ -42,17 +42,21 @@ async def boot_from_bootloader(loader: str = 'teensy_loader_cli',
   if not loader_path:
     return False
 
+  proc = await asyncio.create_subprocess_exec(
+    loader_path, f'--mcu={mcu}', '-w', '-b',
+    stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.STDOUT,
+  )
   try:
-    proc = await asyncio.create_subprocess_exec(
-      loader_path, f'--mcu={mcu}', '-w', '-b',
-      stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.STDOUT,
-    )
     output, _ = await asyncio.wait_for(proc.communicate(), timeout)
   except asyncio.TimeoutError:
-    proc.kill()
-    await proc.wait()   # never leave a zombie loader behind
+    await kill_and_reap(proc)
     logger.error("Teensy reboot: loader timed out waiting for bootloader")
     return False
+  except BaseException:
+    # Cancellation (shutdown) or any other exit: a loader left running would
+    # act on whatever Teensy enumerates next, long after we reported failure
+    await kill_and_reap(proc)
+    raise
 
   text = output.decode(errors='replace').strip()
   if proc.returncode != 0 or 'claim interface' in text:
@@ -60,6 +64,17 @@ async def boot_from_bootloader(loader: str = 'teensy_loader_cli',
     return False
   logger.warning("Teensy rebooted via bootloader")
   return True
+
+
+async def kill_and_reap(proc) -> None:
+  """Kill a still-running child and wait for it, so no zombie or orphan
+  survives the caller's exit path. Safe on a process that already exited."""
+  if proc.returncode is None:
+    try:
+      proc.kill()
+    except ProcessLookupError:
+      pass
+  await proc.wait()
 
 
 def _loader_path(loader: str):

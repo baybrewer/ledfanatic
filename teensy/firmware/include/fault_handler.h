@@ -68,8 +68,9 @@ uint32_t boot_retained_init(uint32_t seed);
 uint32_t faults_this_boot();
 uint32_t faults_lifetime();
 
-// uint32 bits of the last tempmonGetTemp(); refreshed once a second by the main loop so
-// the fault recorder never executes a floating-point instruction.
+// uint32 bits of the last completed TEMPMON reading (non-blocking refreshCachedTemp(),
+// once a second in the main loop) so the fault recorder never executes a floating-point
+// instruction and never waits on the sensor.
 extern volatile uint32_t cachedTempBits;
 
 // Emergency stack the fault path and fault_idle_loop() run on (fault_handler.cpp).

@@ -16,6 +16,7 @@ import shutil
 from typing import Optional
 
 from ..transport.link_state import LinkState
+from ..transport.teensy_reset import kill_and_reap
 
 logger = logging.getLogger(__name__)
 
@@ -187,7 +188,10 @@ async def _run_uhubctl(uhubctl_path: str) -> tuple[Optional[int], str]:
   try:
     output, _ = await asyncio.wait_for(proc.communicate(), POWER_CYCLE_CMD_TIMEOUT_S)
   except asyncio.TimeoutError:
-    proc.kill()
-    await proc.wait()
+    await kill_and_reap(proc)
     return None, 'uhubctl timed out'
+  except BaseException:
+    # A cancelled operation must not leave uhubctl cutting hub power on its own
+    await kill_and_reap(proc)
+    raise
   return proc.returncode, output.decode(errors='replace')[-2000:]

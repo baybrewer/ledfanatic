@@ -241,6 +241,43 @@ async def test_oserror_retries_then_fallback(tmp_path, caplog):
 
 
 @pytest.mark.asyncio
+async def test_failed_write_leaves_no_listed_or_empty_bundle(tmp_path, monkeypatch):
+  def broken_write(final, text):
+    (final.with_name(final.name + '.tmp')).write_text('partial')
+    raise OSError('disk full')
+  monkeypatch.setattr(incidents_mod, '_replace_contents', broken_write)
+  rec = make_recorder(tmp_path)
+  cap = await rec.capture('stall', 'x')
+  assert cap.path is None and 'disk full' in cap.error
+  assert rec.list() == []
+  assert rec.path_for(cap.id) is None
+  for root in rec.roots:
+    assert not root.is_dir() or list(root.iterdir()) == []    # no .json, .tmp or .lock debris
+
+
+@pytest.mark.asyncio
+async def test_reservation_is_invisible_until_published(tmp_path):
+  rec = make_recorder(tmp_path)
+  seen_during_write = {}
+
+  def spy_write(final, text):
+    seen_during_write['list'] = rec.list()
+    seen_during_write['path_for'] = rec.path_for(final.stem)
+    seen_during_write['locks'] = sorted(p.name for p in final.parent.iterdir())
+    REAL_REPLACE(final, text)
+  REAL_REPLACE = incidents_mod._replace_contents
+  incidents_mod._replace_contents = spy_write
+  try:
+    cap = await rec.capture('stall', 'x')
+  finally:
+    incidents_mod._replace_contents = REAL_REPLACE
+  assert seen_during_write['list'] == [] and seen_during_write['path_for'] is None
+  assert seen_during_write['locks'] == [f'{cap.id}{incidents_mod.RESERVE_SUFFIX}']
+  assert [item['id'] for item in rec.list()] == [cap.id]
+  assert sorted(p.name for p in cap.path.parent.iterdir()) == [f'{cap.id}.json']
+
+
+@pytest.mark.asyncio
 async def test_both_roots_unwritable_returns_error_not_exception(tmp_path):
   (tmp_path / 'logs').write_text('x')
   (tmp_path / 'fallback').write_text('x')

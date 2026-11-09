@@ -11,6 +11,7 @@ traced instead of being delivered to the wrong caller.
 import asyncio
 import logging
 import time
+from collections import deque
 from typing import Callable, Optional
 
 import serial
@@ -47,6 +48,11 @@ class RxDispatcher:
     self.waiters: dict[int, asyncio.Future] = {}
     self._waiter_types: dict[int, set] = {}
     self._rx_buffer = bytearray()
+    # Absolute RX stream position of _rx_buffer[0], plus the trace chunk that
+    # holds each recent read: (stream_start, stream_end, trace raw_offset).
+    # Lets a packet/rejection event point at the wire bytes it was cut from.
+    self._rx_stream_pos = 0
+    self._chunk_refs: deque[tuple[int, int, Optional[int]]] = deque()
     self._next_req_id = 0
     self.last_teensy_diag: Optional[dict] = None
     self.last_diag_at: Optional[float] = None    # time.monotonic()
@@ -56,14 +62,15 @@ class RxDispatcher:
 
   def attach(self, port: serial.Serial):
     self.serial = port
-    self._rx_buffer.clear()
+    self._discard_buffer('rx_buffer_reset_on_attach')
     self.last_teensy_diag = None
     self.last_diag_at = None
 
   def detach(self, reason: str = 'detached'):
     """Fail every pending waiter so no request hangs across a reconnect."""
     self.serial = None
-    self._rx_buffer.clear()
+    # An incomplete packet at teardown is often the evidence; never drop it silently
+    self._discard_buffer('rx_tail_discarded', reason=reason)
     for req_id, fut in list(self.waiters.items()):
       if not fut.done():
         fut.set_exception(ConnectionError(reason))
@@ -87,10 +94,15 @@ class RxDispatcher:
       return 0
     available = self.serial.in_waiting
     if available:
-      self._rx_buffer.extend(self.serial.read(available))
+      chunk = self.serial.read(available)
+      if chunk:
+        # Traced at read time so delimiters and incomplete tails are evidence too
+        ev = self.trace.rx_raw(chunk)
+        start = self._rx_stream_pos + len(self._rx_buffer)
+        self._chunk_refs.append((start, start + len(chunk), ev.raw_offset))
+        self._rx_buffer.extend(chunk)
     if len(self._rx_buffer) > MAX_RX_BUFFER:
-      self.trace.rejected('rx_overflow', bytes(self._rx_buffer[:64]))
-      self._rx_buffer.clear()
+      self._discard_buffer('rx_overflow')
       return 0
 
     routed = 0
@@ -99,26 +111,47 @@ class RxDispatcher:
       if idx < 0:
         break
       encoded = bytes(self._rx_buffer[:idx])
-      del self._rx_buffer[:idx + 1]
+      wire = self._consume(idx + 1)
       if not encoded:
         continue
       decoded = cobs_decode(encoded)
       if decoded is None:
-        self.trace.rejected('cobs', encoded)
+        self.trace.rejected('cobs', wire=wire)
         continue
       result = verify_packet(decoded)
       if result is None:
-        self.trace.rejected('verify', decoded)
+        self.trace.rejected('verify', wire=wire)
         continue
-      self._route(result[0], result[1], decoded)
+      self._route(result[0], result[1], wire)
       routed += 1
     return routed
 
-  def _route(self, header: PacketHeader, payload: bytes, raw: bytes):
+  def _consume(self, n: int) -> dict:
+    """Drop n bytes from the head of the buffer; return their wire reference."""
+    start = self._rx_stream_pos
+    end = start + n
+    del self._rx_buffer[:n]
+    self._rx_stream_pos = end
+    chunks = [off for (cs, ce, off) in self._chunk_refs if cs < end and ce > start]
+    while self._chunk_refs and self._chunk_refs[0][1] <= end:
+      self._chunk_refs.popleft()
+    return {'offset': start, 'len': n, 'chunks': chunks}
+
+  def _discard_buffer(self, kind: str, **detail):
+    if not self._rx_buffer:
+      return
+    wire = self._consume(len(self._rx_buffer))
+    if kind == 'rx_overflow':
+      self.trace.rejected(kind, wire=wire, **detail)
+    else:
+      self.trace.event(kind, wire=wire, **detail)
+    self._chunk_refs.clear()
+
+  def _route(self, header: PacketHeader, payload: bytes, wire: dict):
     self.packets_in += 1
     ptype = header.packet_type
     req_id = header.frame_id
-    self.trace.rx(ptype, req_id, raw)
+    self.trace.rx(ptype, req_id, wire=wire)
 
     if ptype == PacketType.POTS:
       if self.on_pots:
@@ -138,7 +171,7 @@ class RxDispatcher:
     if ptype == PacketType.DIAG:
       parsed = parse_diag_payload(payload)
       if parsed is None:
-        self.trace.rejected('diag_short', raw)
+        self.trace.rejected('diag_short', wire=wire)
         return
       self.last_teensy_diag = parsed
       self.last_diag_at = time.monotonic()

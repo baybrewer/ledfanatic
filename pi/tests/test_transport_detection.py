@@ -110,7 +110,9 @@ async def test_handshake_failures_and_config_timeout_are_stalls(h):
   assert h.kinds() == ['stall', 'stall']
   assert 'CONFIG' in h.incidents[-1][1]['reason']
   h.detector.on_config_result(False, timed_out=False)     # NAK is an answer, not a stall
-  h.detector.on_config_result(True)
+  h.detector.on_config_result(True)                       # ACK alone is not READY: episode stays open
+  assert 'stall' in h.detector.open_episodes
+  h.detector.on_state(LinkState.READY)
   assert h.detector.open_episodes == {}
 
 
@@ -192,6 +194,43 @@ async def test_stale_pushed_diag_while_ready_is_output_stall(h):
 
 
 @pytest.mark.asyncio
+async def test_ready_without_first_diag_is_output_stall_on_diag_firmware(h):
+  h.detector.on_connected({'boot_id': 1, 'firmware_version': '1.3.0'})
+  h.detector.on_state(LinkState.READY)
+  h.detector.tick()
+  h.advance(DIAG_STALE_S)                          # exactly at the limit: still waiting
+  h.detector.tick()
+  await h.settle()
+  assert h.incidents == []
+  h.advance(1)
+  h.detector.tick()
+  await h.settle()
+  assert h.kinds() == ['output_stall'] and 'READY' in h.incidents[0][1]['reason']
+  h.detector.tick()                                # re-assert: same episode
+  await h.settle()
+  assert h.kinds() == ['output_stall']
+
+
+@pytest.mark.asyncio
+async def test_legacy_firmware_never_pushes_diag_and_is_exempt(h):
+  h.detector.on_connected({'boot_id': 0, 'firmware_version': '1.2.0'})
+  h.detector.on_state(LinkState.READY)
+  for _ in range(100):
+    h.advance(1)
+    h.detector.tick()
+  await h.settle()
+  assert h.incidents == []
+  # The deadline is per READY entry: leaving READY resets it
+  h.detector.on_disconnected('disconnect')
+  h.detector.on_connected({'boot_id': 3, 'firmware_version': '1.3.0'})
+  h.detector.on_state(LinkState.CONFIGURED)
+  h.advance(DIAG_STALE_S + 10)
+  h.detector.tick()
+  await h.settle()
+  assert h.incidents == []
+
+
+@pytest.mark.asyncio
 async def test_blackout_suppresses_output_stall_but_not_fault(h):
   h.transport.blackout = True
   h.push_diag(frames_received=10, frames_applied=10)
@@ -202,9 +241,43 @@ async def test_blackout_suppresses_output_stall_but_not_fault(h):
   h.push_diag(stall_latched=STALL_FAULTED, fault_count=1)      # same boot: one incident
   await h.settle()
   assert h.kinds() == ['fault']
-  assert h.incidents[0][1]['crash'] == {'valid': True, 'text': 'HardFault'}
-  h.transport.request_crash.assert_awaited()
+  # CRASH is the recorder's probe (after its own freeze), never the detector's
+  assert 'crash' not in h.incidents[0][1]
+  h.transport.request_crash.assert_not_awaited()
   assert h.transport.stalled['kind'] == 'fault'
+
+
+@pytest.mark.asyncio
+async def test_fault_evidence_is_frozen_at_emission_not_at_capture(h):
+  h.transport.trace.event('failure_bytes')
+  h.push_diag(stall_latched=STALL_FAULTED, fault_count=1)
+  # Traffic between the hook and the recorder task must not reach the evidence
+  h.transport.trace.event('later_traffic')
+  h.transport.last_teensy_diag = {'boot_id': 1, 'uptime_ms': 999_999}
+  await h.settle()
+  evidence = h.incidents[0][1]['evidence']
+  kinds = [e['kind'] for e in evidence['trace']['events']]
+  assert 'failure_bytes' in kinds and 'later_traffic' not in kinds
+  assert evidence['last_diag']['stall_latched'] == STALL_FAULTED
+
+
+@pytest.mark.asyncio
+async def test_fault_episode_survives_reconnect_to_same_faulted_boot(h):
+  h.detector.on_connected({'boot_id': 7, 'faulted': True})
+  await h.settle()
+  assert h.kinds() == ['fault']
+  fault = h.detector.open_episodes['fault']
+  h.detector.on_disconnected('link_lost')
+  h.detector.on_state(LinkState.READY)
+  h.detector.on_connected({'boot_id': 7, 'faulted': True})      # same boot, still faulted
+  await h.settle()
+  assert h.detector.open_episodes['fault'] is fault             # same episode, same incident
+  assert h.kinds().count('fault') == 1
+  h.push_diag(boot_id=7, stall_latched=STALL_FAULTED, fault_count=1)
+  assert 'fault' in h.detector.open_episodes
+  # Only a different boot id ends it (and a pushed DIAG can be the first to show it)
+  h.push_diag(boot_id=8)
+  assert 'fault' not in h.detector.open_episodes
 
 
 @pytest.mark.asyncio
@@ -269,8 +342,55 @@ async def test_boot_id_change_without_expected_reboot_carries_previous_trace(h):
   assert detail['prev_boot_id'] == 1 and detail['new_boot_id'] == 2
   assert detail['previous']['last_diag']['uptime_ms'] == 5000
   assert any(e['kind'] == 'marker' for e in detail['previous']['trace']['events'])
-  assert detail['crash'] == {'valid': True, 'text': 'HardFault'}
+  assert 'crash' not in detail                       # recorder probes CRASH after its freeze
+  h.transport.request_crash.assert_not_awaited()
   assert 'unexpected_reboot' not in h.detector.open_episodes   # point event
+
+
+@pytest.mark.asyncio
+async def test_failed_handshake_does_not_erase_reboot_baseline(h):
+  h.transport.trace.event('healthy_marker')
+  h.detector.on_connected({'boot_id': 1})
+  h.push_diag(boot_id=1, uptime_ms=5000)
+  h.transport.caps = {'boot_id': 1}
+  h.detector.on_disconnected('link_lost')
+  # dispatcher.attach() has already cleared DIAG and the port has no CAPS yet
+  h.transport.caps = None
+  h.transport.last_teensy_diag = None
+  h.transport.trace.event('handshake_noise')
+  h.detector.on_disconnected('handshake_failed')
+  h.detector.on_state(LinkState.READY)
+  h.detector.on_connected({'boot_id': 2})
+  await h.settle()
+  detail = dict(h.incidents)['unexpected_reboot']
+  assert detail['prev_boot_id'] == 1 and detail['new_boot_id'] == 2
+  previous = detail['previous']
+  assert previous['boot_id'] == 1 and previous['caps'] == {'boot_id': 1}
+  assert previous['last_diag']['uptime_ms'] == 5000
+  kinds = [e['kind'] for e in previous['trace']['events']]
+  assert 'healthy_marker' in kinds and 'handshake_noise' not in kinds
+  assert [a['reason'] for a in detail['failed_attempts']] == ['handshake_failed']
+
+
+@pytest.mark.asyncio
+async def test_boot_id_change_in_pushed_diag_is_a_live_reboot(h):
+  hook_calls = []
+  h.detector.on_live_reboot = lambda prev, new: hook_calls.append((prev, new))
+  h.detector.on_connected({'boot_id': 1})
+  h.push_diag(boot_id=1, uptime_ms=50_000, frames_received=500)
+  h.push_diag(boot_id=2, uptime_ms=500)
+  await h.settle()
+  assert h.kinds() == ['unexpected_reboot']
+  detail = h.incidents[0][1]
+  assert detail['prev_boot_id'] == 1 and detail['new_boot_id'] == 2
+  assert detail['previous']['reason'] == 'boot_id_changed'
+  assert detail['previous']['last_diag']['frames_received'] == 500   # old DIAG kept as evidence
+  assert hook_calls == [(1, 2)]
+  assert h.detector._current_boot_id == 2
+  # The new boot's counters are compared against themselves, not the old boot's
+  h.push_diag(boot_id=2, uptime_ms=1500)
+  await h.settle()
+  assert h.kinds() == ['unexpected_reboot']
 
 
 @pytest.mark.asyncio
@@ -384,3 +504,21 @@ def TeensyTransport_with_fake_port():
   t.find_teensy_port = lambda: '/dev/fake'
   t.request_crash = AsyncMock(return_value=None)
   return t
+
+
+
+def test_ping_success_does_not_close_config_stall(h):
+  h.detector.on_config_result(False, timed_out=True)
+  assert 'stall' in h.detector.open_episodes
+  h.detector.on_ping_result(True)
+  assert 'stall' in h.detector.open_episodes, "CONFIG stall must clear on READY, not on a PING answer"
+  h.detector.on_state(LinkState.READY)
+  assert 'stall' not in h.detector.open_episodes
+
+
+def test_ping_success_closes_ping_stall(h):
+  for _ in range(detection.PING_MISSES_TO_STALL):
+    h.detector.on_ping_result(False)
+  assert h.detector.open_episodes['stall'].detail['origin'] == 'ping'
+  h.detector.on_ping_result(True)
+  assert 'stall' not in h.detector.open_episodes

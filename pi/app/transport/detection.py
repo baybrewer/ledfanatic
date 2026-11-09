@@ -14,6 +14,7 @@ the reader down with it.
 import asyncio
 import inspect
 import logging
+import re
 import time
 from collections import deque
 from dataclasses import dataclass, field
@@ -72,11 +73,18 @@ class LinkDetector:
     self._ping_misses = 0
     self._current_boot_id: Optional[int] = None
     self._prev_boot_id: Optional[int] = None
-    self._prev_snapshot: Optional[dict] = None       # frozen evidence of the previous connection
+    self._prev_snapshot: Optional[dict] = None       # frozen evidence of the last *established* connection
+    self._failed_attempts: deque = deque(maxlen=5)   # handshake failures since then, kept apart
+    self._established = False                        # CAPS seen on the current port session
     self._prev_diag: Optional[dict] = None           # last pushed DIAG of this connection
     self._diag_seen_this_connection = False
+    self._pushes_diag = False                        # firmware >= 1.3.0 pushes DIAG every second
+    self._ready_since: Optional[float] = None        # detector clock; None when not READY
     self._fault_boot_ids: set[int] = set()
     self._window: Optional[dict] = None              # output_stall sampling window
+    # Optional transport hook: a boot change seen in pushed DIAG (no disconnect
+    # happened) means the Teensy lost its CONFIG and needs renegotiation
+    self.on_live_reboot: Optional[Callable[[int, int], None]] = None
 
   # --- transport hooks ---
 
@@ -92,12 +100,13 @@ class LinkDetector:
         rebooted = True   # boot_id generator failed to change; uptime rollback is the fallback
     if rebooted:
       self._reboot_observed(self._prev_boot_id, boot_id, caps)
-    if boot_id and boot_id != self._current_boot_id:
-      # A new boot ends a fault-idle episode from the old one
-      self._close('fault')
+    self._close_fault_if_new_boot(boot_id)
     self._current_boot_id = boot_id
+    self._established = True
+    self._failed_attempts.clear()
     self._prev_diag = None
     self._diag_seen_this_connection = False
+    self._pushes_diag = _pushes_diag(caps)
     self._window = None
     if caps.get('faulted'):
       self._fault('CAPS reports fault-idle mode', boot_id, caps=caps)
@@ -106,17 +115,26 @@ class LinkDetector:
     """Called before the transport forgets caps/diag so the evidence is frozen."""
     t = self.transport
     trace = getattr(t, 'trace', None)
-    self._prev_snapshot = {
+    snapshot = {
       'at': time.time(), 'reason': reason, 'boot_id': self._current_boot_id,
       'caps': getattr(t, 'caps', None), 'last_diag': getattr(t, 'last_teensy_diag', None),
       'last_stats': getattr(t, 'last_teensy_stats', None),
       'trace': trace.freeze() if trace is not None else None,
     }
+    if self._established:
+      self._prev_snapshot = snapshot
+    else:
+      # A failed handshake has no CAPS/DIAG: it must not erase the reboot
+      # baseline from the last connection that actually worked
+      self._failed_attempts.append(snapshot)
     if self._current_boot_id:
       self._prev_boot_id = self._current_boot_id
+    self._established = False
     self._current_boot_id = None
     self._prev_diag = None
     self._diag_seen_this_connection = False
+    self._pushes_diag = False
+    self._ready_since = None
     self._window = None
     self._ping_misses = 0
     if reason == 'link_lost' and not getattr(t, 'maintenance', False):
@@ -124,43 +142,63 @@ class LinkDetector:
 
   def on_handshake_failed(self, consecutive: int):
     if consecutive >= HANDSHAKE_FAILS_TO_STALL:
-      self._open('stall', f'{consecutive} failed handshakes with the port present')
+      self._open('stall', f'{consecutive} failed handshakes with the port present',
+                 {'origin': 'handshake'})
 
   def on_ping_result(self, ok: bool):
     if ok:
       self._ping_misses = 0
-      self._close('stall')
+      # A PING answer only proves the control path; a CONFIG/handshake stall is
+      # cleared by reaching READY (on_state), not by this.
+      ep = self.open_episodes.get('stall')
+      if ep is not None and ep.detail.get('origin') == 'ping':
+        self._close('stall')
       return
     self._ping_misses += 1
     if self._ping_misses >= PING_MISSES_TO_STALL:
-      self._open('stall', f'{self._ping_misses} unanswered PINGs')
+      self._open('stall', f'{self._ping_misses} unanswered PINGs', {'origin': 'ping'})
 
   def on_config_result(self, ok: bool, timed_out: bool = False):
-    if ok:
-      self._close('stall')
-    elif timed_out:
-      self._open('stall', f'CONFIG not committed within {CONFIG_TIMEOUT_S:.0f} s')
+    # Success is not a close: the episode ends when the link reaches READY.
+    if not ok and timed_out:
+      self._open('stall', f'CONFIG not committed within {CONFIG_TIMEOUT_S:.0f} s',
+                 {'origin': 'config'})
 
   def on_write_timeout(self, detail: Optional[dict] = None):
     self._open('write_timeout', 'serial write timed out', detail or {})
 
   def on_state(self, state: LinkState):
     if state == LinkState.READY:
+      if self._ready_since is None:
+        self._ready_since = self._now()
       for kind in ('stall', 'write_timeout', 'link_lost'):
         self._close(kind)
+    else:
+      self._ready_since = None
 
   def on_diag(self, diag: dict):
     """Pushed DIAG (req_id 0). Solicited DIAG replies never come here."""
     boot_id = diag.get('boot_id') or self._current_boot_id or 0
-    prev = self._prev_diag if self._prev_diag and self._prev_diag.get('boot_id') == boot_id else None
+    prev = self._prev_diag
     now = self._now()
     self._diag_seen_this_connection = True
 
-    if prev is not None and diag['uptime_ms'] < prev['uptime_ms']:
+    old_boot = (prev or {}).get('boot_id') or self._current_boot_id or 0
+    if boot_id and old_boot and boot_id != old_boot:
+      # The boot id moved without a disconnect: a reboot happened under us.
+      # Decide this BEFORE dropping prev, or the old DIAG is lost as evidence
+      self._reboot_observed(old_boot, boot_id, None, live=True, reason='boot_id_changed')
+      self._close_fault_if_new_boot(boot_id)
+      self._current_boot_id = boot_id
+      prev = None
+      self._window = None
+      self._notify_live_reboot(old_boot, boot_id)
+    elif prev is not None and diag['uptime_ms'] < prev['uptime_ms']:
       # Same boot_id but time went backwards: the Teensy rebooted under us
       self._reboot_observed(boot_id, boot_id, None, live=True)
       prev = None
       self._window = None
+      self._notify_live_reboot(boot_id, boot_id)
 
     # teensy_flag: active bits gained or corruption counters grown
     prev_active = prev['stall_active'] if prev else 0
@@ -220,32 +258,48 @@ class LinkDetector:
   # --- detectors ---
 
   def _reboot_observed(self, prev_boot_id: int, new_boot_id: int, caps: Optional[dict],
-                       live: bool = False):
+                       live: bool = False, reason: str = 'uptime_rollback'):
     if self._consume_expected(prev_boot_id):
       self._trace('expected_reboot_consumed', prev_boot_id=prev_boot_id, new_boot_id=new_boot_id)
       return
     t = self.transport
     trace = getattr(t, 'trace', None)
     previous = self._prev_snapshot
-    if live and trace is not None:
+    if live:
       # No disconnect happened: the evidence is whatever the ring holds right now
-      previous = {'at': time.time(), 'reason': 'uptime_rollback', 'boot_id': prev_boot_id,
+      previous = {'at': time.time(), 'reason': reason, 'boot_id': prev_boot_id,
                   'caps': getattr(t, 'caps', None), 'last_diag': self._prev_diag,
-                  'trace': trace.freeze()}
+                  'trace': trace.freeze() if trace is not None else None}
     detail = {
       'prev_boot_id': prev_boot_id, 'new_boot_id': new_boot_id,
       'reset_reason_text': (caps or {}).get('reset_reason_text'),
       'caps': caps, 'previous': previous,
+      'failed_attempts': list(self._failed_attempts),
     }
     # Point event: the link is healthy again by the time we see the new boot
-    self._emit(None, 'unexpected_reboot', 'Teensy rebooted on its own', detail,
-               enrich=self._fetch_crash)
+    self._emit(None, 'unexpected_reboot', 'Teensy rebooted on its own', detail)
+
+  def _notify_live_reboot(self, prev_boot_id: int, new_boot_id: int):
+    self._trace('live_reboot', prev_boot_id=prev_boot_id, new_boot_id=new_boot_id)
+    if self.on_live_reboot is None:
+      return
+    try:
+      self.on_live_reboot(prev_boot_id, new_boot_id)
+    except Exception:
+      logger.exception("on_live_reboot hook failed")
 
   def _fault(self, reason: str, boot_id: int, **detail):
     if boot_id in self._fault_boot_ids:
       return
     self._fault_boot_ids.add(boot_id)
-    self._open('fault', reason, {'boot_id': boot_id, **detail}, enrich=self._fetch_crash)
+    self._open('fault', reason, {'boot_id': boot_id, **detail})
+
+  def _close_fault_if_new_boot(self, boot_id: int):
+    """Fault-idle persists until the Teensy reboots, so only a *different* boot
+    id ends the episode — a reconnect to the same faulted boot keeps it open."""
+    ep = self.open_episodes.get('fault')
+    if ep is not None and boot_id and boot_id != ep.detail.get('boot_id'):
+      self._close('fault')
 
   def _eval_output_stall(self, now: float):
     t = self.transport
@@ -254,9 +308,20 @@ class LinkDetector:
       getattr(t, 'state', None) == LinkState.READY
       and not getattr(t, 'blackout', False)
       and getattr(t, 'test_pattern_active', None) is None
-      and diag is not None and self._diag_seen_this_connection
     )
     if not eligible:
+      self._window = None
+      return
+    if not self._diag_seen_this_connection:
+      # 1.3.0+ pushes DIAG within a second of READY; silence past the stale
+      # limit is a stall even while PINGs still answer. 1.2.0 never pushes
+      # DIAG (_pushes_diag False), so it is exempt here by design.
+      ready_for = now - self._ready_since if self._ready_since is not None else 0.0
+      if self._pushes_diag and ready_for > DIAG_STALE_S:
+        self._open('output_stall', f'no pushed DIAG within {ready_for:.0f} s of READY')
+      self._window = None
+      return
+    if diag is None:
       self._window = None
       return
     last_at = getattr(t, 'last_diag_at', None)
@@ -286,7 +351,7 @@ class LinkDetector:
 
   # --- episodes ---
 
-  def _open(self, kind: str, reason: str, detail: Optional[dict] = None, enrich=None) -> Episode:
+  def _open(self, kind: str, reason: str, detail: Optional[dict] = None) -> Episode:
     ep = self.open_episodes.get(kind)
     if ep is not None:
       ep.last_asserted = self._now()
@@ -295,7 +360,7 @@ class LinkDetector:
     self.open_episodes[kind] = ep
     logger.warning(f"Teensy link episode opened: {kind} — {reason}")
     self._refresh_stalled()
-    self._emit(ep, kind, reason, ep.detail, enrich)
+    self._emit(ep, kind, reason, ep.detail)
     return ep
 
   def _close(self, kind: str):
@@ -320,8 +385,13 @@ class LinkDetector:
 
   # --- incident emission (isolated) ---
 
-  def _emit(self, episode: Optional[Episode], kind: str, reason: str, detail: dict, enrich=None):
+  def _emit(self, episode: Optional[Episode], kind: str, reason: str, detail: dict):
     self.emitted.append((kind, reason, time.time()))
+    # Freeze NOW, in the hook that saw the failure: the recorder runs a task
+    # later and by then rx traffic (or its own probes) may have evicted the
+    # bytes that explain this incident. CRASH is probed by the recorder after
+    # its own freeze, never here.
+    evidence = self._freeze_evidence()
     self._trace('incident', episode=kind, reason=reason)
     if self.on_incident is None:
       return
@@ -330,18 +400,26 @@ class LinkDetector:
     except RuntimeError:
       logger.warning(f"incident {kind} not recorded: no running event loop")
       return
-    payload = {'reason': reason, 'since': episode.since if episode else time.time(), **detail}
-    loop.create_task(self._isolated(episode, kind, payload, enrich))
+    payload = {'reason': reason, 'since': episode.since if episode else time.time(),
+               **detail, 'evidence': evidence}
+    loop.create_task(self._isolated(episode, kind, payload))
 
-  async def _isolated(self, episode: Optional[Episode], kind: str, detail: dict, enrich):
+  def _freeze_evidence(self) -> dict:
+    t = self.transport
+    trace = getattr(t, 'trace', None)
+    get_status = getattr(t, 'get_status', None)
+    evidence = {'at': time.time(), 'trace': None, 'status': None,
+                'last_diag': getattr(t, 'last_teensy_diag', None),
+                'last_stats': getattr(t, 'last_teensy_stats', None)}
     try:
-      if enrich is not None:
-        try:
-          extra = await enrich()
-          if extra:
-            detail = {**detail, **extra}
-        except Exception:
-          logger.exception(f"incident {kind}: evidence enrichment failed")
+      evidence['trace'] = trace.freeze() if trace is not None else None
+      evidence['status'] = get_status() if callable(get_status) else None
+    except Exception as e:
+      evidence['error'] = repr(e)
+    return evidence
+
+  async def _isolated(self, episode: Optional[Episode], kind: str, detail: dict):
+    try:
       result = self.on_incident(kind, detail)
       if inspect.isawaitable(result):
         result = await result
@@ -352,11 +430,17 @@ class LinkDetector:
     except Exception:
       logger.exception(f"on_incident callback failed for {kind}")
 
-  async def _fetch_crash(self) -> dict:
-    request_crash = getattr(self.transport, 'request_crash', None)
-    if request_crash is None:
-      return {}
-    return {'crash': await request_crash()}
+
+def _pushes_diag(caps: dict) -> bool:
+  """Firmware 1.3.0 introduced the pushed DIAG stream; 1.2.0 (and anything
+  unparsable) is treated as silent so it is never blamed for not pushing."""
+  return _parse_version(caps.get('firmware_version')) >= (1, 3, 0)
+
+
+def _parse_version(text) -> tuple:
+  # Tolerates "v1.3.0" / "1.3.0-rc1"; anything without digits compares as 0
+  numbers = re.findall(r'\d+', str(text or ''))[:3]
+  return tuple(int(n) for n in numbers) if numbers else (0,)
 
 
 def _incident_id_of(result) -> Optional[str]:

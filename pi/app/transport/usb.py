@@ -45,6 +45,10 @@ HEALTH_INTERVAL_S = 5.0
 RX_POLL_S = 0.01            # reader cadence; bounds request latency and DIAG freshness
 FRAME_WRITE_TIMEOUT_S = 1.0
 CONFIG_TIMEOUT_S = 3.0
+CONFIG_ATTEMPTS = 3          # a lost ACK is retried, never answered with a reset
+CONFIG_RETRY_DELAY_S = 1.0
+BRING_UP_RETRY_S = 5.0       # connected but not READY for this long → re-run CONFIG + restoration
+WRITER_STOP_TIMEOUT_S = 5.0  # > pyserial write_timeout, so a stuck write is still recorded
 
 
 class LinkError(Exception):
@@ -61,6 +65,17 @@ class WriteJob:
   enqueued_at: float = field(default_factory=time.monotonic)
 
 
+_STOP = object()   # queue sentinel: wakes an idle writer task so it can exit
+
+
+def _close_quietly(port):
+  try:
+    if port is not None and port.is_open:
+      port.close()
+  except Exception:
+    pass
+
+
 class SerialWriter:
   """The only code that calls serial.write.
 
@@ -70,36 +85,71 @@ class SerialWriter:
   (a timed-out caller's future is cancelled) — an unguarded set_result would
   raise InvalidStateError and kill the task. A job that raises never ends the
   task; it logs and moves on.
+
+  Shutdown is graceful: stop() fails the jobs that have not started, then lets
+  the task finish the write already handed to the thread (bounded by pyserial's
+  write_timeout), trace its outcome and only then exit and close the port it
+  was asked to. start() awaits the previous task, so two writers never overlap
+  a port lifetime.
   """
 
   def __init__(self, trace: TransportTrace, on_link_error=None):
     self.trace = trace
     self.on_link_error = on_link_error     # (reason: str, exc) -> None, sync
     self.serial: Optional[serial.Serial] = None
-    self._queue: asyncio.Queue[WriteJob] = asyncio.Queue()
+    self._queue: asyncio.Queue = asyncio.Queue()
     self._task: Optional[asyncio.Task] = None
+    self._stopping = False
+    self._close_port: Optional[serial.Serial] = None   # closed by the exiting task
     self.jobs_written = 0
     self.jobs_skipped = 0
 
   @property
   def running(self) -> bool:
-    return self._task is not None and not self._task.done()
+    return self._task is not None and not self._task.done() and not self._stopping
 
-  def start(self, port: serial.Serial):
+  async def start(self, port: serial.Serial):
+    await self.wait_stopped()
     self.serial = port
-    if not self.running:
-      self._task = asyncio.get_running_loop().create_task(self._run(), name='serial-writer')
+    self._stopping = False
+    self._close_port = None
+    # A fresh queue per task: a stop sentinel left behind must not stop this one
+    self._queue = asyncio.Queue()
+    self._task = asyncio.get_running_loop().create_task(self._run(self._queue), name='serial-writer')
 
-  def stop(self, reason: str = 'writer stopped'):
+  def stop(self, reason: str = 'writer stopped', close_port: bool = False) -> Optional[asyncio.Task]:
+    """Stop accepting jobs. Returns the task to await (see wait_stopped)."""
+    port = self.serial
     self.serial = None
-    if self._task is not None:
-      self._task.cancel()
-      self._task = None
+    self._stopping = True
     self._fail_pending(reason)
+    task = self._task
+    if task is not None and not task.done():
+      if close_port:
+        self._close_port = port   # the port stays open until the in-flight write returns
+      self._queue.put_nowait(_STOP)
+      return task
+    if close_port:
+      _close_quietly(port)
+    return None
+
+  async def wait_stopped(self, timeout: float = WRITER_STOP_TIMEOUT_S):
+    """Await the current task's exit. Cancels it only past the timeout, which is
+    longer than any serial write can take, so cancellation is a true last resort."""
+    task = self._task
+    if task is None or task.done():
+      return
+    done, _ = await asyncio.wait({task}, timeout=timeout)
+    if not done:
+      logger.error(f"serial writer did not stop within {timeout:.1f}s; cancelling")
+      task.cancel()
+      await asyncio.wait({task})
 
   def _fail_pending(self, reason: str):
     while not self._queue.empty():
       job = self._queue.get_nowait()
+      if job is _STOP:
+        continue
       if not job.future.done():
         job.future.set_exception(LinkError(reason))
 
@@ -117,50 +167,65 @@ class SerialWriter:
     self._queue.put_nowait(job)
     return await asyncio.wait_for(job.future, timeout)
 
-  async def _run(self):
-    while True:
-      job = await self._queue.get()
-      if job.future.done():
-        # Caller gave up before we started: skip, never write stale data
-        self.jobs_skipped += 1
-        self.trace.event('write_skipped', ptype=int(job.ptype), req_id=job.req_id)
-        continue
-      port = self.serial
-      if port is None:
-        if not job.future.done():
-          job.future.set_exception(LinkError('port not open'))
-        continue
-      t0 = time.perf_counter()
-      try:
-        written = await asyncio.to_thread(port.write, job.framed)
-        write_ms = (time.perf_counter() - t0) * 1000
-        self.trace.tx(job.ptype, job.req_id, len(job.framed), written or 0, write_ms, True,
-                      job.framed)
-        self.jobs_written += 1
-        if not job.future.done():
-          job.future.set_result(written)
-      except serial.SerialTimeoutException as e:
-        write_ms = (time.perf_counter() - t0) * 1000
-        self.trace.tx(job.ptype, job.req_id, len(job.framed), 0, write_ms, False, job.framed,
-                      error='write_timeout')
-        self.trace.event('write_timeout', ptype=int(job.ptype), write_ms=round(write_ms, 1))
-        self._link_error('write_timeout', e)
-        if not job.future.done():
-          job.future.set_exception(LinkError('serial write timed out'))
-      except asyncio.CancelledError:
-        if not job.future.done():
-          job.future.set_exception(LinkError('writer stopped'))
-        raise
-      except Exception as e:
-        write_ms = (time.perf_counter() - t0) * 1000
-        self.trace.tx(job.ptype, job.req_id, len(job.framed), 0, write_ms, False, job.framed,
-                      error=repr(e))
-        if isinstance(e, (serial.SerialException, OSError)):
-          self._link_error('write_error', e)
-        else:
-          logger.exception("serial writer: unexpected error in job")
-        if not job.future.done():
-          job.future.set_exception(LinkError(f'serial write failed: {e}'))
+  async def _run(self, queue: asyncio.Queue):
+    try:
+      while True:
+        job = await queue.get()
+        if job is _STOP:
+          return
+        if job.future.done():
+          # Caller gave up before we started: skip, never write stale data
+          self.jobs_skipped += 1
+          self.trace.event('write_skipped', ptype=int(job.ptype), req_id=job.req_id)
+          continue
+        port = self.serial
+        if port is None:
+          if not job.future.done():
+            job.future.set_exception(LinkError('port not open'))
+          continue
+        await self._write_job(port, job)
+    finally:
+      # Runs after the in-flight write returned (or on last-resort cancel), so
+      # the port is never closed under a write the trace has not seen
+      self.trace.event('writer_stopped', jobs_written=self.jobs_written)
+      _close_quietly(self._close_port)
+      self._close_port = None
+
+  async def _write_job(self, port, job: WriteJob):
+    t0 = time.perf_counter()
+    try:
+      written = await asyncio.to_thread(port.write, job.framed)
+      write_ms = (time.perf_counter() - t0) * 1000
+      self.trace.tx(job.ptype, job.req_id, len(job.framed), written or 0, write_ms, True,
+                    job.framed)
+      self.jobs_written += 1
+      if not job.future.done():
+        job.future.set_result(written)
+    except serial.SerialTimeoutException as e:
+      write_ms = (time.perf_counter() - t0) * 1000
+      self.trace.tx(job.ptype, job.req_id, len(job.framed), 0, write_ms, False, job.framed,
+                    error='write_timeout')
+      self.trace.event('write_timeout', ptype=int(job.ptype), write_ms=round(write_ms, 1))
+      self._link_error('write_timeout', e)
+      if not job.future.done():
+        job.future.set_exception(LinkError('serial write timed out'))
+    except asyncio.CancelledError:
+      write_ms = (time.perf_counter() - t0) * 1000
+      self.trace.tx(job.ptype, job.req_id, len(job.framed), 0, write_ms, False, job.framed,
+                    error='cancelled_in_flight')
+      if not job.future.done():
+        job.future.set_exception(LinkError('writer stopped'))
+      raise
+    except Exception as e:
+      write_ms = (time.perf_counter() - t0) * 1000
+      self.trace.tx(job.ptype, job.req_id, len(job.framed), 0, write_ms, False, job.framed,
+                    error=repr(e))
+      if isinstance(e, (serial.SerialException, OSError)):
+        self._link_error('write_error', e)
+      else:
+        logger.exception("serial writer: unexpected error in job")
+      if not job.future.done():
+        job.future.set_exception(LinkError(f'serial write failed: {e}'))
 
   def _link_error(self, reason: str, exc: Exception):
     if self.on_link_error is None:
@@ -182,13 +247,24 @@ class TeensyTransport:
     self.geometry_generation: Optional[int] = None
     self.frame_id = 0
     self._on_connect_callback = None   # async callable, set by main.py
-    self._ready_pinned = False         # brightness/blackout applied on this connection
+    # Per-connection restoration evidence: set only by successful writes on
+    # the current port, cleared at every open, so a stale mark_ready() can never
+    # promote the next connection to READY with unknown brightness/blackout
+    self._conn_id = 0
+    self._brightness_pinned = False
+    self._blackout_restored = False
+    # One CONFIG transaction at a time: READY can then only ever describe the
+    # latest committed geometry
+    self._config_lock = asyncio.Lock()
+    self._bring_up_task: Optional[asyncio.Task] = None
+    self._last_bring_up = 0.0
 
     self.trace = TransportTrace()
     self._pots_queue: deque = deque(maxlen=64)
     self.dispatcher = RxDispatcher(self.trace, on_pots=self._on_pots, on_diag=self._on_pushed_diag)
     self.writer = SerialWriter(self.trace, on_link_error=self._on_link_error)
     self.detector = LinkDetector(self, on_incident)
+    self.detector.on_live_reboot = self._on_live_reboot
     self._rx_task: Optional[asyncio.Task] = None
 
     # Pi-owned output state the detector needs (blackout/test suppress output_stall)
@@ -211,6 +287,10 @@ class TeensyTransport:
   @property
   def connected(self) -> bool:
     return self.state.at_least(LinkState.HELLO_OK)
+
+  @property
+  def _ready_pinned(self) -> bool:
+    return self._brightness_pinned and self._blackout_restored
 
   @property
   def boot_id(self) -> Optional[int]:
@@ -262,8 +342,12 @@ class TeensyTransport:
       return False
 
     logger.info(f"Connected to Teensy on {port}")
+    self._conn_id += 1
+    self._reset_connection_state()
     self.dispatcher.attach(self.serial)
-    self.writer.start(self.serial)
+    await self.writer.start(self.serial)
+    if self.serial is None:
+      return False   # disconnected while the previous writer was draining
     self._rx_task = asyncio.get_running_loop().create_task(self._rx_loop(), name='serial-reader')
     self._set_state(LinkState.OPEN)
 
@@ -278,24 +362,33 @@ class TeensyTransport:
     self._detect(self.detector.on_connected, caps)
     return True
 
+  def _reset_connection_state(self):
+    """Everything the firmware forgets on a new boot, forgotten here too."""
+    self._brightness_pinned = False
+    self._blackout_restored = False
+    self.test_pattern_active = None
+    self.geometry_generation = None
+
   def disconnect(self, reason: str = 'disconnect'):
     if self.state != LinkState.CLOSED or self.serial is not None:
       self._detect(self.detector.on_disconnected, reason)
     if self._rx_task is not None:
       self._rx_task.cancel()
       self._rx_task = None
-    self.writer.stop(reason)
-    self.dispatcher.detach(reason)
-    if self.serial is not None:
-      try:
-        if self.serial.is_open:
-          self.serial.close()
-      except Exception:
-        pass
+    if self._bring_up_task is not None and not self._bring_up_task.done():
+      self._bring_up_task.cancel()
+    self._bring_up_task = None
+    port = self.serial
     self.serial = None
+    # The writer closes the port itself once its in-flight write has returned;
+    # a port it never took is closed here
+    writer_owns_port = port is not None and self.writer.serial is port
+    self.writer.stop(reason, close_port=writer_owns_port)
+    self.dispatcher.detach(reason)
+    if not writer_owns_port:
+      _close_quietly(port)
     self.caps = None
-    self.geometry_generation = None
-    self._ready_pinned = False
+    self._reset_connection_state()
     self._set_state(LinkState.CLOSED)
 
   async def _handshake(self) -> Optional[dict]:
@@ -408,6 +501,7 @@ class TeensyTransport:
       self.trace.event('frame_write_wait_timeout', frame_id=self.frame_id)
       return False
     self.frames_sent += 1
+    self.test_pattern_active = None    # firmware drops its test pattern on an accepted FRAME
     return True
 
   async def send_command(self, packet_type: int, payload: bytes = b'') -> bool:
@@ -424,62 +518,96 @@ class TeensyTransport:
   async def send_blackout(self, enabled: bool) -> bool:
     """Send explicit blackout command: True=on, False=off."""
     self.blackout = bool(enabled)
-    return await self.send_command(PacketType.BLACKOUT, build_blackout_payload(enabled))
+    ok = await self.send_command(PacketType.BLACKOUT, build_blackout_payload(enabled))
+    if ok:
+      self._blackout_restored = True
+      self.test_pattern_active = None  # firmware drops its test pattern on BLACKOUT (either value)
+    return ok
 
   async def send_brightness(self, brightness: float) -> bool:
     val = max(0, min(255, int(brightness * 255)))
-    return await self.send_command(PacketType.BRIGHTNESS, struct.pack('<B', val))
+    ok = await self.send_command(PacketType.BRIGHTNESS, struct.pack('<B', val))
+    if ok:
+      self._brightness_pinned = True
+    return ok
 
   async def send_test_pattern(self, pattern_id: int) -> bool:
-    self.test_pattern_active = None if pattern_id == 0xFF else pattern_id
-    return await self.send_command(PacketType.TEST_PATTERN, struct.pack('<B', pattern_id))
+    ok = await self.send_command(PacketType.TEST_PATTERN, struct.pack('<B', pattern_id))
+    if ok:
+      self.test_pattern_active = None if pattern_id == 0xFF else pattern_id
+    return ok
 
-  async def send_config(self, output_config, timeout: float = CONFIG_TIMEOUT_S) -> bool:
+  async def send_config(self, output_config, timeout: float = CONFIG_TIMEOUT_S,
+                        attempts: Optional[int] = None,
+                        retry_delay: Optional[float] = None) -> bool:
     """Send CONFIG and wait for ACK/NAK. True on ACK.
 
-    While the ACK is pending the link drops to HELLO_OK so no frame can reach a
-    geometry the firmware has not committed; ACK restores READY if brightness
-    and blackout were already pinned on this connection (layout change), else
-    CONFIGURED (fresh connection, caller finishes with mark_ready()).
+    Serialized by a lock: an overlapping CONFIG waits for the previous ACK/NAK,
+    so READY can only describe the latest committed geometry. While the ACK is
+    pending the link drops to HELLO_OK so no frame can reach a geometry the
+    firmware has not committed. A lost ACK is retried (bounded) and the CONFIG
+    stall episode stays open until READY; nothing here ever resets the Teensy.
+    ACK restores READY if brightness and blackout were already restored on this
+    connection (layout change), else CONFIGURED (caller finishes with mark_ready()).
     """
     if not self.connected:
       return False
     config_list = output_config if isinstance(output_config, list) \
       else output_config_to_list(output_config)
-    was_ready = self.state == LinkState.READY
-    self._set_state(LinkState.HELLO_OK)
-    try:
-      reply = await self.request(PacketType.CONFIG, build_config_payload(config_list), timeout,
-                                 raise_on_timeout=True)
-    except LinkError as e:
-      logger.error(f"Failed to send CONFIG: {e}")
-      self._detect(self.detector.on_config_result, False, False)
-      return False
-    except asyncio.TimeoutError:
-      logger.warning("CONFIG: no response (timeout)")
-      if self.connected:
-        self._detect(self.detector.on_config_result, False, True)
-      return False
-    if not self.connected:
-      return False   # link dropped while waiting
-    if reply is None:
-      logger.warning("CONFIG rejected (NAK)")
-      if was_ready:
-        self._set_state(LinkState.READY)   # old geometry is still committed and pinned
-      self._detect(self.detector.on_config_result, False, False)
-      return False
-    self.geometry_generation = parse_config_ack_payload(reply[1])
-    logger.info(f"CONFIG acknowledged (active pins: {config_list}, "
-                f"geometry_generation: {self.geometry_generation})")
-    self._set_state(LinkState.READY if (was_ready or self._ready_pinned) else LinkState.CONFIGURED)
-    self._detect(self.detector.on_config_result, True, False)
-    return True
+    attempts = attempts or CONFIG_ATTEMPTS
+    retry_delay = CONFIG_RETRY_DELAY_S if retry_delay is None else retry_delay
+    async with self._config_lock:
+      if not self.connected:
+        return False
+      conn_id = self._conn_id
+      was_ready = self.state == LinkState.READY
+      self._set_state(LinkState.HELLO_OK)
+      payload = build_config_payload(config_list)
+      reply = None
+      for attempt in range(1, attempts + 1):
+        try:
+          reply = await self.request(PacketType.CONFIG, payload, timeout, raise_on_timeout=True)
+          break
+        except LinkError as e:
+          logger.error(f"Failed to send CONFIG: {e}")
+          self._detect(self.detector.on_config_result, False, False)
+          return False
+        except asyncio.TimeoutError:
+          logger.warning(f"CONFIG: no response (attempt {attempt}/{attempts})")
+          if not self._same_connection(conn_id):
+            return False
+          self._detect(self.detector.on_config_result, False, True)
+          if attempt == attempts:
+            return False   # episode stays open; reconnect_loop re-runs the bring-up later
+          await asyncio.sleep(retry_delay)
+          if not self._same_connection(conn_id):
+            return False
+      if not self._same_connection(conn_id):
+        return False   # link dropped while waiting
+      if reply is None:
+        logger.warning("CONFIG rejected (NAK)")
+        if was_ready:
+          self._set_state(LinkState.READY)   # old geometry is still committed and pinned
+        self._detect(self.detector.on_config_result, False, False)
+        return False
+      self.geometry_generation = parse_config_ack_payload(reply[1])
+      logger.info(f"CONFIG acknowledged (active pins: {config_list}, "
+                  f"geometry_generation: {self.geometry_generation})")
+      # The stall episode closes on READY (detector.on_state), not on the ACK:
+      # a committed geometry with unrestored brightness/blackout is not healthy yet
+      self._set_state(LinkState.READY if self._ready_pinned else LinkState.CONFIGURED)
+      return True
 
-  def mark_ready(self):
-    """Connect sequence finished (CONFIG ACK, brightness pinned, blackout restored)."""
-    self._ready_pinned = True
-    if self.state == LinkState.CONFIGURED:
+  def _same_connection(self, conn_id: int) -> bool:
+    return self.connected and self._conn_id == conn_id
+
+  def mark_ready(self) -> bool:
+    """Connect sequence finished. READY only when this connection holds a
+    committed CONFIG and both restoration writes succeeded on it; pins nothing
+    itself, so a call outliving its connection cannot leak into the next one."""
+    if self.state == LinkState.CONFIGURED and self._ready_pinned:
       self._set_state(LinkState.READY)
+    return self.state == LinkState.READY
 
   async def wait_for(self, state: LinkState, timeout: float) -> bool:
     deadline = time.monotonic() + timeout
@@ -510,6 +638,49 @@ class TeensyTransport:
 
   # --- background loop ---
 
+  def _on_live_reboot(self, prev_boot_id: int, new_boot_id: int):
+    """A pushed DIAG showed a new boot without a USB disconnect: the Teensy has
+    forgotten CONFIG/brightness/blackout, so stop sending frames and bring it up
+    again. Detection owns the incident; this only restores the link."""
+    logger.warning(f"Teensy rebooted in place (boot {prev_boot_id} -> {new_boot_id}); re-running bring-up")
+    self._reset_connection_state()
+    if self.state.at_least(LinkState.HELLO_OK):
+      self._set_state(LinkState.HELLO_OK)
+    if self._bring_up_task is not None and not self._bring_up_task.done():
+      self._bring_up_task.cancel()
+    self._bring_up_task = None
+    self._start_bring_up()
+
+  def _start_bring_up(self):
+    """Run the connect sequence (CONFIG → brightness → blackout → mark_ready)
+    as an owned task so the loop keeps ticking the detector meanwhile."""
+    if self._on_connect_callback is None:
+      return
+    if self._bring_up_task is not None and not self._bring_up_task.done():
+      return
+    self._last_bring_up = time.monotonic()
+    self._bring_up_task = asyncio.get_running_loop().create_task(
+      self._run_bring_up(), name='teensy-bring-up')
+
+  async def _run_bring_up(self):
+    try:
+      await self._on_connect_callback()
+    except asyncio.CancelledError:
+      raise
+    except Exception as e:
+      logger.error(f"on_connect callback failed: {e}", exc_info=True)
+
+  def _bring_up_due(self, now: float) -> bool:
+    """Connected but below READY (lost CONFIG ACK, failed restoration): retry the
+    whole sequence instead of sitting in HELLO_OK forever. Skipped while a
+    CONFIG transaction is in flight (layout change) or a bring-up is running."""
+    return (
+      self.connected and self.state != LinkState.READY
+      and not self._config_lock.locked()
+      and (self._bring_up_task is None or self._bring_up_task.done())
+      and now - self._last_bring_up >= BRING_UP_RETRY_S
+    )
+
   async def reconnect_loop(self):
     """Keep the link up; health-ping; tick the detector. Never resets the Teensy."""
     last_health = time.monotonic()
@@ -523,11 +694,7 @@ class TeensyTransport:
             self._handshake_fails = 0
             self.reconnect_count += 1
             logger.info(f"Reconnected (attempt #{self.reconnect_count})")
-            if self._on_connect_callback:
-              try:
-                await self._on_connect_callback()
-              except Exception as e:
-                logger.error(f"on_connect callback failed: {e}", exc_info=True)
+            self._start_bring_up()
             last_health = time.monotonic()
           elif self.find_teensy_port():
             self._handshake_fails += 1
@@ -535,9 +702,14 @@ class TeensyTransport:
         elif self.serial is not None and not os.path.exists(self.serial.port):
           logger.warning(f"Serial port {self.serial.port} disappeared")
           self.disconnect('link_lost')
-        elif time.monotonic() - last_health >= HEALTH_INTERVAL_S:
-          last_health = time.monotonic()
-          await self._check_health()
+        else:
+          now = time.monotonic()
+          if self._bring_up_due(now):
+            logger.warning(f"Teensy link stuck in {self.state.value}; re-running CONFIG + restoration")
+            self._start_bring_up()
+          if now - last_health >= HEALTH_INTERVAL_S:
+            last_health = now
+            await self._check_health()
         self._detect(self.detector.tick)
         await asyncio.sleep(self.reconnect_interval)
       except asyncio.CancelledError:

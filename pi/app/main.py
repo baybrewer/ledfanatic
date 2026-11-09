@@ -550,8 +550,10 @@ def main():
       # older firmware/sessions would dim everything twice.
       await deps.display.pin_teensy_brightness()
       await deps.display.set_blackout(deps.render_state.blackout)
-      # Frames flow only from READY; without a CONFIG ACK this stays pending
-      transport.mark_ready()
+      # Frames flow only from READY: needs a CONFIG ACK plus both restoration
+      # writes on this connection. Otherwise reconnect_loop re-runs this sequence.
+      if not transport.mark_ready():
+        logger.warning(f"Teensy link not READY after connect sequence (state={transport.state.value})")
     transport._on_connect_callback = _on_teensy_connect
 
     _background_tasks.append(asyncio.create_task(transport.reconnect_loop()))
