@@ -18,7 +18,7 @@ import struct
 import time
 from collections import deque
 from dataclasses import dataclass, field
-from typing import Optional
+from typing import Callable, Optional, TYPE_CHECKING
 
 import serial
 import serial.tools.list_ports
@@ -35,6 +35,9 @@ from ..models.protocol import (
   parse_caps_payload, parse_stats_payload, parse_diag_payload, parse_crash_payload,
   parse_config_ack_payload,
 )
+
+if TYPE_CHECKING:
+  from ..layout import CompiledLayout
 
 logger = logging.getLogger(__name__)
 
@@ -93,9 +96,13 @@ class SerialWriter:
   a port lifetime.
   """
 
-  def __init__(self, trace: TransportTrace, on_link_error=None):
+  def __init__(self, trace: TransportTrace, on_link_error=None, on_terminal_write=None):
     self.trace = trace
     self.on_link_error = on_link_error     # (reason: str, exc) -> None, sync
+    # (outcome: dict) -> None, sync: the write that was in flight when stop()
+    # was called, once it has returned. A teardown incident is emitted before
+    # that write finishes, so this is how its outcome still reaches the bundle.
+    self.on_terminal_write = on_terminal_write
     self.serial: Optional[serial.Serial] = None
     self._queue: asyncio.Queue = asyncio.Queue()
     self._task: Optional[asyncio.Task] = None
@@ -193,12 +200,14 @@ class SerialWriter:
 
   async def _write_job(self, port, job: WriteJob):
     t0 = time.perf_counter()
+    outcome = None
     try:
       written = await asyncio.to_thread(port.write, job.framed)
       write_ms = (time.perf_counter() - t0) * 1000
       self.trace.tx(job.ptype, job.req_id, len(job.framed), written or 0, write_ms, True,
                     job.framed)
       self.jobs_written += 1
+      outcome = self._outcome(job, written or 0, write_ms, None)
       if not job.future.done():
         job.future.set_result(written)
     except serial.SerialTimeoutException as e:
@@ -206,6 +215,7 @@ class SerialWriter:
       self.trace.tx(job.ptype, job.req_id, len(job.framed), 0, write_ms, False, job.framed,
                     error='write_timeout')
       self.trace.event('write_timeout', ptype=int(job.ptype), write_ms=round(write_ms, 1))
+      outcome = self._outcome(job, 0, write_ms, 'write_timeout')
       self._link_error('write_timeout', e)
       if not job.future.done():
         job.future.set_exception(LinkError('serial write timed out'))
@@ -215,17 +225,37 @@ class SerialWriter:
                     error='cancelled_in_flight')
       if not job.future.done():
         job.future.set_exception(LinkError('writer stopped'))
+      self._terminal(self._outcome(job, 0, write_ms, 'cancelled_in_flight'))
       raise
     except Exception as e:
       write_ms = (time.perf_counter() - t0) * 1000
       self.trace.tx(job.ptype, job.req_id, len(job.framed), 0, write_ms, False, job.framed,
                     error=repr(e))
+      outcome = self._outcome(job, 0, write_ms, repr(e))
       if isinstance(e, (serial.SerialException, OSError)):
         self._link_error('write_error', e)
       else:
         logger.exception("serial writer: unexpected error in job")
       if not job.future.done():
         job.future.set_exception(LinkError(f'serial write failed: {e}'))
+    self._terminal(outcome)
+
+  @staticmethod
+  def _outcome(job: WriteJob, written: int, write_ms: float, error: Optional[str]) -> dict:
+    return {'at': time.time(), 'ok': error is None, 'error': error, 'ptype': int(job.ptype),
+            'frame_id': job.req_id, 'bytes': len(job.framed), 'written': written,
+            'write_ms': round(write_ms, 1)}
+
+  def _terminal(self, outcome: Optional[dict]):
+    """stop() was called while this write was in flight: the write is the last
+    one this port will ever carry, and the teardown's incident wants to know how
+    it ended. Not a terminal write when the writer is still running."""
+    if outcome is None or not self._stopping or self.on_terminal_write is None:
+      return
+    try:
+      self.on_terminal_write(outcome)
+    except Exception:
+      logger.exception("on_terminal_write handler failed")
 
   def _link_error(self, reason: str, exc: Exception):
     if self.on_link_error is None:
@@ -247,10 +277,12 @@ class TeensyTransport:
     self.geometry_generation: Optional[int] = None
     self.frame_id = 0
     self._on_connect_callback = None   # async callable, set by main.py
-    # Per-connection restoration evidence: set only by successful writes on
-    # the current port, cleared at every open, so a stale mark_ready() can never
-    # promote the next connection to READY with unknown brightness/blackout
-    self._conn_id = 0
+    # Connection generation: bumped on every port open and every live reboot.
+    # Restoration flags and CONFIG transactions carry the generation they were
+    # issued under and are ignored when it moved, so a write that completes
+    # while the port is draining can never pin the *next* connection, and a
+    # CONFIG ACK from a previous boot can never promote the new one.
+    self._conn_gen = 0
     self._brightness_pinned = False
     self._blackout_restored = False
     # One CONFIG transaction at a time: READY can then only ever describe the
@@ -262,7 +294,8 @@ class TeensyTransport:
     self.trace = TransportTrace()
     self._pots_queue: deque = deque(maxlen=64)
     self.dispatcher = RxDispatcher(self.trace, on_pots=self._on_pots, on_diag=self._on_pushed_diag)
-    self.writer = SerialWriter(self.trace, on_link_error=self._on_link_error)
+    self.writer = SerialWriter(self.trace, on_link_error=self._on_link_error,
+                               on_terminal_write=self._on_terminal_write)
     self.detector = LinkDetector(self, on_incident)
     self.detector.on_live_reboot = self._on_live_reboot
     self._rx_task: Optional[asyncio.Task] = None
@@ -330,6 +363,9 @@ class TeensyTransport:
       logger.exception(f"link detector hook {getattr(hook, '__name__', hook)} failed")
 
   async def connect(self) -> bool:
+    # The previous writer may still be finishing its last write on the old
+    # port: a new port is never opened while that write can still complete
+    await self.writer.wait_stopped()
     port = self.find_teensy_port()
     if not port:
       logger.debug("Teensy not found")
@@ -342,7 +378,7 @@ class TeensyTransport:
       return False
 
     logger.info(f"Connected to Teensy on {port}")
-    self._conn_id += 1
+    self._conn_gen += 1
     self._reset_connection_state()
     self.dispatcher.attach(self.serial)
     await self.writer.start(self.serial)
@@ -427,6 +463,9 @@ class TeensyTransport:
       self.disconnect('write_timeout')
     else:
       self.disconnect('link_lost')
+
+  def _on_terminal_write(self, outcome: dict):
+    self._detect(self.detector.on_terminal_write, outcome)
 
   def _on_pots(self, header, payload):
     self._pots_queue.append((header, payload))
