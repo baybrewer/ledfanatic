@@ -12,6 +12,8 @@ from app.core import incidents as incidents_mod
 from app.core.incidents import IncidentRecorder, CaptureResult
 from app.transport.trace import TransportTrace
 
+REAL_RUN_JOURNAL = incidents_mod._run_journal   # captured before the autouse patch
+
 
 class FakeTransport:
   def __init__(self):
@@ -121,7 +123,7 @@ async def test_live_diag_timeout_marker_when_probe_hangs(tmp_path):
 
 @pytest.mark.asyncio
 async def test_journal_error_shape(tmp_path, monkeypatch):
-  monkeypatch.setattr(incidents_mod, '_run_journal', incidents_mod.__dict__['_run_journal'])
+  monkeypatch.setattr(incidents_mod, '_run_journal', REAL_RUN_JOURNAL)
   monkeypatch.setattr(incidents_mod, 'JOURNAL_SERVICE_CMD', ['/nonexistent/journalctl'])
   rec = make_recorder(tmp_path)
   cap = await rec.capture('stall', 'x')

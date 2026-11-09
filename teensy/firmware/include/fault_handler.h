@@ -9,8 +9,9 @@
 #include <stdint.h>
 
 // --- Crash record served by PKT_CRASH (96 bytes on the wire) ---
-// Layout mirrors pi/app/models/protocol.py parse_crash_payload exactly.
-struct __attribute__((packed)) CrashCore {   // the core's arm_fault_info_struct, imxrt.h:10397
+// Layout mirrors pi/app/models/protocol.py parse_crash_payload exactly. All members are
+// uint32 so the natural layout has no padding (the static_asserts below pin it).
+struct CrashCore {   // the core's arm_fault_info_struct, imxrt.h:10397
   uint32_t len;
   uint32_t ipsr;
   uint32_t cfsr;
@@ -24,12 +25,12 @@ struct __attribute__((packed)) CrashCore {   // the core's arm_fault_info_struct
   uint32_t crc;
 };
 
-struct __attribute__((packed)) CrashExt {    // our extension, stored right after the core struct
+struct CrashExt {    // our extension, stored right after the core struct
   uint32_t r0, r1, r2, r3, r12, lr, pc, xpsr;
   uint32_t excReturn;  // always the shim's captured EXC_RETURN, even when the frame was unusable
 };
 
-struct __attribute__((packed)) CrashRecord {
+struct CrashRecord {
   uint32_t valid;      // 1 when the core CRC validated at capture time
   uint32_t source;     // 1 = live (this boot faulted), 2 = previous boot, 0 = none
   uint32_t srcGpr5;
@@ -70,6 +71,9 @@ uint32_t faults_lifetime();
 // uint32 bits of the last tempmonGetTemp(); refreshed once a second by the main loop so
 // the fault recorder never executes a floating-point instruction.
 extern volatile uint32_t cachedTempBits;
+
+// Emergency stack the fault path and fault_idle_loop() run on (fault_handler.cpp).
+extern "C" uint32_t faultStack[];
 
 // Defined in main.cpp: bounded RX loop restricted to PING/DIAG/CRASH/HELLO plus the 1 Hz
 // DIAG push. Entered via exception return on faultStack; never returns.

@@ -22,6 +22,7 @@ from .routes import transport as transport_routes
 from .routes import layout as layout_routes
 from .routes import pots as pots_routes
 from .routes import overhead as overhead_routes
+from .routes import teensy as teensy_routes
 from .routes import ws
 
 logger = logging.getLogger(__name__)
@@ -47,6 +48,8 @@ def create_app(
     pot_controller=None,
     display=None,
     overhead=None,
+    incidents=None,
+    maintenance=None,
 ) -> FastAPI:
 
     app = FastAPI(title="LED Fanatic", version="1.0.0")
@@ -79,6 +82,8 @@ def create_app(
         pot_controller=pot_controller,
         display=display,
         overhead=overhead,
+        incidents=incidents,
+        maintenance=maintenance,
     )
 
     # Expose deps on app.state for startup handlers in main.py
@@ -101,6 +106,7 @@ def create_app(
     app.include_router(layout_routes.create_router(deps, require_auth))
     app.include_router(pots_routes.create_router(deps, require_auth))
     app.include_router(overhead_routes.create_router(deps, require_auth, broadcast_state))
+    app.include_router(teensy_routes.create_router(deps, require_auth))
     app.include_router(ws_router)
 
     # --- Periodic broadcast ---

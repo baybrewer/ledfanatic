@@ -15,6 +15,18 @@ def build_state_payload(deps) -> dict:
     data['current_params'] = deps.state_manager.current_params
     if deps.overhead is not None:
         data['overhead'] = deps.overhead.snapshot().to_dict()
+    # Link health for the stall banner / Reset Teensy button
+    link = deps.transport.get_status()
+    maintenance = deps.maintenance
+    data['transport'] = {
+        'state': link.get('state'),
+        'firmware_version': link.get('firmware_version'),
+        'boot_id': link.get('boot_id'),
+        'stalled': link.get('stalled'),
+        'maintenance': bool(link.get('maintenance', False)),
+        'usb_power_cycle_available': bool(
+            maintenance is not None and maintenance.usb_power_cycle_available),
+    }
     return data
 
 

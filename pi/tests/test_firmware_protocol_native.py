@@ -30,9 +30,9 @@ def _run_harness(*args: str) -> subprocess.CompletedProcess:
 def test_native_harness_passes():
   result = _run_harness()
   assert result.returncode == 0, f"harness failed:\n{result.stdout}\n{result.stderr}"
-  last_line = result.stdout.strip().splitlines()[-1]
-  match = re.fullmatch(r"OK (\d+)", last_line)
-  assert match, f"expected 'OK <n>' as the last line, got {last_line!r}"
+  # run.sh prints "OK <n>" for the protocol cases, then an FP-check line for the fault path
+  match = re.search(r"^OK (\d+)$", result.stdout, re.MULTILINE)
+  assert match, f"expected an 'OK <n>' line, got:\n{result.stdout}"
   assert int(match.group(1)) > 0
 
 

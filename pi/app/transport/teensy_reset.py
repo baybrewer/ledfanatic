@@ -50,6 +50,7 @@ async def boot_from_bootloader(loader: str = 'teensy_loader_cli',
     output, _ = await asyncio.wait_for(proc.communicate(), timeout)
   except asyncio.TimeoutError:
     proc.kill()
+    await proc.wait()   # never leave a zombie loader behind
     logger.error("Teensy reboot: loader timed out waiting for bootloader")
     return False
 

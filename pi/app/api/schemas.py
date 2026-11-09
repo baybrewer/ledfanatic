@@ -69,3 +69,7 @@ class StripConfigRequest(BaseModel):
     led_count: Optional[int] = None
     color_order: Optional[str] = None
     brightness: Optional[float] = None
+
+
+class TeensyMaintenanceRequest(BaseModel):
+    reason: Optional[str] = None

@@ -79,6 +79,12 @@ class FakeDetector:
     self.disarmed += 1
 
 
+async def settle():
+  # reset() creates the owned task inside its own task: two hops before it runs
+  for _ in range(3):
+    await asyncio.sleep(0)
+
+
 def make(uhubctl=''):
   t, inc, det = FakeTransport(), FakeIncidents(), FakeDetector()
   return TeensyMaintenance(t, inc, det, uhubctl_path=uhubctl), t, inc, det
@@ -97,7 +103,7 @@ async def test_reset_sequence_and_result():
   assert t.maintenance is False
   assert t.maintenance_at_wait is False, "reconnect loop must run while we wait for READY"
   assert result == {
-    'incident': inc.captures and inc.appends[0][0],
+    'incident': inc.appends[0][0],
     'rebooted': True, 'reconnected': True, 'error': None,
     'new_boot_id': 12, 'reset_reason_text': 'software', 'crash': {'valid': False},
     'capture_error': None,
@@ -137,10 +143,10 @@ async def test_concurrent_resets_run_exactly_one_reboot():
   t.reboot_gate = asyncio.Event()
 
   first = asyncio.create_task(m.reset('first'))
-  await asyncio.sleep(0)            # first reset has captured and is inside reboot()
+  await settle()                    # first reset has captured and is inside reboot()
   with pytest.raises(BusyError) as excinfo:
     await m.reset('second')
-  assert excinfo.value.incident == inc.captures[0][0] and 'manual_reset' in excinfo.value.incident
+  assert excinfo.value.incident == m.current_incident and 'manual_reset' in excinfo.value.incident
   assert not first.done(), "BusyError must be immediate, not queued behind the first reset"
 
   t.reboot_gate.set()
@@ -158,8 +164,8 @@ async def test_busy_error_carries_current_incident_id():
   m, t, inc, det = make()
   t.reboot_gate = asyncio.Event()
   first = asyncio.create_task(m.reset())
-  await asyncio.sleep(0)
-  assert m.busy and m.current_incident == inc.appends and m.current_incident is not None or m.current_incident is not None
+  await settle()
+  assert m.busy and m.current_incident is not None
   with pytest.raises(BusyError) as excinfo:
     await m.reset()
   assert excinfo.value.incident == m.current_incident
@@ -175,7 +181,7 @@ async def test_cancelled_awaiter_does_not_abort_operation():
   t.reboot_gate = asyncio.Event()
 
   awaiter = asyncio.create_task(m.reset())
-  await asyncio.sleep(0)
+  await settle()
   awaiter.cancel()                  # HTTP client went away mid-reset
   with pytest.raises(asyncio.CancelledError):
     await awaiter
@@ -275,7 +281,7 @@ async def test_usb_power_cycle_is_single_flight_with_reset():
   m, t, inc, det = make(uhubctl='/usr/sbin/uhubctl')
   t.reboot_gate = asyncio.Event()
   first = asyncio.create_task(m.reset())
-  await asyncio.sleep(0)
+  await settle()
   with pytest.raises(BusyError):
     await m.usb_power_cycle()
   t.reboot_gate.set()

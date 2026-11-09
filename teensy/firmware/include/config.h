@@ -34,6 +34,8 @@
 #define PKT_PONG               0x21
 #define PKT_STATS              0x30
 #define PKT_POTS               0x31
+#define PKT_DIAG               0x32  // request -> response; also pushed every 1000 ms (frame_id 0)
+#define PKT_CRASH              0x33  // request -> 96-byte crash record response
 #define PKT_TEST_PATTERN       0x40
 #define PKT_BLACKOUT           0x41
 #define PKT_BRIGHTNESS         0x42
@@ -51,11 +53,12 @@
 #define TEST_STRIP_IDENTIFY    8
 #define TEST_SEAM_MARKER       9
 #define TEST_PATTERN_NONE      0xFF
+#define TEST_PATTERN_FAULT_INJECT 0xFE  // only acted on when built with -DFAULT_INJECT*
 
 // --- Timing ---
-#define WATCHDOG_TIMEOUT_MS    500
-#define FADE_DURATION_MS       250
-#define USB_READ_CHUNK         4096
+// Bytes drained per loop iteration. Bounded so one iteration can never spin on a
+// host that streams faster than we parse; leftover bytes wait in the USB RX FIFO.
+#define USB_READ_CHUNK         8192
 #define STATS_INTERVAL_MS      1000
 
 // --- Potentiometer inputs ---
@@ -74,5 +77,5 @@
 #define DEFAULT_COLOR_ORDER  COLOR_ORDER_BGR
 
 // --- Firmware info ---
-#define FIRMWARE_VERSION "1.2.0"
+#define FIRMWARE_VERSION "1.3.0"
 #define FIRMWARE_NAME    "pillar-teensy"

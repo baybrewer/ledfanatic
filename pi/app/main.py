@@ -15,6 +15,8 @@ from .api.server import create_app
 from .core.renderer import Renderer, RenderState
 from .core.state import StateManager
 from .core.brightness import BrightnessEngine
+from .core.incidents import IncidentRecorder
+from .core.teensy_maintenance import TeensyMaintenance
 from .transport.usb import TeensyTransport
 from .media.manager import MediaManager
 from .audio.analyzer import AudioAnalyzer
@@ -107,6 +109,12 @@ def main():
     reconnect_interval=transport_conf.get('reconnect_interval_ms', 1000) / 1000,
     handshake_timeout=transport_conf.get('handshake_timeout_ms', 3000) / 1000,
   )
+
+  # Link forensics: every detected episode and every manual reset leaves a bundle
+  incidents = IncidentRecorder(transport, render_state, state_manager, brightness_engine,
+                               logs_dir=log_dir)
+  transport.detector.on_incident = incidents.capture_event
+  maintenance = TeensyMaintenance(transport, incidents, transport.detector)
 
   # Layout — load, validate, compile
   layout_config = load_layout(config_dir)
@@ -514,6 +522,8 @@ def main():
     pot_controller=pot_controller,
     display=display,
     overhead=overhead,
+    incidents=incidents,
+    maintenance=maintenance,
   )
 
   # Track background tasks for clean shutdown

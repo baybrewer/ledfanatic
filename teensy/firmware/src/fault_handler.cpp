@@ -55,6 +55,8 @@ volatile uint32_t cachedTempBits = 0;
 static CrashRecord bootCrash;                  // copy of the previous boot's record
 
 // Same algorithm as startup.c / CrashReport.cpp::isvalid (and protocol.py core_fault_record_crc).
+// general-regs-only because fault_record calls it (should the compiler not inline it).
+__attribute__((target("general-regs-only")))
 static uint32_t core_record_crc(const volatile uint32_t* words) {
   uint32_t crc = 0xFFFFFFFF;
   for (uint32_t i = 0; i < CORE_RECORD_WORDS - 1; i++) {

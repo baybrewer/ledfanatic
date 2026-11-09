@@ -12,6 +12,7 @@ from app.effects.base import Effect
 from app.core.renderer import Renderer, RenderState
 from app.core.brightness import BrightnessEngine
 from app.layout import load_layout, compile_layout
+from app.transport.link_state import LinkState
 from pathlib import Path
 
 
@@ -37,6 +38,7 @@ def test_renderer_isolates_crashing_effect():
   brightness = BrightnessEngine({})
   transport = MagicMock()
   transport.send_frame = AsyncMock(return_value=True)
+  transport.state = LinkState.READY
   renderer = Renderer(transport, state, brightness, layout)
   renderer.current_effect = CrashingEffect(layout.width, layout.height)
   state.current_scene = "crasher"
@@ -55,6 +57,7 @@ def test_renderer_continues_after_crash():
   brightness = BrightnessEngine({})
   transport = MagicMock()
   transport.send_frame = AsyncMock(return_value=True)
+  transport.state = LinkState.READY
   renderer = Renderer(transport, state, brightness, layout)
   renderer.current_effect = CrashingEffect(layout.width, layout.height)
   state.current_scene = "crasher"

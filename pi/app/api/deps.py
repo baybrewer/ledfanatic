@@ -32,3 +32,5 @@ class AppDeps:
     pot_controller: Optional[object] = None
     display: Optional[object] = None
     overhead: Optional[object] = None
+    incidents: Optional[object] = None      # IncidentRecorder
+    maintenance: Optional[object] = None    # TeensyMaintenance

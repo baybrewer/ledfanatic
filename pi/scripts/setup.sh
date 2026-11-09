@@ -17,6 +17,8 @@ if ! id -u pillar &>/dev/null; then
   sudo usermod -aG dialout,audio pillar
   echo "Created pillar user"
 fi
+# Incident bundles embed journalctl output; the group grants read access
+sudo usermod -aG systemd-journal pillar
 
 # Install system dependencies
 sudo apt-get update
@@ -28,10 +30,11 @@ sudo apt-get install -y \
   network-manager \
   rsync \
   git \
-  teensy-loader-cli
+  teensy-loader-cli \
+  uhubctl
 
 # Create directory structure
-sudo mkdir -p /opt/ledfanatic/{config,media,cache,logs,src}
+sudo mkdir -p /opt/ledfanatic/{config,media,cache,logs,logs/incidents,src}
 sudo chown -R pillar:pillar /opt/ledfanatic
 
 # Copy pi/ source to canonical location
@@ -75,8 +78,9 @@ sudo systemctl enable ledfanatic
 sudo cp "${PI_DIR}/config/udev/49-teensy.rules" /etc/udev/rules.d/
 sudo udevadm control --reload-rules
 
-# Allow pillar user to restart service and reboot without password
-echo 'pillar ALL=(ALL) NOPASSWD: /bin/systemctl restart ledfanatic, /bin/systemctl stop ledfanatic, /sbin/reboot' | \
+# Allow pillar user to restart service, reboot, and power-cycle the USB hub
+# (uhubctl: user-initiated Teensy recovery; Pi 4 switches all USB ports together)
+echo 'pillar ALL=(ALL) NOPASSWD: /bin/systemctl restart ledfanatic, /bin/systemctl stop ledfanatic, /sbin/reboot, /usr/sbin/uhubctl' | \
   sudo tee /etc/sudoers.d/pillar > /dev/null
 sudo chmod 0440 /etc/sudoers.d/pillar
 

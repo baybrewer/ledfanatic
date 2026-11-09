@@ -12,7 +12,8 @@ from typing import Optional
 import numpy as np
 
 from ..effects.textrender import render_spine_text, composite_spine_overlay
-from ..layout import pack_frame, CompiledLayout, _expand_segment
+from ..layout import pack_frame, CompiledLayout, _expand_segment, output_config_list
+from ..transport.link_state import LinkState
 from ..transport.usb import TeensyTransport
 from .brightness import BrightnessEngine
 
@@ -167,6 +168,10 @@ class Renderer:
     # Last logical (width×height×3 uint8) frame — snapshot after brightness+gamma,
     # read by live-preview WebSocket. Ring buffer of one frame.
     self._last_logical_frame = np.zeros((layout.width, layout.height, 3), dtype=np.uint8)
+    # Byte count the Teensy expects for the current geometry (CONFIG sum * RGB).
+    # A frame of any other size would be rejected or misdrawn, so it is never sent.
+    self._expected_frame_bytes = sum(output_config_list(layout)) * 3
+    self._last_bad_frame_log: float = 0.0
     # Populate state with grid dimensions
     self.state.grid_width = layout.width
     self.state.grid_height = layout.height
@@ -178,6 +183,7 @@ class Renderer:
   def apply_layout(self, layout: CompiledLayout, layout_config=None):
     """Hot-swap the compiled layout. Thread-safe: next frame picks it up."""
     self.layout = layout
+    self._expected_frame_bytes = sum(output_config_list(layout)) * 3
     self._last_logical_frame = np.zeros((layout.width, layout.height, 3), dtype=np.uint8)
     self.state.grid_width = layout.width
     self.state.grid_height = layout.height
@@ -541,6 +547,26 @@ class Renderer:
         buf[pos + 2] = probe_val
       pixel_bytes = bytes(buf)
     self.state.pack_ms = (time.perf_counter() - pack_start) * 1000
+
+    # Frames flow only in READY (CONFIG acked, brightness pinned, blackout
+    # restored); anything earlier would reach a Teensy with stale geometry.
+    # Quiet skip: the transport already logs every link-state change.
+    if getattr(self.transport, 'state', None) != LinkState.READY:
+      return
+
+    # Refuse a frame whose size disagrees with the CONFIG we sent — the Teensy
+    # would NAK it or paint it across the wrong outputs.
+    if len(pixel_bytes) != self._expected_frame_bytes:
+      now = time.monotonic()
+      if now - self._last_bad_frame_log >= 10.0:
+        self._last_bad_frame_log = now
+        logger.error(
+          f"Frame size mismatch: packed {len(pixel_bytes)} bytes, "
+          f"layout expects {self._expected_frame_bytes} — frame dropped")
+      trace = getattr(self.transport, 'trace', None)
+      if trace is not None and hasattr(trace, 'event'):
+        trace.event('bad_frame_len', got=len(pixel_bytes), want=self._expected_frame_bytes)
+      return
 
     # Send to Teensy
     send_start = time.perf_counter()
