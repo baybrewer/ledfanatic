@@ -88,6 +88,8 @@ function updateState(data) {
 
   if (data.overhead) renderOverheadState(data.overhead);
 
+  if (data.transport) renderTeensyTransport(data.transport);
+
   // Audio spectrum + beat
   if (data.audio_spectrum) {
     spectrumTarget = data.audio_spectrum;
@@ -100,39 +102,45 @@ function updateState(data) {
 
 // --- API helpers ---
 
-async function api(method, path, body) {
+// Low-level call that keeps the HTTP status: callers that must tell 409/404/503
+// apart (Teensy reset, DIAG) use this; everything else goes through api().
+async function apiWithStatus(method, path, body) {
   const opts = { method, headers: authHeaders() };
   if (body) opts.body = JSON.stringify(body);
   try {
     const res = await fetch(`${API}${path}`, opts);
-    if (res.status === 401) {
-      console.warn('Auth required — set token in System > Admin');
-      return null;
-    }
-    if (res.status === 204 || res.headers.get('content-length') === '0') {
-      return { status: 'ok' };
-    }
+    const noBody = res.status === 204 || res.headers.get('content-length') === '0';
     const ct = res.headers.get('content-type') || '';
-    if (ct.includes('application/json')) {
-      return await res.json();
-    }
-    // Non-JSON success — return status wrapper
-    return res.ok ? { status: 'ok' } : null;
+    const data = !noBody && ct.includes('application/json') ? await res.json() : null;
+    return { status: res.status, ok: res.ok, noBody, data };
   } catch (e) {
     console.error(`API error: ${method} ${path}`, e);
+    return { status: 0, ok: false, noBody: true, data: null };
+  }
+}
+
+async function api(method, path, body) {
+  const { status, ok, noBody, data } = await apiWithStatus(method, path, body);
+  if (status === 0) return null;
+  if (status === 401) {
+    console.warn('Auth required — set token in System > Admin');
     return null;
   }
+  if (noBody) return { status: 'ok' };
+  if (data !== null) return data;
+  // Non-JSON success — return status wrapper
+  return ok ? { status: 'ok' } : null;
 }
 
 // --- Toast ---
 
-function showToast(message) {
+function showToast(message, durationMs = 3000) {
   const toast = document.createElement('div');
   toast.className = 'toast';
   toast.setAttribute('role', 'status');
   toast.textContent = message;
   document.body.appendChild(toast);
-  setTimeout(() => toast.remove(), 3000);
+  setTimeout(() => toast.remove(), durationMs);
 }
 
 // --- Tab navigation ---
@@ -180,6 +188,7 @@ function activateTab(tab) {
 
   // Stop setup live preview when leaving System tab
   if (tab.dataset.tab !== 'system') stopSetupLivePreview();
+  syncTeensyDiagPolling();
 }
 
 async function stopEffectsPreview() {
@@ -1369,10 +1378,283 @@ function initSystem() {
       }
       if (btn.dataset.section === 'system-setup') { loadPixelMap(); loadStats(); startSetupLivePreview(); }
       else stopSetupLivePreview();
+      syncTeensyDiagPolling();
     });
   });
 
   initSetup();
+  initTeensyCard();
+}
+
+// --- Teensy link health (stall banner, System card, manual reset, incidents) ---
+
+const TEENSY_STALL_LABELS = {
+  stall: 'is not answering',
+  write_timeout: 'write timed out',
+  link_lost: 'link lost',
+  output_stall: 'output stalled',
+  teensy_flag: 'reports a stall',
+  fault: 'faulted',
+  unexpected_reboot: 'rebooted unexpectedly',
+};
+
+// Order and labels for the DIAG summary; keys match the /api/teensy/diag payload.
+const TEENSY_DIAG_FIELDS = [
+  ['bad_short', 'Short packets'],
+  ['bad_magic', 'Bad magic'],
+  ['bad_version', 'Bad version'],
+  ['bad_len', 'Bad length'],
+  ['bad_crc', 'Bad CRC'],
+  ['oversize', 'Oversize'],
+  ['bad_framing', 'Bad framing'],
+  ['tx_dropped', 'TX dropped'],
+  ['rx_backlog', 'RX backlog'],
+  ['max_loop_us', 'Max loop (µs)'],
+  ['stall_active_names', 'Stall active'],
+  ['stall_latched_names', 'Stall latched'],
+  ['last_op_name', 'Last op'],
+];
+
+const TEENSY_ACTIONS = {
+  reset: {
+    path: '/api/teensy/reset',
+    busyLabel: 'Resetting…',
+    buttonClass: 'teensy-reset-btn',
+    confirmText: 'Saves a diagnostic bundle, then reboots the Teensy. The panel goes dark ~5 s and may flash while the data lines float.',
+    failText: 'Teensy reset failed',
+  },
+  cycle: {
+    path: '/api/teensy/usb-power-cycle',
+    busyLabel: 'Power-cycling…',
+    buttonClass: 'teensy-cycle-btn',
+    confirmText: 'Saves a diagnostic bundle, then cuts power to ALL of the Pi\'s USB ports for ~3 s (Teensy, audio, anything else plugged in). The panel goes dark and may flash while the data lines float.',
+    failText: 'USB power-cycle failed',
+  },
+};
+
+let teensyDiagTimer = null;
+let teensyActionInFlight = null;
+let teensyMaintenance = false;
+
+function setTeensyText(id, value) {
+  const el = document.getElementById(id);
+  if (el) el.textContent = (value === null || value === undefined || value === '') ? '--' : String(value);
+}
+
+function formatClock(epochSeconds) {
+  return new Date(epochSeconds * 1000).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+}
+
+function formatBytes(bytes) {
+  if (!Number.isFinite(bytes)) return '--';
+  if (bytes < 1024) return `${bytes} B`;
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
+  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+}
+
+function renderTeensyTransport(transport) {
+  teensyMaintenance = !!transport.maintenance;
+
+  const banner = document.getElementById('teensy-banner');
+  const stalled = transport.stalled;
+  if (banner && stalled) {
+    const kind = TEENSY_STALL_LABELS[stalled.kind] || stalled.kind;
+    const reason = stalled.reason ? ` (${stalled.reason})` : '';
+    const since = stalled.since ? ` since ${formatClock(stalled.since)}` : '';
+    const evidence = stalled.incident
+      ? ` — evidence saved as ${stalled.incident}.`
+      : ' — evidence bundle still being written.';
+    const text = `Teensy ${kind}${reason}${since}${evidence}`;
+    const textEl = document.getElementById('teensy-banner-text');
+    // role="alert" re-announces on every DOM write; the WS ticks ~1 Hz, so only
+    // touch the node when the message actually changed.
+    if (textEl.textContent !== text) textEl.textContent = text;
+  }
+  if (banner) banner.hidden = !stalled;
+
+  document.querySelectorAll('.teensy-cycle-btn').forEach(btn => {
+    btn.hidden = !transport.usb_power_cycle_available;
+  });
+
+  setTeensyText('teensy-state', transport.state);
+  setTeensyText('teensy-fw', transport.firmware_version);
+  setTeensyText('teensy-boot-id', transport.boot_id);
+  applyTeensyButtonState();
+}
+
+// Buttons are disabled while our request is in flight OR while the server
+// reports maintenance (another client's reset) so two resets can't overlap.
+function applyTeensyButtonState() {
+  const busy = teensyActionInFlight !== null || teensyMaintenance;
+  for (const [kind, spec] of Object.entries(TEENSY_ACTIONS)) {
+    document.querySelectorAll(`.${spec.buttonClass}`).forEach(btn => {
+      const thisOne = teensyActionInFlight === kind;
+      // Another client's reset holds the lock: say so instead of a silent disabled button.
+      const heldElsewhere = teensyMaintenance && teensyActionInFlight === null;
+      btn.disabled = busy;
+      btn.classList.toggle('is-busy', thisOne);
+      btn.setAttribute('aria-busy', thisOne ? 'true' : 'false');
+      btn.textContent = thisOne ? spec.busyLabel : (heldElsewhere ? 'Reset in progress…' : btn.dataset.label);
+    });
+  }
+}
+
+function teensyDiagVisible() {
+  if (document.hidden) return false;
+  const tab = document.querySelector('.tab.active');
+  if (!tab || tab.dataset.tab !== 'system') return false;
+  const statusSection = document.getElementById('system-status');
+  return !!statusSection && !statusSection.classList.contains('hidden');
+}
+
+// Poll DIAG only while the System > Status section is actually on screen.
+function syncTeensyDiagPolling() {
+  const shouldPoll = teensyDiagVisible();
+  if (shouldPoll && teensyDiagTimer === null) {
+    loadTeensyDiag();
+    loadTeensyIncidents();
+    teensyDiagTimer = setInterval(loadTeensyDiag, 5000);
+  } else if (!shouldPoll && teensyDiagTimer !== null) {
+    clearInterval(teensyDiagTimer);
+    teensyDiagTimer = null;
+  }
+}
+
+async function loadTeensyDiag() {
+  const { status, data } = await apiWithStatus('GET', '/api/teensy/diag');
+  const list = document.getElementById('teensy-diag');
+  const empty = document.getElementById('teensy-diag-empty');
+  const age = document.getElementById('teensy-diag-age');
+  if (!list || !empty) return;
+
+  if (status !== 200 || !data || !data.diag) {
+    list.hidden = true;
+    empty.hidden = false;
+    if (age) age.textContent = '';
+    return;
+  }
+
+  const diag = data.diag;
+  const rows = TEENSY_DIAG_FIELDS.map(([key, label]) => {
+    const raw = diag[key];
+    const value = Array.isArray(raw) ? (raw.length ? raw.join(', ') : 'none') : raw;
+    const row = document.createElement('div');
+    const dt = document.createElement('dt');
+    dt.textContent = label;
+    const dd = document.createElement('dd');
+    dd.textContent = (value === null || value === undefined) ? '--' : String(value);
+    // Non-zero error counters and any active stall get the danger tint.
+    const isCounter = typeof raw === 'number' && key !== 'max_loop_us' && key !== 'rx_backlog';
+    const alarming = (isCounter && raw > 0) || (Array.isArray(raw) && raw.length > 0);
+    dd.classList.toggle('teensy-alarm', alarming);
+    row.append(dt, dd);
+    return row;
+  });
+  list.replaceChildren(...rows);
+  list.hidden = false;
+  empty.hidden = true;
+
+  if (age) {
+    const ageText = Number.isFinite(data.age_s) ? `${data.age_s.toFixed(1)} s ago` : '';
+    const uptime = Number.isFinite(diag.uptime_ms) ? `, up ${Math.round(diag.uptime_ms / 1000)} s` : '';
+    const faults = Number.isFinite(diag.fault_count) && diag.fault_count > 0 ? `, ${diag.fault_count} fault(s)` : '';
+    age.textContent = ageText ? `(${ageText}${uptime}${faults})` : '';
+  }
+  setTeensyText('teensy-reset-reason', diag.reset_reason_text);
+  if (data.boot_id !== undefined) setTeensyText('teensy-boot-id', data.boot_id);
+  if (data.state) setTeensyText('teensy-state', data.state);
+}
+
+async function loadTeensyIncidents() {
+  const data = await api('GET', '/api/teensy/incidents');
+  const list = document.getElementById('teensy-incidents');
+  const empty = document.getElementById('teensy-incidents-empty');
+  if (!list || !empty) return;
+
+  // A failed fetch must not masquerade as "no incidents" — that would hide evidence.
+  if (!data) {
+    list.hidden = true;
+    empty.hidden = false;
+    empty.textContent = 'Could not load incidents — check the connection to the Pi.';
+    return;
+  }
+  empty.textContent = 'No incidents recorded.';
+
+  const incidents = Array.isArray(data.incidents) ? [...data.incidents] : [];
+  incidents.sort((a, b) => String(b.at || b.id || '').localeCompare(String(a.at || a.id || '')));
+
+  const items = incidents.map(inc => {
+    const li = document.createElement('li');
+    const link = document.createElement('a');
+    link.className = 'teensy-incident-link';
+    link.href = `${API}/api/teensy/incidents/${encodeURIComponent(inc.id)}`;
+    link.setAttribute('download', '');
+    link.textContent = inc.id;
+    const meta = document.createElement('span');
+    meta.className = 'teensy-incident-meta';
+    const when = inc.at ? new Date(inc.at).toLocaleString() : '--';
+    const fallback = inc.fallback ? ' · fallback capture' : '';
+    meta.textContent = `${inc.trigger || 'unknown'} · ${when} · ${formatBytes(inc.size_bytes)}${fallback}`;
+    li.append(link, meta);
+    return li;
+  });
+  list.replaceChildren(...items);
+  list.hidden = items.length === 0;
+  empty.hidden = items.length > 0;
+}
+
+function formatTeensyActionResult(kind, data) {
+  const parts = [];
+  const done = kind === 'cycle' ? data.cycled : data.rebooted;
+  parts.push(kind === 'cycle'
+    ? (done ? 'USB power-cycled' : 'USB power-cycle not confirmed')
+    : (done ? 'Teensy rebooted' : 'Teensy reboot not confirmed'));
+  parts.push(`reconnected: ${data.reconnected ? 'yes' : 'no'}`);
+  if (data.reset_reason_text) parts.push(`reason: ${data.reset_reason_text}`);
+  if (data.new_boot_id !== null && data.new_boot_id !== undefined) parts.push(`boot ${data.new_boot_id}`);
+  if (data.crash) parts.push('crash record captured');
+  if (data.incident) parts.push(`incident ${data.incident}`);
+  if (data.error) parts.push(`error: ${data.error}`);
+  if (data.capture_error) parts.push(`capture error: ${data.capture_error}`);
+  return parts.join(' · ');
+}
+
+async function runTeensyAction(kind) {
+  const spec = TEENSY_ACTIONS[kind];
+  if (!spec || teensyActionInFlight !== null) return;
+  if (!confirm(spec.confirmText)) return;
+
+  teensyActionInFlight = kind;
+  applyTeensyButtonState();
+  const { status, data } = await apiWithStatus('POST', spec.path, { reason: 'ui' });
+  teensyActionInFlight = null;
+  applyTeensyButtonState();
+
+  if (status === 401) {
+    showToast('Not authorized — set your auth token in System > Admin');
+  } else if (status === 409) {
+    showToast(`Reset already running (incident ${data?.incident || 'unknown'})`, 5000);
+  } else if (status === 404) {
+    showToast('USB power-cycle is not available on this Pi');
+  } else if (status !== 200 || !data) {
+    showToast(spec.failText);
+  } else {
+    showToast(formatTeensyActionResult(kind, data), 10000);
+  }
+
+  // A reset writes a new incident bundle; refresh the list and DIAG whatever happened.
+  loadTeensyIncidents();
+  loadTeensyDiag();
+}
+
+function initTeensyCard() {
+  for (const [kind, spec] of Object.entries(TEENSY_ACTIONS)) {
+    document.querySelectorAll(`.${spec.buttonClass}`).forEach(btn => {
+      btn.addEventListener('click', () => runTeensyAction(kind));
+    });
+  }
+  document.addEventListener('visibilitychange', syncTeensyDiagPolling);
+  syncTeensyDiagPolling();
 }
 
 // --- Layout Setup ---

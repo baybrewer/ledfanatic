@@ -1818,12 +1818,25 @@ input:focus-visible {
 
 /* Danger buttons: danger-on-white reads better than the inherited dim text. */
 .teensy-reset-btn,
-.teensy-cycle-btn { color: #fff; }
+.teensy-cycle-btn { color: #fff; font-weight: 600; }
+/* The generic .action-btn:hover swaps in the grey surface, which makes a red
+   button look like it lost its danger meaning mid-hover. Keep it red. */
+.teensy-reset-btn:hover:not(:disabled),
+.teensy-cycle-btn:hover:not(:disabled) {
+  background: #ff8585;
+  border-color: var(--danger);
+  box-shadow: 0 2px 12px rgba(255, 107, 107, 0.35);
+}
 .teensy-reset-btn:disabled,
-.teensy-cycle-btn:disabled {
+.teensy-cycle-btn:disabled,
+.teensy-reset-btn:disabled:hover,
+.teensy-cycle-btn:disabled:hover {
+  background: var(--danger);
+  border-color: var(--border);
   opacity: 0.55;
   cursor: not-allowed;
   transform: none;
+  box-shadow: none;
 }
 .teensy-reset-btn.is-busy::before,
 .teensy-cycle-btn.is-busy::before {
