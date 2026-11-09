@@ -39,7 +39,15 @@ ELF="${FW_DIR}/.pio/build/teensy41/firmware.elf"
 OBJDUMP="${OBJDUMP:-${HOME}/.platformio/packages/toolchain-gccarmnoneeabi-teensy/bin/arm-none-eabi-objdump}"
 if [[ -f "${ELF}" && -x "${OBJDUMP}" ]]; then
   fp_fail=0
-  for sym in fault_halt fault_record _ZN9OctoWS281115parkOutputsIdleEv rtc_get; do
+  # Roots, then every `bl` target reached from them: a helper the compiler chose not to
+  # inline must be checked too, since it runs in the same fault context.
+  pending=(fault_halt fault_record _ZN10OctoWS281115parkOutputsIdleEv rtc_get)
+  checked=" "
+  while (( ${#pending[@]} )); do
+    sym="${pending[0]}"
+    pending=("${pending[@]:1}")
+    [[ "${checked}" == *" ${sym} "* ]] && continue
+    checked+="${sym} "
     listing="$("${OBJDUMP}" -d --disassemble="${sym}" "${ELF}")"
     if ! grep -q "<${sym}>:" <<<"${listing}"; then
       echo "FP check: symbol ${sym} not found in ${ELF}" >&2
@@ -51,11 +59,14 @@ if [[ -f "${ELF}" && -x "${OBJDUMP}" ]]; then
       echo "FP check: floating-point instruction in ${sym}" >&2
       fp_fail=1
     fi
+    while read -r callee; do
+      [[ -n "${callee}" ]] && pending+=("${callee}")
+    done < <(grep -E $'\tbl\t[0-9a-f]+ <' <<<"${listing}" | sed -E 's/.*<([^>+]+)>.*/\1/')
   done
   if (( fp_fail )); then
     exit 1
   fi
-  echo "FP check: fault path is general-regs-only OK"
+  echo "FP check: fault path is general-regs-only OK (${checked% })"
 else
   echo "FP check: skipped (no firmware.elf or objdump)"
 fi
