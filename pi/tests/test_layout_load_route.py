@@ -28,8 +28,9 @@ def env(tmp_path):
   shutil.copy(Path("config/layout.yaml"), config_dir / "layout.yaml")
   (saves / "two.yaml").write_text(
     "version: 1\nmatrix: {width: 2, height: 10}\noutputs:\n"
-    "  - pin: 0\n    segments:\n      - id: a\n        type: linear\n        x: 0\n        y0: 0\n        y1: 9\n        direction: down\n"
-    "  - pin: 1\n    segments:\n      - id: b\n        type: linear\n        x: 1\n        y0: 0\n        y1: 9\n        direction: down\n")
+    "  - id: octo_ch0\n    channel: 0\n    chipset: WS2812\n    color_order: BGR\n    segments:\n"
+    "      - id: a\n        type: linear\n        start: {x: 0, y: 0}\n        direction: \"+y\"\n        length: 10\n        physical_offset: 0\n"
+    "      - id: b\n        type: linear\n        start: {x: 1, y: 9}\n        direction: \"-y\"\n        length: 10\n        physical_offset: 10\n")
   transport = MagicMock(spec=TeensyTransport)
   transport.connected = True
   transport.caps = None

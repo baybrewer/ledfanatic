@@ -592,3 +592,21 @@ async def test_rehandshake_after_live_reboot_moves_boot_without_second_incident(
   h.detector.on_rehandshake({'boot_id': 3, 'firmware_version': '1.3.0', 'faulted': 1})
   await h.settle()
   assert h.kinds() == ['unexpected_reboot', 'fault']
+
+
+@pytest.mark.asyncio
+async def test_live_reboot_incident_is_enriched_after_renegotiation(h):
+  appends = _appender(h)
+  h.transport.request_diag = AsyncMock(return_value={'boot_id': 3, 'uptime_ms': 900})
+  h.detector.on_connected({'boot_id': 2, 'firmware_version': '1.3.0'})
+  h.push_diag(boot_id=2, uptime_ms=50_000)
+  h.push_diag(boot_id=3, uptime_ms=500)                  # live reboot, link is OPEN: no probes possible
+  await h.settle()
+  assert h.kinds() == ['unexpected_reboot']
+  assert appends == []
+  caps = {'boot_id': 3, 'firmware_version': '1.3.0', 'faulted': 0}
+  h.detector.on_rehandshake(caps)                        # HELLO answered on the new boot
+  await h.settle()
+  assert appends and appends[-1][0] == 'inc-1' and appends[-1][1] == 'post_renegotiation'
+  post = appends[-1][2]
+  assert post['caps'] == caps and post['diag']['boot_id'] == 3 and post['crash']['text'] == 'HardFault'

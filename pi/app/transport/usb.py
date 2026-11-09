@@ -244,7 +244,10 @@ class SerialWriter:
   def _outcome(job: WriteJob, written: int, write_ms: float, error: Optional[str]) -> dict:
     return {'at': time.time(), 'ok': error is None, 'error': error, 'ptype': int(job.ptype),
             'frame_id': job.req_id, 'bytes': len(job.framed), 'written': written,
-            'write_ms': round(write_ms, 1)}
+            'write_ms': round(write_ms, 1),
+            # The frozen snapshots predate this write; without the bytes the
+            # teardown's last frame could never be reconstructed from the bundle.
+            'framed_hex': job.framed.hex()}
 
   def _terminal(self, outcome: Optional[dict]):
     """stop() was called while this write was in flight: the write is the last

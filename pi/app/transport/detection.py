@@ -25,6 +25,7 @@ from .link_state import LinkState
 
 logger = logging.getLogger(__name__)
 
+LIVE_REBOOT_ENRICH_S = 15.0     # how long to wait for the reboot bundle id before enriching it
 PING_MISSES_TO_STALL = 3        # PINGs are every 5 s
 HANDSHAKE_FAILS_TO_STALL = 2
 CONFIG_TIMEOUT_S = 3.0
@@ -71,6 +72,9 @@ class LinkDetector:
     # Evidence that only exists after the incident was emitted (the terminal
     # outcome of the write in flight at teardown) is added through this.
     self.on_append: Optional[Callable[..., Awaitable]] = None
+    # Live reboot: the incident is captured while the link is OPEN (no commands),
+    # so its live_diag/crash are empty. After renegotiation we append them.
+    self._live_reboot_incident: Optional[asyncio.Future] = None
     self._now = now
     self.open_episodes: dict[str, Episode] = {}
     self.emitted: deque = deque(maxlen=200)          # (kind, reason, at) for status/tests
@@ -132,6 +136,32 @@ class LinkDetector:
     self._window = None
     if caps.get('faulted'):
       self._fault('CAPS reports fault-idle mode', boot_id, caps=caps)
+    fut, self._live_reboot_incident = self._live_reboot_incident, None
+    if fut is not None and self.on_append is not None:
+      try:
+        asyncio.get_running_loop().create_task(self._enrich_live_reboot(fut, caps))
+      except RuntimeError:
+        pass
+
+  async def _enrich_live_reboot(self, incident_fut: 'asyncio.Future', caps: dict):
+    """The reboot bundle was frozen before HELLO; now that the new boot answers,
+    add its CAPS plus a fresh DIAG and CRASH record to the same incident."""
+    try:
+      incident_id = await asyncio.wait_for(incident_fut, LIVE_REBOOT_ENRICH_S)
+    except (asyncio.TimeoutError, asyncio.CancelledError):
+      return
+    if not incident_id:
+      return
+    post = {'caps': caps, 'diag': None, 'crash': None}
+    for key, name in (('diag', 'request_diag'), ('crash', 'request_crash')):
+      fn = getattr(self.transport, name, None)
+      if fn is None:
+        continue
+      try:
+        post[key] = await fn()
+      except Exception as e:
+        post[key] = {'error': repr(e)}
+    await self._isolated_append(incident_id, 'post_renegotiation', post)
 
   def on_disconnected(self, reason: str):
     """Called before the transport forgets caps/diag so the evidence is frozen."""
@@ -321,7 +351,13 @@ class LinkDetector:
       previous = {'at': time.time(), 'reason': reason, 'boot_id': prev_boot_id,
                   'caps': getattr(t, 'caps', None), 'last_diag': self._prev_diag,
                   'trace': trace.freeze() if trace is not None else None}
+    if live:
+      try:
+        self._live_reboot_incident = asyncio.get_running_loop().create_future()
+      except RuntimeError:
+        self._live_reboot_incident = None
     detail = {
+      'live': live,
       'prev_boot_id': prev_boot_id, 'new_boot_id': new_boot_id,
       'reset_reason_text': (caps or {}).get('reset_reason_text'),
       'caps': caps, 'previous': previous,
@@ -475,6 +511,10 @@ class LinkDetector:
       if inspect.isawaitable(result):
         result = await result
       incident_id = _incident_id_of(result)
+      if kind == 'unexpected_reboot' and detail.get('live'):
+        fut = self._live_reboot_incident
+        if fut is not None and not fut.done():
+          fut.set_result(incident_id)
       if episode is not None and incident_id:
         episode.incident_id = incident_id
         self._refresh_stalled()

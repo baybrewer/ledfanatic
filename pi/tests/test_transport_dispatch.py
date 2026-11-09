@@ -988,3 +988,10 @@ async def test_terminal_write_outcome_is_appended_to_the_link_lost_incident():
   finally:
     t.disconnect()
     patcher.stop()
+
+
+def test_terminal_write_outcome_carries_the_bytes():
+  job = usb.WriteJob(framed=b'\x01\x02\x03', future=asyncio.new_event_loop().create_future(),
+                     deadline=0.0, ptype=0x10, req_id=9)
+  outcome = usb.SerialWriter._outcome(job, written=3, write_ms=0.4, error=None)
+  assert outcome['framed_hex'] == '010203' and outcome['bytes'] == 3 and outcome['ok']

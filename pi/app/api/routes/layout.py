@@ -195,29 +195,37 @@ def create_router(deps, require_auth) -> APIRouter:
         if not src.exists():
             raise HTTPException(404, f"Config '{filename}' not found")
         dst = deps.config_dir / "layout.yaml"
-        shutil.copy2(src, dst)
-        # Reload and apply
         try:
-            new_config = load_layout(deps.config_dir)
+            # Validate the saved file in place; layout.yaml is only replaced once
+            # the firmware (or an explicit offline commit) has accepted it, so a
+            # rejected load can never come back to life on the next restart.
+            import yaml
+            with open(src) as f:
+                new_config = parse_layout(yaml.safe_load(f) or {})
             errors = validate_layout(new_config)
             if errors:
                 raise HTTPException(400, f"Loaded config has errors: {'; '.join(errors)}")
             new_compiled = compile_layout(new_config)
+            committed = {'done': False}
 
-            def commit(committed):
+            def commit(compiled_now):
+                shutil.copy2(src, dst)
                 deps.layout_config = new_config
-                deps.compiled_layout = committed
-                deps.renderer.apply_layout(committed, new_config)
+                deps.compiled_layout = compiled_now
+                deps.renderer.apply_layout(compiled_now, new_config)
+                committed['done'] = True
 
             # Offline there is no firmware geometry to disagree with, so the
             # renderer still switches and the next bring-up CONFIGs this layout
-            ok = await deps.transport.apply_geometry(
+            await deps.transport.apply_geometry(
                 lambda: (new_compiled, output_config_list(new_compiled)), commit,
                 commit_offline=True)
-            if not ok and deps.transport.connected:
-                raise HTTPException(502, "Teensy rejected CONFIG or timed out")
+            if not committed['done']:
+                # Success means the commit ran — not "the Teensy happened to be
+                # disconnected" (a disconnect mid-CONFIG used to report ok)
+                raise HTTPException(502, "Layout not applied: Teensy rejected CONFIG, timed out, or the link dropped")
             logger.info(f"Loaded layout config: {filename}")
-            return {"status": "ok"}
+            return {"status": "ok", "committed_online": deps.transport.connected}
         except HTTPException:
             raise
         except Exception as e:
