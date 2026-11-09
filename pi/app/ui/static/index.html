@@ -45,6 +45,15 @@
       </div>
     </section>
 
+    <!-- Teensy stall banner: shown on every tab while transport.stalled is set -->
+    <div id="teensy-banner" class="teensy-banner" role="alert" hidden>
+      <span id="teensy-banner-text" class="teensy-banner-text"></span>
+      <div class="teensy-banner-actions">
+        <button id="teensy-banner-reset" class="action-btn danger teensy-reset-btn" type="button" data-label="Reset Teensy">Reset Teensy</button>
+        <button id="teensy-banner-cycle" class="action-btn danger teensy-cycle-btn" type="button" data-label="Power-cycle USB" hidden>Power-cycle USB</button>
+      </div>
+    </div>
+
     <!-- Tab navigation -->
     <nav id="tabs" role="tablist" aria-label="Main navigation">
       <button id="tab-overhead" class="tab active" data-tab="overhead" role="tab" aria-selected="true" aria-controls="panel-overhead" tabindex="0">Overhead</button>
@@ -302,6 +311,7 @@
               <div class="help-content" hidden>
                 <p>System status and display settings.</p>
                 <p>FPS Target: how many frames per second the renderer targets (60 is standard). Transport: shows if the Teensy hardware is connected. Firmware: the version running on the Teensy. Frames Sent: total frames delivered to the LEDs since startup.</p>
+                <p>Teensy: link state, firmware and live diagnostics counters (refreshed every 5 s while this page is open). Reset Teensy saves a diagnostic bundle, then reboots the Teensy — the panel goes dark for about 5 s. Incidents lists saved diagnostic bundles; tap an id to download it.</p>
               </div>
             </div>
             <div id="system-stats">
@@ -314,6 +324,32 @@
               <p>Transport: <span id="sys-transport">--</span></p>
               <p>Firmware: <span id="sys-firmware">--</span></p>
               <p>Frames Sent: <span id="sys-frames">--</span></p>
+
+              <!-- Teensy link health card (live via WebSocket + 5 s DIAG poll while visible) -->
+              <section id="teensy-card" class="teensy-card" aria-labelledby="teensy-card-title">
+                <h3 id="teensy-card-title">Teensy</h3>
+                <dl class="teensy-facts">
+                  <div><dt>Link</dt><dd id="teensy-state">--</dd></div>
+                  <div><dt>Firmware</dt><dd id="teensy-fw">--</dd></div>
+                  <div><dt>Boot ID</dt><dd id="teensy-boot-id">--</dd></div>
+                  <div><dt>Last reset reason</dt><dd id="teensy-reset-reason">--</dd></div>
+                </dl>
+
+                <h4 class="teensy-subhead">Diagnostics <span id="teensy-diag-age" class="teensy-muted"></span></h4>
+                <dl id="teensy-diag" class="teensy-diag" hidden></dl>
+                <p id="teensy-diag-empty" class="teensy-muted">No diagnostics received yet.</p>
+
+                <div class="teensy-actions">
+                  <button id="teensy-reset-btn" class="action-btn danger teensy-reset-btn" type="button" data-label="Reset Teensy">Reset Teensy</button>
+                  <button id="teensy-cycle-btn" class="action-btn danger teensy-cycle-btn" type="button" data-label="Power-cycle USB" hidden>Power-cycle USB</button>
+                </div>
+                <p class="teensy-muted">Reset saves a diagnostic bundle first, then reboots the Teensy. The panel goes dark for about 5 s.</p>
+
+                <h4 class="teensy-subhead">Incidents</h4>
+                <ul id="teensy-incidents" class="teensy-incidents" hidden></ul>
+                <p id="teensy-incidents-empty" class="teensy-muted">No incidents recorded.</p>
+              </section>
+
               <h3>Control Knobs</h3>
               <div id="knob-toggles" class="knob-toggles">
                 <label class="knob-toggle-row">

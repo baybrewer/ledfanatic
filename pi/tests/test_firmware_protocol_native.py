@@ -40,7 +40,10 @@ def test_cpp_encoder_matches_python():
   """C++ encode -> Python decode, and byte-identical to the Python encoder."""
   result = _run_harness("--emit-vectors")
   assert result.returncode == 0, result.stderr
-  vectors = [line.split(" ") for line in result.stdout.strip().splitlines()]
+  # Only "<raw-hex|-> <encoded-hex>" lines are vectors; run.sh also prints the FP-check line
+  vectors = [line.split(" ") for line in result.stdout.strip().splitlines()
+             if re.fullmatch(r"[0-9a-fA-F-]+ [0-9a-fA-F]+", line)]
+  assert vectors, "no vectors emitted"
   assert len(vectors) >= 20
 
   for raw_hex, encoded_hex in vectors:
