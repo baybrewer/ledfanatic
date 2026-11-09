@@ -7,7 +7,7 @@
 #include <stdint.h>
 #include <stddef.h>
 
-#define DIAG_FIELDS 44
+#define DIAG_FIELDS 45
 #define DIAG_PAYLOAD_SIZE (DIAG_FIELDS * 4)
 
 // stall_active / stall_latched bits. Active bits clear when the condition clears;
@@ -56,8 +56,9 @@ struct Diag {
   uint32_t loopStartUs;
   uint32_t maxLoopUs;
   uint32_t maxTxUs;
-  uint32_t txDropped;
+  uint32_t txDropped;            // responses dropped after TX_WAIT_US: a real link defect
   uint32_t txDroppedThisSecond;
+  uint32_t txDroppedPush;        // unsolicited POTS/DIAG skipped for lack of room: benign
   bool     showPending;        // show() started and DMA completion not yet observed
   uint32_t showStartMs;
   uint32_t stallActive;

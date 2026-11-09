@@ -41,8 +41,9 @@ DIAG_FIELD_NAMES = (
   'frames_applied', 'frames_pending_dropped', 'octo_begins', 'rx_backlog', 'usb_sts',
   'usb_irq', 'last_op', 'dma3_csr_es', 'tmr4_enbl_sctrl0', 'crash_present',
   'geometry_generation', 'bad_framing', 'frames_pending', 'ignored_in_fault_mode', 'fault_count',
+  'tx_dropped_push',
 )
-DIAG_FIELDS = 44
+DIAG_FIELDS = 45
 assert len(DIAG_FIELD_NAMES) == DIAG_FIELDS
 DIAG_PAYLOAD_SIZE = DIAG_FIELDS * 4
 DIAG_STRUCT_FMT = f'<{DIAG_FIELDS}I'

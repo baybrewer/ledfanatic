@@ -640,6 +640,7 @@ void sendDiag(uint32_t reqId) {
     pendingFrameReady ? 1u : 0u,           // 41 frames_pending
     diag.ignoredInFaultMode,               // 42
     faults_lifetime(),                     // 43 fault_count
+    diag.txDroppedPush,                    // 44 tx_dropped_push
   };
   uint8_t payload[DIAG_PAYLOAD_SIZE];
   for (int i = 0; i < DIAG_FIELDS; i++) put32(payload + i * 4, f[i]);
@@ -696,13 +697,22 @@ void sendPacket(uint8_t type, const uint8_t* payload, size_t len, uint32_t reqId
   if (encLen == 0) return;
   encoded[encLen++] = 0x00;  // delimiter in the same write: the frame is atomic on the wire
 
+  // reqId == 0 marks an unsolicited push (POTS, 1 Hz DIAG): skip it when the
+  // buffers are busy rather than delay the loop; the next one is 50 ms away.
+  // A response is awaited by the Pi, so it may wait a bounded TX_WAIT_US.
+  uint32_t t0 = micros();
   if (Serial.availableForWrite() < (int)encLen) {
-    diag.txDropped++;
-    diag.txDroppedThisSecond++;
-    return;
+    if (reqId == 0) { diag.txDroppedPush++; return; }
+    while (Serial.availableForWrite() < (int)encLen) {
+      if (micros() - t0 > TX_WAIT_US) {
+        diag.txDropped++;
+        diag.txDroppedThisSecond++;
+        return;
+      }
+    }
   }
   setOp(OP_SEND);
-  uint32_t t0 = micros();
+  t0 = micros();
   if (Serial.write(encoded, encLen) != encLen) diag.txDropped++;
   uint32_t dt = micros() - t0;
   if (dt > diag.maxTxUs) diag.maxTxUs = dt;

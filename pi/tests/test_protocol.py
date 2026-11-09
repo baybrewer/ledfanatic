@@ -621,7 +621,7 @@ class TestConfigAck:
 
 class TestDiagPayload:
   def test_layout_contract(self):
-    assert DIAG_FIELDS == 44 and DIAG_PAYLOAD_SIZE == 176
+    assert DIAG_FIELDS == 45 and DIAG_PAYLOAD_SIZE == 180
     assert DIAG_FIELD_NAMES[0] == 'uptime_ms'
     assert DIAG_FIELD_NAMES[25] == 'stall_active' and DIAG_FIELD_NAMES[26] == 'stall_latched'
     assert DIAG_FIELD_NAMES[35] == 'last_op'

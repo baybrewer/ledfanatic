@@ -58,6 +58,10 @@
 // --- Timing ---
 // Bytes drained per loop iteration. Bounded so one iteration can never spin on a
 // host that streams faster than we parse; leftover bytes wait in the USB RX FIFO.
+// Responses wait this long for a free USB TX buffer before being dropped.
+// The core's availableForWrite() ignores the buffer being filled and counts
+// only idle transfers, so it reads 0 for ~0.1-1 ms around every host IN poll.
+#define TX_WAIT_US             3000
 #define USB_READ_CHUNK         8192
 #define STATS_INTERVAL_MS      1000
 
@@ -77,5 +81,5 @@
 #define DEFAULT_COLOR_ORDER  COLOR_ORDER_BGR
 
 // --- Firmware info ---
-#define FIRMWARE_VERSION "1.3.0"
+#define FIRMWARE_VERSION "1.3.1"
 #define FIRMWARE_NAME    "pillar-teensy"
