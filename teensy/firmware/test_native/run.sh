@@ -28,3 +28,34 @@ mkdir -p "${BUILD_DIR}"
 ASAN_OPTIONS="${ASAN_OPTIONS:-halt_on_error=1:detect_leaks=0}" \
 UBSAN_OPTIONS="${UBSAN_OPTIONS:-halt_on_error=1:print_stacktrace=1}" \
   "${BIN}" "$@"
+
+# --- Fault-path FP check ---
+# The fault recording path must contain no floating-point instruction: with lazy FP
+# state preservation pending, the first FP instruction writes the FP frame to the
+# original (possibly damaged) stack. Disassemble the firmware ELF (if a build exists)
+# and fail on any v* mnemonic in the shim, the recorder, the Octo park routine and the
+# RTC read it calls.
+ELF="${FW_DIR}/.pio/build/teensy41/firmware.elf"
+OBJDUMP="${OBJDUMP:-${HOME}/.platformio/packages/toolchain-gccarmnoneeabi-teensy/bin/arm-none-eabi-objdump}"
+if [[ -f "${ELF}" && -x "${OBJDUMP}" ]]; then
+  fp_fail=0
+  for sym in fault_halt fault_record _ZN9OctoWS281115parkOutputsIdleEv rtc_get; do
+    listing="$("${OBJDUMP}" -d --disassemble="${sym}" "${ELF}")"
+    if ! grep -q "<${sym}>:" <<<"${listing}"; then
+      echo "FP check: symbol ${sym} not found in ${ELF}" >&2
+      fp_fail=1
+      continue
+    fi
+    # objdump rows: "  addr:<tab>hex bytes<tab>mnemonic ..." — match the mnemonic column only.
+    if grep -E $':\t[0-9a-f ]+\tv[a-z]' <<<"${listing}"; then
+      echo "FP check: floating-point instruction in ${sym}" >&2
+      fp_fail=1
+    fi
+  done
+  if (( fp_fail )); then
+    exit 1
+  fi
+  echo "FP check: fault path is general-regs-only OK"
+else
+  echo "FP check: skipped (no firmware.elf or objdump)"
+fi
