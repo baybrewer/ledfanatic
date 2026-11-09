@@ -74,7 +74,8 @@ class LinkDetector:
     self.on_append: Optional[Callable[..., Awaitable]] = None
     # Live reboot: the incident is captured while the link is OPEN (no commands),
     # so its live_diag/crash are empty. After renegotiation we append them.
-    self._live_reboot_incident: Optional[asyncio.Future] = None
+    # new_boot_id -> future resolved with the incident id once captured
+    self._live_reboot_pending: dict = {}
     self._now = now
     self.open_episodes: dict[str, Episode] = {}
     self.emitted: deque = deque(maxlen=200)          # (kind, reason, at) for status/tests
@@ -114,6 +115,7 @@ class LinkDetector:
     self._close_fault_if_new_boot(boot_id)
     self._current_boot_id = boot_id
     self._established = True
+    self._schedule_live_enrichment(caps)
     self._failed_attempts.clear()
     self._prev_diag = None
     self._diag_seen_this_connection = False
@@ -136,12 +138,19 @@ class LinkDetector:
     self._window = None
     if caps.get('faulted'):
       self._fault('CAPS reports fault-idle mode', boot_id, caps=caps)
-    fut, self._live_reboot_incident = self._live_reboot_incident, None
-    if fut is not None and self.on_append is not None:
-      try:
-        asyncio.get_running_loop().create_task(self._enrich_live_reboot(fut, caps))
-      except RuntimeError:
-        pass
+    self._schedule_live_enrichment(caps)
+
+  def _schedule_live_enrichment(self, caps: dict):
+    """A live-reboot bundle was frozen while the link was OPEN; whichever hook
+    first hears the new boot answer (rehandshake, or a plain reconnect after a
+    failed renegotiation) completes it with that boot's CAPS/DIAG/CRASH."""
+    fut = self._live_reboot_pending.pop(caps.get('boot_id') or 0, None)
+    if fut is None or self.on_append is None:
+      return
+    try:
+      asyncio.get_running_loop().create_task(self._enrich_live_reboot(fut, caps))
+    except RuntimeError:
+      pass
 
   async def _enrich_live_reboot(self, incident_fut: 'asyncio.Future', caps: dict):
     """The reboot bundle was frozen before HELLO; now that the new boot answers,
@@ -351,13 +360,15 @@ class LinkDetector:
       previous = {'at': time.time(), 'reason': reason, 'boot_id': prev_boot_id,
                   'caps': getattr(t, 'caps', None), 'last_diag': self._prev_diag,
                   'trace': trace.freeze() if trace is not None else None}
+    fut = None
     if live:
       try:
-        self._live_reboot_incident = asyncio.get_running_loop().create_future()
+        fut = asyncio.get_running_loop().create_future()
+        self._live_reboot_pending[new_boot_id] = fut
       except RuntimeError:
-        self._live_reboot_incident = None
+        fut = None
     detail = {
-      'live': live,
+      'live': live, '_incident_future': fut,
       'prev_boot_id': prev_boot_id, 'new_boot_id': new_boot_id,
       'reset_reason_text': (caps or {}).get('reset_reason_text'),
       'caps': caps, 'previous': previous,
@@ -506,21 +517,25 @@ class LinkDetector:
     return evidence
 
   async def _isolated(self, episode: Optional[Episode], kind: str, detail: dict):
+    # Captured at emission, never "whichever is current": a rehandshake may
+    # already have moved on by the time the recorder returns the id. Popped so
+    # the recorder's JSON never sees a Future.
+    fut = detail.pop('_incident_future', None)
     try:
       result = self.on_incident(kind, detail)
       if inspect.isawaitable(result):
         result = await result
       incident_id = _incident_id_of(result)
-      if kind == 'unexpected_reboot' and detail.get('live'):
-        fut = self._live_reboot_incident
-        if fut is not None and not fut.done():
-          fut.set_result(incident_id)
+      if fut is not None and not fut.done():
+        fut.set_result(incident_id)
       if episode is not None and incident_id:
         episode.incident_id = incident_id
         self._refresh_stalled()
         self._flush_terminal_write(episode)
     except Exception:
       logger.exception(f"on_incident callback failed for {kind}")
+      if fut is not None and not fut.done():
+        fut.set_result(None)
 
   async def _isolated_append(self, incident_id: str, key: str, value: dict):
     try:

@@ -610,3 +610,42 @@ async def test_live_reboot_incident_is_enriched_after_renegotiation(h):
   assert appends and appends[-1][0] == 'inc-1' and appends[-1][1] == 'post_renegotiation'
   post = appends[-1][2]
   assert post['caps'] == caps and post['diag']['boot_id'] == 3 and post['crash']['text'] == 'HardFault'
+
+
+@pytest.mark.asyncio
+async def test_live_reboot_enrichment_survives_rehandshake_before_capture_returns(h):
+  appends = _appender(h)
+  h.transport.request_diag = AsyncMock(return_value={'boot_id': 3})
+  gate = asyncio.Event()
+  real_record = h.record
+
+  async def slow_record(kind, detail):
+    await gate.wait()                                     # recorder still writing when HELLO lands
+    return await real_record(kind, detail)
+  h.detector.on_incident = slow_record
+  h.detector.on_connected({'boot_id': 2, 'firmware_version': '1.3.0'})
+  h.push_diag(boot_id=2, uptime_ms=50_000)
+  h.push_diag(boot_id=3, uptime_ms=500)
+  await asyncio.sleep(0)
+  h.detector.on_rehandshake({'boot_id': 3, 'firmware_version': '1.3.0', 'faulted': 0})
+  gate.set()
+  await h.settle()
+  await h.settle()
+  assert [a[1] for a in appends] == ['post_renegotiation']
+  assert appends[0][0] == 'inc-1'
+
+
+@pytest.mark.asyncio
+async def test_live_reboot_enriched_on_plain_reconnect_when_renegotiation_failed(h):
+  appends = _appender(h)
+  h.transport.request_diag = AsyncMock(return_value={'boot_id': 3})
+  h.detector.on_connected({'boot_id': 2, 'firmware_version': '1.3.0'})
+  h.push_diag(boot_id=2, uptime_ms=50_000)
+  h.push_diag(boot_id=3, uptime_ms=500)
+  await h.settle()
+  assert h.kinds() == ['unexpected_reboot'] and appends == []
+  h.detector.on_disconnected('link_lost')                 # live HELLO failed, port dropped
+  h.detector.on_connected({'boot_id': 3, 'firmware_version': '1.3.0', 'uptime_ms': 2000})   # ordinary reconnect to the new boot
+  await h.settle()
+  assert [a[1] for a in appends] == ['post_renegotiation'] and appends[0][0] == 'inc-1'
+  assert h.kinds().count('unexpected_reboot') == 1        # boot 3 was already reported
